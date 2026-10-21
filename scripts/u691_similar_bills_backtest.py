@@ -22,13 +22,17 @@ import heapq
 import json
 import math
 import re
+import threading
 import time
 from collections import defaultdict
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
+
+from entities.attachment.business.extraction_service import extraction_payload_is_current
 
 from entities.coding_suggestion.business.bill_suggestion_service import (
     HISTORY_STRONG_RAW_SCORE,
@@ -61,10 +65,30 @@ from scripts.u654a_text_backtest import (
     _json_default,
     assert_outputs_privacy_safe,
     build_vendor_priors,
+    load_blob_urls_from_db,
 )
 from shared.database import get_connection
+from shared.text_blob_read import make_text_blob_reader, read_text_blob_with_retry
 
 MODEL_VERSION = "u691-similar-bills-v1"
+
+TEXT_SOURCE_DESCRIPTIONS = "descriptions"
+TEXT_SOURCE_PDF = "pdf"
+TEXT_SOURCE_PDF_PLUS_MASKED_DESCRIPTIONS = "pdf_plus_masked_descriptions"
+TEXT_SOURCES = (
+    TEXT_SOURCE_DESCRIPTIONS,
+    TEXT_SOURCE_PDF,
+    TEXT_SOURCE_PDF_PLUS_MASKED_DESCRIPTIONS,
+)
+
+DEFAULT_PDF_READ_WORKERS = 8
+DEFAULT_PDF_READ_TIMEOUT_SECONDS = 120.0
+
+_CATALOG_MASK_SQL = """
+SELECT s.[Id], s.[Name], c.[Name] AS [CostCodeName]
+FROM dbo.[SubCostCode] s
+LEFT JOIN dbo.[CostCode] c ON c.[Id] = s.[CostCodeId]
+"""
 
 DEFAULT_TOP_K = 10
 DEFAULT_AMOUNT_BAND_PCT = 0.25
@@ -75,10 +99,11 @@ VARIANTS = (
     "V_same_vendor",
     "V_any_vendor",
     "V_any_vendor_same_project",
+    "V_other_vendor",
 )
 
 # Variants that do not use the evaluated bill's label project (pair with history Mode B).
-VARIANTS_NO_PROJECT = ("V_same_vendor", "V_any_vendor")
+VARIANTS_NO_PROJECT = ("V_same_vendor", "V_any_vendor", "V_other_vendor")
 
 # Head-to-head convention: **top-1 over all** evaluated bills — abstain counts as wrong.
 # Coverage and precision-on-covered are reported separately (bill- and dollar-weighted).
@@ -180,6 +205,62 @@ class EnrichedBill:
 
 
 @dataclass(frozen=True)
+class TokenSourceConfig:
+    """Controls which text is tokenized for similarity (U-694)."""
+
+    text_source: str = TEXT_SOURCE_DESCRIPTIONS
+    catalog_mask_tokens: frozenset[str] = frozenset()
+    pdf_text_by_bill_id: Mapping[int, str] = field(default_factory=dict)
+    pdf_tokens_by_bill_id: Mapping[int, frozenset[str]] = field(default_factory=dict)
+    population_bill_ids: Optional[frozenset[int]] = None
+    _usable_pdf_bill_ids: frozenset[int] = field(
+        init=False, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        ids: set[int] = set()
+        for bid in self.pdf_tokens_by_bill_id:
+            ids.add(int(bid))
+        for bid, text in self.pdf_text_by_bill_id.items():
+            if (text or "").strip():
+                ids.add(int(bid))
+        object.__setattr__(self, "_usable_pdf_bill_ids", frozenset(ids))
+
+    @property
+    def requires_pdf_population(self) -> bool:
+        return self.text_source in (
+            TEXT_SOURCE_PDF,
+            TEXT_SOURCE_PDF_PLUS_MASKED_DESCRIPTIONS,
+        )
+
+    @property
+    def usable_pdf_bill_ids(self) -> frozenset[int]:
+        return self._usable_pdf_bill_ids
+
+
+_DEFAULT_TOKEN_CONFIG = TokenSourceConfig()
+
+
+@dataclass(frozen=True)
+class PdfTextLoadStats:
+    linked: int = 0
+    read_ok: int = 0
+    stale_redaction: int = 0
+    read_error: int = 0
+    empty_content: int = 0
+
+
+@dataclass(frozen=True)
+class PopulationCounts:
+    all_coded_bills: int
+    with_usable_pdf_text: int
+    eval_all: int
+    eval_pdf_population: int
+    cal_all: int
+    cal_pdf_population: int
+
+
+@dataclass(frozen=True)
 class BillTokenProfile:
     enriched: EnrichedBill
     tokens: frozenset[str]
@@ -193,6 +274,10 @@ class SimilarPrediction:
     raw_score: Optional[Decimal]
     neighbour_count: int
     top_k_used: int
+
+
+def empty_similar_predictions() -> dict[str, SimilarPrediction]:
+    return {v: SimilarPrediction(None, None, 0, 0) for v in VARIANTS}
 
 
 @dataclass
@@ -216,11 +301,71 @@ def tokenize_bill_text(text: str) -> frozenset[str]:
     return frozenset(out)
 
 
-def bill_tokens(enriched: EnrichedBill) -> frozenset[str]:
+def _pdf_text_from_raw_blob(raw_blob_text: str) -> tuple[Optional[str], str]:
+    """Parse extraction JSON once; return (text, outcome) with outcome ok|stale|empty."""
+    try:
+        payload = json.loads(raw_blob_text)
+    except ValueError:
+        return None, "stale"
+    if not isinstance(payload, dict) or not extraction_payload_is_current(payload):
+        return None, "stale"
+    content = payload.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return None, "empty"
+    return content.strip(), "ok"
+
+
+def bill_text_from_extraction_blob(raw_blob_text: str) -> Optional[str]:
+    """Extract invoice body text from a current-stamp extraction envelope (content field only)."""
+    text, outcome = _pdf_text_from_raw_blob(raw_blob_text)
+    return text if outcome == "ok" else None
+
+
+def _description_memo_tokens(enriched: EnrichedBill) -> frozenset[str]:
     combined = " ".join(
         part for part in (enriched.line_descriptions, enriched.memo) if part
     )
     return tokenize_bill_text(combined)
+
+
+def _apply_catalog_mask(
+    tokens: frozenset[str], catalog_mask_tokens: frozenset[str]
+) -> frozenset[str]:
+    if not catalog_mask_tokens:
+        return tokens
+    return frozenset(t for t in tokens if t not in catalog_mask_tokens)
+
+
+def bill_tokens(
+    enriched: EnrichedBill,
+    *,
+    config: TokenSourceConfig = _DEFAULT_TOKEN_CONFIG,
+) -> frozenset[str]:
+    if config.text_source == TEXT_SOURCE_DESCRIPTIONS:
+        toks = _description_memo_tokens(enriched)
+        return _apply_catalog_mask(toks, config.catalog_mask_tokens)
+    bid = enriched.bill.bill_id
+    pdf_toks = config.pdf_tokens_by_bill_id.get(bid)
+    if pdf_toks is None:
+        pdf_raw = config.pdf_text_by_bill_id.get(bid, "")
+        pdf_toks = tokenize_bill_text(pdf_raw)
+    if config.text_source == TEXT_SOURCE_PDF:
+        return pdf_toks
+    desc_toks = _apply_catalog_mask(
+        _description_memo_tokens(enriched), config.catalog_mask_tokens
+    )
+    return frozenset(set(pdf_toks) | set(desc_toks))
+
+
+def similarity_eligible(
+    enriched: EnrichedBill, config: TokenSourceConfig = _DEFAULT_TOKEN_CONFIG
+) -> bool:
+    if config.population_bill_ids is not None:
+        if enriched.bill.bill_id not in config.population_bill_ids:
+            return False
+    if not config.requires_pdf_population:
+        return True
+    return enriched.bill.bill_id in config.usable_pdf_bill_ids
 
 
 def _log_abs_amount(total_abs_amount: Decimal) -> float:
@@ -229,8 +374,13 @@ def _log_abs_amount(total_abs_amount: Decimal) -> float:
     return math.log(float(total_abs_amount))
 
 
-def token_profile(enriched: EnrichedBill, idf: dict[str, float]) -> BillTokenProfile:
-    tokens = bill_tokens(enriched)
+def token_profile(
+    enriched: EnrichedBill,
+    idf: dict[str, float],
+    *,
+    config: TokenSourceConfig = _DEFAULT_TOKEN_CONFIG,
+) -> BillTokenProfile:
+    tokens = bill_tokens(enriched, config=config)
     wsum = sum(idf.get(t, 0.0) for t in tokens)
     return BillTokenProfile(
         enriched,
@@ -245,6 +395,7 @@ def compute_idf_from_corpus(
     *,
     since: date,
     until: date,
+    config: TokenSourceConfig = _DEFAULT_TOKEN_CONFIG,
 ) -> dict[str, float]:
     """
     IDF = log((N + 1) / (df + 1)) over bills whose created date falls in [since, until].
@@ -253,8 +404,8 @@ def compute_idf_from_corpus(
     doc_tokens: list[frozenset[str]] = []
     for eb in bills:
         d = _date_only(eb.bill.created)
-        if since <= d <= until:
-            doc_tokens.append(bill_tokens(eb))
+        if since <= d <= until and similarity_eligible(eb, config):
+            doc_tokens.append(bill_tokens(eb, config=config))
     return _idf_from_doc_tokens(doc_tokens)
 
 
@@ -262,12 +413,13 @@ def compute_idf_before_date(
     bills: Sequence[EnrichedBill],
     *,
     before: date,
+    config: TokenSourceConfig = _DEFAULT_TOKEN_CONFIG,
 ) -> dict[str, float]:
     """IDF from all bills with created date strictly before ``before`` (leakage-free for selection)."""
     doc_tokens = [
-        bill_tokens(eb)
+        bill_tokens(eb, config=config)
         for eb in bills
-        if _date_only(eb.bill.created) < before
+        if _date_only(eb.bill.created) < before and similarity_eligible(eb, config)
     ]
     return _idf_from_doc_tokens(doc_tokens)
 
@@ -389,6 +541,8 @@ def _prior_matches_variant(
     qb = _as_bill_row(query)
     if variant == "V_same_vendor":
         return pb.vendor_id == qb.vendor_id
+    if variant == "V_other_vendor":
+        return pb.vendor_id != qb.vendor_id
     if variant == "V_any_vendor_same_project":
         qp = qb.label_project_id
         pp = pb.label_project_id
@@ -452,6 +606,7 @@ def predict_all_variants(
     same_vendor: list[tuple[float, int, int]] = []
     any_vendor: list[tuple[float, int, int]] = []
     same_project: list[tuple[float, int, int]] = []
+    other_vendor: list[tuple[float, int, int]] = []
 
     for bid in candidate_ids:
         prior_prof = prior_by_id.get(bid)
@@ -469,6 +624,8 @@ def predict_all_variants(
         any_vendor.append(row)
         if pb.vendor_id == q_vendor:
             same_vendor.append(row)
+        else:
+            other_vendor.append(row)
         pp = pb.label_project_id
         if q_project is not None and pp is not None and pp == q_project:
             same_project.append(row)
@@ -479,6 +636,7 @@ def predict_all_variants(
         "V_any_vendor_same_project": _vote_from_scored(
             _top_k_scored(same_project, top_k), top_k
         ),
+        "V_other_vendor": _vote_from_scored(_top_k_scored(other_vendor, top_k), top_k),
     }
 
 
@@ -541,11 +699,12 @@ def predict_similarity(
     band_pct: float,
     cap_ratio: float,
     token_index: dict[str, set[int]],
-    prior_by_id: dict[int, EnrichedBill],
+    prior_by_id: dict[int, BillTokenProfile],
+    config: TokenSourceConfig = _DEFAULT_TOKEN_CONFIG,
 ) -> SimilarPrediction:
     """Single-variant predict (tests): builds profiles on the fly."""
-    qprof = token_profile(query, idf)
-    pprofiles = [token_profile(p, idf) for p in priors]
+    qprof = token_profile(query, idf, config=config)
+    pprofiles = [token_profile(p, idf, config=config) for p in priors]
     pby_id = {p.enriched.bill.bill_id: p for p in pprofiles}
     preds = predict_all_variants(
         qprof,
@@ -567,10 +726,11 @@ def text_similarity(
     *,
     band_pct: float,
     cap_ratio: float,
+    config: TokenSourceConfig = _DEFAULT_TOKEN_CONFIG,
 ) -> float:
     return text_similarity_profiles(
-        token_profile(query, idf),
-        token_profile(prior, idf),
+        token_profile(query, idf, config=config),
+        token_profile(prior, idf, config=config),
         idf,
         band_pct=band_pct,
         cap_ratio=cap_ratio,
@@ -611,6 +771,7 @@ def score_all_rolling(
     top_k: int,
     band_pct: float,
     cap_ratio: float,
+    token_config: TokenSourceConfig = _DEFAULT_TOKEN_CONFIG,
 ) -> list[FullyScoredBill]:
     history_scored = score_bills_rolling([eb.bill for eb in enriched])
     history_by_id = {sb.bill.bill_id: sb for sb in history_scored}
@@ -624,17 +785,21 @@ def score_all_rolling(
 
     for eb in ordered:
         hs = history_by_id[eb.bill.bill_id]
-        qprof = token_profile(eb, idf)
-        sim_preds = predict_all_variants(
-            qprof,
-            prior_profiles,
-            idf,
-            top_k=top_k,
-            band_pct=band_pct,
-            cap_ratio=cap_ratio,
-            token_index=token_index,
-            prior_by_id=prior_by_id,
-        )
+        if similarity_eligible(eb, token_config):
+            qprof = token_profile(eb, idf, config=token_config)
+            sim_preds = predict_all_variants(
+                qprof,
+                prior_profiles,
+                idf,
+                top_k=top_k,
+                band_pct=band_pct,
+                cap_ratio=cap_ratio,
+                token_index=token_index,
+                prior_by_id=prior_by_id,
+            )
+        else:
+            qprof = None
+            sim_preds = empty_similar_predictions()
         out.append(
             FullyScoredBill(
                 enriched=eb,
@@ -643,10 +808,65 @@ def score_all_rolling(
                 similar=sim_preds,
             )
         )
-        prior_profiles.append(qprof)
-        prior_by_id[eb.bill.bill_id] = qprof
-        for tok in qprof.tokens:
-            token_index[tok].add(eb.bill.bill_id)
+        if qprof is not None:
+            prior_profiles.append(qprof)
+            prior_by_id[eb.bill.bill_id] = qprof
+            for tok in qprof.tokens:
+                token_index[tok].add(eb.bill.bill_id)
+
+    return out
+
+
+def rescore_similar_rolling(
+    enriched: Sequence[EnrichedBill],
+    idf: dict[str, float],
+    *,
+    history_source: Sequence[FullyScoredBill],
+    top_k: int,
+    band_pct: float,
+    cap_ratio: float,
+    token_config: TokenSourceConfig = _DEFAULT_TOKEN_CONFIG,
+) -> list[FullyScoredBill]:
+    """Re-run similarity only; history modes are copied from ``history_source``."""
+    history_by_id = {row.enriched.bill.bill_id: row for row in history_source}
+
+    ordered = sorted(enriched, key=lambda eb: (eb.bill.created, eb.bill.bill_id))
+    prior_profiles: list[BillTokenProfile] = []
+    prior_by_id: dict[int, BillTokenProfile] = {}
+    token_index: dict[str, set[int]] = defaultdict(set)
+
+    out: list[FullyScoredBill] = []
+
+    for eb in ordered:
+        hs_row = history_by_id[eb.bill.bill_id]
+        if similarity_eligible(eb, token_config):
+            qprof = token_profile(eb, idf, config=token_config)
+            sim_preds = predict_all_variants(
+                qprof,
+                prior_profiles,
+                idf,
+                top_k=top_k,
+                band_pct=band_pct,
+                cap_ratio=cap_ratio,
+                token_index=token_index,
+                prior_by_id=prior_by_id,
+            )
+        else:
+            qprof = None
+            sim_preds = empty_similar_predictions()
+        out.append(
+            FullyScoredBill(
+                enriched=eb,
+                history_a=hs_row.history_a,
+                history_b=hs_row.history_b,
+                similar=sim_preds,
+            )
+        )
+        if qprof is not None:
+            prior_profiles.append(qprof)
+            prior_by_id[eb.bill.bill_id] = qprof
+            for tok in qprof.tokens:
+                token_index[tok].add(eb.bill.bill_id)
 
     return out
 
@@ -656,25 +876,243 @@ def eval_window_rows(
     *,
     eval_since: date,
     eval_until: date,
+    token_config: TokenSourceConfig = _DEFAULT_TOKEN_CONFIG,
 ) -> list[FullyScoredBill]:
-    return [
+    rows = [
         row
         for row in scored
         if eval_since <= _date_only(row.enriched.bill.created) <= eval_until
     ]
+    if (
+        token_config.requires_pdf_population
+        or token_config.population_bill_ids is not None
+    ):
+        rows = [row for row in rows if similarity_eligible(row.enriched, token_config)]
+    return rows
 
 
-def cal_window_rows(
-    scored: Sequence[FullyScoredBill],
+def filter_blob_urls_to_coded_bills(
+    blob_urls: Mapping[int, str],
+    enriched: Sequence[EnrichedBill],
+) -> dict[int, str]:
+    coded_ids = {eb.bill.bill_id for eb in enriched}
+    return {bid: url for bid, url in blob_urls.items() if bid in coded_ids}
+
+
+def compute_population_counts(
+    enriched: Sequence[EnrichedBill],
     *,
     cal_since: date,
     cal_until: date,
-) -> list[FullyScoredBill]:
-    return [
-        row
-        for row in scored
-        if cal_since <= _date_only(row.enriched.bill.created) <= cal_until
-    ]
+    eval_since: date,
+    eval_until: date,
+    token_config: TokenSourceConfig,
+) -> PopulationCounts:
+    pdf_ids = token_config.usable_pdf_bill_ids
+    eval_all = sum(
+        1
+        for eb in enriched
+        if eval_since <= _date_only(eb.bill.created) <= eval_until
+    )
+    cal_all = sum(
+        1
+        for eb in enriched
+        if cal_since <= _date_only(eb.bill.created) <= cal_until
+    )
+    eval_pdf = sum(
+        1
+        for eb in enriched
+        if eval_since <= _date_only(eb.bill.created) <= eval_until
+        and eb.bill.bill_id in pdf_ids
+    )
+    cal_pdf = sum(
+        1
+        for eb in enriched
+        if cal_since <= _date_only(eb.bill.created) <= cal_until
+        and eb.bill.bill_id in pdf_ids
+    )
+    return PopulationCounts(
+        all_coded_bills=len(enriched),
+        with_usable_pdf_text=len(pdf_ids),
+        eval_all=eval_all,
+        eval_pdf_population=eval_pdf,
+        cal_all=cal_all,
+        cal_pdf_population=cal_pdf,
+    )
+
+
+def load_scc_name_tokens_from_db() -> dict[int, frozenset[str]]:
+    out: dict[int, frozenset[str]] = {}
+    with get_connection() as conn:
+        conn.autocommit = False
+        try:
+            cur = conn.cursor()
+            cur.execute(_CATALOG_MASK_SQL)
+            for row in cur.fetchall():
+                parts: list[str] = []
+                if row.Name:
+                    parts.append(str(row.Name))
+                if row.CostCodeName:
+                    parts.append(str(row.CostCodeName))
+                out[int(row.Id)] = tokenize_bill_text(" ".join(parts))
+        finally:
+            conn.rollback()
+    return out
+
+
+def catalog_mask_from_scc_names(
+    scc_name_tokens: Mapping[int, frozenset[str]],
+) -> frozenset[str]:
+    return frozenset(tok for toks in scc_name_tokens.values() for tok in toks)
+
+
+def load_catalog_mask_tokens_from_db() -> frozenset[str]:
+    return catalog_mask_from_scc_names(load_scc_name_tokens_from_db())
+
+
+def _read_blob_with_timeout(
+    read_blob: Callable[[str], str],
+    url: str,
+    timeout_seconds: float,
+) -> str:
+    if timeout_seconds <= 0:
+        return read_text_blob_with_retry(read_blob, url)
+    result: list[str] = []
+    error: list[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            result.append(read_text_blob_with_retry(read_blob, url))
+        except BaseException as exc:
+            error.append(exc)
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout_seconds)
+    if thread.is_alive():
+        raise TimeoutError(f"blob read timed out after {timeout_seconds}s")
+    if error:
+        raise error[0]
+    if not result:
+        raise RuntimeError("blob read finished without result")
+    return result[0]
+
+
+def _read_one_pdf_text(
+    bill_id: int,
+    url: str,
+    read_blob: Callable[[str], str],
+    timeout_seconds: float,
+) -> tuple[int, Optional[frozenset[str]], str]:
+    """Returns (bill_id, tokens_or_none, outcome) where outcome is ok|stale|empty|error."""
+    try:
+        raw = _read_blob_with_timeout(read_blob, url, timeout_seconds)
+    except (TimeoutError, Exception):
+        return bill_id, None, "error"
+    text, outcome = _pdf_text_from_raw_blob(raw)
+    if outcome != "ok" or text is None:
+        return bill_id, None, outcome
+    return bill_id, tokenize_bill_text(text), "ok"
+
+
+def load_pdf_text_by_bill_id(
+    blob_urls: Mapping[int, str],
+    *,
+    read_blob: Callable[[str], str],
+    max_workers: int = DEFAULT_PDF_READ_WORKERS,
+    timeout_seconds: float = DEFAULT_PDF_READ_TIMEOUT_SECONDS,
+    progress: Callable[[int, int], None] | None = None,
+) -> tuple[dict[int, frozenset[str]], PdfTextLoadStats]:
+    linked = len(blob_urls)
+    stats = PdfTextLoadStats(linked=linked)
+    pdf_tokens: dict[int, frozenset[str]] = {}
+    if not blob_urls:
+        return pdf_tokens, stats
+
+    items = list(blob_urls.items())
+    done = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(
+                _read_one_pdf_text, bid, url, read_blob, timeout_seconds
+            ): bid
+            for bid, url in items
+        }
+        for fut in as_completed(futures):
+            done += 1
+            if progress is not None:
+                progress(done, linked)
+            try:
+                bill_id, tokens, outcome = fut.result()
+            except Exception:
+                stats = PdfTextLoadStats(
+                    linked=stats.linked,
+                    read_ok=stats.read_ok,
+                    stale_redaction=stats.stale_redaction,
+                    read_error=stats.read_error + 1,
+                    empty_content=stats.empty_content,
+                )
+                continue
+            if outcome == "ok" and tokens is not None:
+                pdf_tokens[bill_id] = tokens
+                stats = PdfTextLoadStats(
+                    linked=stats.linked,
+                    read_ok=stats.read_ok + 1,
+                    stale_redaction=stats.stale_redaction,
+                    read_error=stats.read_error,
+                    empty_content=stats.empty_content,
+                )
+            elif outcome == "stale":
+                stats = PdfTextLoadStats(
+                    linked=stats.linked,
+                    read_ok=stats.read_ok,
+                    stale_redaction=stats.stale_redaction + 1,
+                    read_error=stats.read_error,
+                    empty_content=stats.empty_content,
+                )
+            elif outcome == "empty":
+                stats = PdfTextLoadStats(
+                    linked=stats.linked,
+                    read_ok=stats.read_ok,
+                    stale_redaction=stats.stale_redaction,
+                    read_error=stats.read_error,
+                    empty_content=stats.empty_content + 1,
+                )
+            else:
+                stats = PdfTextLoadStats(
+                    linked=stats.linked,
+                    read_ok=stats.read_ok,
+                    stale_redaction=stats.stale_redaction,
+                    read_error=stats.read_error + 1,
+                    empty_content=stats.empty_content,
+                )
+    return pdf_tokens, stats
+
+
+def compute_leakage_shares(
+    eval_rows: Sequence[FullyScoredBill],
+    *,
+    token_config: TokenSourceConfig,
+    scc_name_tokens: Mapping[int, frozenset[str]],
+    catalog_mask_tokens: frozenset[str],
+) -> dict[str, Optional[float]]:
+    """Share of eval bills whose tokens hit own label SCC name and any catalog name."""
+    n = len(eval_rows)
+    if n == 0:
+        return {"own_label_scc_name": None, "any_catalog_name": None}
+    own_hits = 0
+    catalog_hits = 0
+    for row in eval_rows:
+        toks = bill_tokens(row.enriched, config=token_config)
+        label_tokens = scc_name_tokens.get(row.enriched.bill.label_scc_id, frozenset())
+        if toks & label_tokens:
+            own_hits += 1
+        if catalog_mask_tokens and toks & catalog_mask_tokens:
+            catalog_hits += 1
+    return {
+        "own_label_scc_name": own_hits / n,
+        "any_catalog_name": catalog_hits / n if catalog_mask_tokens else None,
+    }
 
 
 class _PredView:
@@ -718,6 +1156,33 @@ def top1_metrics(
         ),
         "covered_bill": _weighted_accuracy(covered_pairs),
         "covered_dollar": _dollar_accuracy(covered_pairs),
+    }
+
+
+def head_to_head_block(
+    eval_rows: Sequence[FullyScoredBill],
+    pred_fn: Callable[[FullyScoredBill], Any],
+) -> dict[str, Any]:
+    m = top1_metrics(eval_rows, pred_fn)
+    return {
+        "bill": float(m["bill"]) if m["bill"] is not None else None,
+        "dollar": float(m["dollar"]) if m["dollar"] is not None else None,
+        "coverage_bill": (
+            float(m["coverage_bill"]) if m["coverage_bill"] is not None else None
+        ),
+        "coverage_dollar": (
+            float(m["coverage_dollar"])
+            if m["coverage_dollar"] is not None
+            else None
+        ),
+        "covered_bill": (
+            float(m["covered_bill"]) if m["covered_bill"] is not None else None
+        ),
+        "covered_dollar": (
+            float(m["covered_dollar"])
+            if m["covered_dollar"] is not None
+            else None
+        ),
     }
 
 
@@ -841,6 +1306,7 @@ def pick_variants_on_calibration(
     top_k: int,
     band_pct: float,
     cap_ratio: float,
+    token_config: TokenSourceConfig = _DEFAULT_TOKEN_CONFIG,
 ) -> CalibrationSelection:
     """
     One rolling pass over bills; pick Mode A and Mode B variants from the same
@@ -857,8 +1323,13 @@ def pick_variants_on_calibration(
 
     for eb in ordered:
         d = _date_only(eb.bill.created)
-        qprof = token_profile(eb, idf_for_selection)
-        if cal_since <= d <= cal_until:
+        eligible = similarity_eligible(eb, token_config)
+        qprof = (
+            token_profile(eb, idf_for_selection, config=token_config)
+            if eligible
+            else None
+        )
+        if cal_since <= d <= cal_until and qprof is not None:
             sims = predict_all_variants(
                 qprof,
                 prior_profiles,
@@ -879,10 +1350,11 @@ def pick_variants_on_calibration(
                     cal_records[v].append(
                         (True, sp.predicted_scc_id == label, amt)
                     )
-        prior_profiles.append(qprof)
-        prior_by_id[eb.bill.bill_id] = qprof
-        for tok in qprof.tokens:
-            token_index[tok].add(eb.bill.bill_id)
+        if qprof is not None:
+            prior_profiles.append(qprof)
+            prior_by_id[eb.bill.bill_id] = qprof
+            for tok in qprof.tokens:
+                token_index[tok].add(eb.bill.bill_id)
 
     cal_metrics = {
         v: _metrics_from_cal_records(cal_records[v]) for v in VARIANTS
@@ -989,6 +1461,13 @@ class FillInMetrics:
     coverage_with_neighbour: dict[str, Decimal]
 
 
+_ABSENT_SIMILAR = SimilarPrediction(None, None, 0, 0)
+
+
+def _similar_prediction(row: FullyScoredBill, variant: str) -> SimilarPrediction:
+    return row.similar.get(variant, _ABSENT_SIMILAR)
+
+
 def compute_fill_in_metrics(
     eval_rows: Sequence[FullyScoredBill],
 ) -> FillInMetrics:
@@ -1003,19 +1482,19 @@ def compute_fill_in_metrics(
         hist = row.history_a
         label = row.enriched.bill.label_scc_id
         for v in VARIANTS:
-            if row.similar[v].top_k_used >= 1:
+            if _similar_prediction(row, v).top_k_used >= 1:
                 neighbour_hits[v] += 1
 
         if history_abstained(hist):
             abstain_n += 1
             for v in VARIANTS:
-                sp = row.similar[v]
+                sp = _similar_prediction(row, v)
                 if sp.predicted_scc_id is not None and sp.predicted_scc_id == label:
                     abstain_correct[v] += 1
         elif not history_is_strong(hist):
             weak_n += 1
             for v in VARIANTS:
-                sp = row.similar[v]
+                sp = _similar_prediction(row, v)
                 if sp.predicted_scc_id is not None and sp.predicted_scc_id == label:
                     weak_correct[v] += 1
 
@@ -1142,34 +1621,23 @@ def build_summary(
     runtime_seconds: float,
     bill_count: int,
     constants: dict[str, Any],
+    token_config: TokenSourceConfig = _DEFAULT_TOKEN_CONFIG,
+    population: PopulationCounts | None = None,
+    pdf_load_stats: PdfTextLoadStats | None = None,
+    leakage: dict[str, Optional[float]] | None = None,
+    leakage_descriptions: dict[str, Optional[float]] | None = None,
+    masked_descriptions_h2h: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     eval_rows = eval_window_rows(
-        scored, eval_since=eval_since, eval_until=eval_until
+        scored,
+        eval_since=eval_since,
+        eval_until=eval_until,
+        token_config=token_config,
     )
     h2h: dict[str, dict[str, Any]] = {}
 
     def acc_for(pred_fn: Callable[[FullyScoredBill], Any]) -> dict[str, Any]:
-        m = top1_metrics(eval_rows, pred_fn)
-        return {
-            "bill": float(m["bill"]) if m["bill"] is not None else None,
-            "dollar": float(m["dollar"]) if m["dollar"] is not None else None,
-            "coverage_bill": (
-                float(m["coverage_bill"]) if m["coverage_bill"] is not None else None
-            ),
-            "coverage_dollar": (
-                float(m["coverage_dollar"])
-                if m["coverage_dollar"] is not None
-                else None
-            ),
-            "covered_bill": (
-                float(m["covered_bill"]) if m["covered_bill"] is not None else None
-            ),
-            "covered_dollar": (
-                float(m["covered_dollar"])
-                if m["covered_dollar"] is not None
-                else None
-            ),
-        }
+        return head_to_head_block(eval_rows, pred_fn)
 
     h2h["history_a"] = acc_for(lambda r: r.history_a)
     h2h["history_b"] = acc_for(lambda r: r.history_b)
@@ -1221,9 +1689,41 @@ def build_summary(
 
     all_bills = [row.enriched for row in scored]
 
+    pop_block: dict[str, Any] | None = None
+    if population is not None:
+        pop_block = {
+            "all_coded_bills": population.all_coded_bills,
+            "with_usable_pdf_text": population.with_usable_pdf_text,
+            "eval_window_all": population.eval_all,
+            "eval_window_pdf_population": population.eval_pdf_population,
+            "cal_window_all": population.cal_all,
+            "cal_window_pdf_population": population.cal_pdf_population,
+        }
+    pdf_stats_block: dict[str, int] | None = None
+    if pdf_load_stats is not None:
+        pdf_stats_block = {
+            "linked": pdf_load_stats.linked,
+            "read_ok": pdf_load_stats.read_ok,
+            "stale_redaction": pdf_load_stats.stale_redaction,
+            "read_error": pdf_load_stats.read_error,
+            "empty_content": pdf_load_stats.empty_content,
+        }
+
     return {
         "model_version": MODEL_VERSION,
         "history_model_version": HISTORY_MODEL_VERSION,
+        "text_source": token_config.text_source,
+        "history_prior_note": (
+            "History Modes A/B use all coded bills before each eval bill (not restricted "
+            "to the PDF-text population)."
+            if token_config.requires_pdf_population
+            else None
+        ),
+        "population": pop_block,
+        "pdf_blob_load": pdf_stats_block,
+        "leakage_check": leakage,
+        "leakage_check_descriptions_on_pdf_eval": leakage_descriptions,
+        "masked_descriptions_on_pdf_population": masked_descriptions_h2h,
         "scoring_convention": (
             "head_to_head top-1 over all evaluated bills; abstention counts as wrong; "
             "coverage and covered precision reported separately"
@@ -1323,11 +1823,22 @@ def write_outputs(
     stamp: str,
     scored: Sequence[FullyScoredBill],
     summary: dict[str, Any],
+    token_config: TokenSourceConfig | None = None,
+    eval_rows: Sequence[FullyScoredBill] | None = None,
 ) -> tuple[Path, Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     report_path = out_dir / f"u691_report_{stamp}.md"
     csv_path = out_dir / f"u691_predictions_{stamp}.csv"
     json_path = out_dir / f"u691_summary_{stamp}.json"
+
+    text_source = summary.get("text_source") or summary.get("constants", {}).get(
+        "text_source", TEXT_SOURCE_DESCRIPTIONS
+    )
+    if text_source in (TEXT_SOURCE_PDF, TEXT_SOURCE_PDF_PLUS_MASKED_DESCRIPTIONS):
+        if token_config is None or eval_rows is None:
+            raise ValueError(
+                "PDF mode write_outputs requires token_config and eval_rows"
+            )
 
     json_path.write_text(
         json.dumps(summary, indent=2, sort_keys=True, default=_json_default),
@@ -1335,11 +1846,18 @@ def write_outputs(
     )
 
     windows = summary["windows"]
-    eval_since = date.fromisoformat(windows["eval_since"])
-    eval_until = date.fromisoformat(windows["eval_until"])
-    eval_rows = eval_window_rows(
-        scored, eval_since=eval_since, eval_until=eval_until
-    )
+    if eval_rows is None:
+        eval_since = date.fromisoformat(windows["eval_since"])
+        eval_until = date.fromisoformat(windows["eval_until"])
+        if token_config is None:
+            token_source = summary.get("text_source", TEXT_SOURCE_DESCRIPTIONS)
+            token_config = TokenSourceConfig(text_source=str(token_source))
+        eval_rows = eval_window_rows(
+            scored,
+            eval_since=eval_since,
+            eval_until=eval_until,
+            token_config=token_config,
+        )
 
     with csv_path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
@@ -1410,10 +1928,15 @@ def write_outputs(
     best_variant_b = summary.get("best_variant_mode_b", "")
     constants = summary.get("constants", {})
 
+    pop = summary.get("population") or {}
+    pdf_load = summary.get("pdf_blob_load") or {}
+    leakage = summary.get("leakage_check") or {}
+    leakage_desc = summary.get("leakage_check_descriptions_on_pdf_eval") or {}
     lines = [
         f"# U-691 similar bills backtest ({stamp})",
         "",
         f"- Harness: `{MODEL_VERSION}` (history `{HISTORY_MODEL_VERSION}`)",
+        f"- Text source: `{summary.get('text_source', TEXT_SOURCE_DESCRIPTIONS)}`",
         f"- Bills loaded: {summary.get('bill_count', 0)}",
         f"- Runtime (scoring): {summary.get('runtime_seconds', 0):.2f}s",
         f"- Scoring: {summary.get('scoring_convention', '')}",
@@ -1427,16 +1950,94 @@ def write_outputs(
         f"- Best similarity variant (calibration top-1-over-all): `{best_variant}`",
         f"- Best variant for Mode B combined: `{best_variant_b}`",
         "",
-        "## head_to_head (top-1 over all | coverage bill | covered bill | covered dollar)",
-        "",
-        "| method | bill | dollar | cov_bill | cov_$ | cov_prec_bill | cov_prec_$ |",
-        "|--------|------|--------|----------|-------|---------------|-------------|",
     ]
+    hist_note = summary.get("history_prior_note")
+    if hist_note:
+        lines.append(f"- {hist_note}")
+        lines.append("")
+    if pop:
+        lines.extend(
+            [
+                "## population",
+                "",
+                f"- all coded bills: {pop.get('all_coded_bills', 0)}",
+                f"- with usable PDF text: {pop.get('with_usable_pdf_text', 0)}",
+                f"- eval window (all / PDF population): "
+                f"{pop.get('eval_window_all', 0)} / {pop.get('eval_window_pdf_population', 0)}",
+                f"- cal window (all / PDF population): "
+                f"{pop.get('cal_window_all', 0)} / {pop.get('cal_window_pdf_population', 0)}",
+                "",
+            ]
+        )
+    if pdf_load:
+        lines.extend(
+            [
+                "## pdf_blob_load",
+                "",
+                f"- linked: {pdf_load.get('linked', 0)}",
+                f"- read_ok: {pdf_load.get('read_ok', 0)}",
+                f"- stale_redaction: {pdf_load.get('stale_redaction', 0)}",
+                f"- read_error: {pdf_load.get('read_error', 0)}",
+                f"- empty_content: {pdf_load.get('empty_content', 0)}",
+                "",
+            ]
+        )
+    if leakage:
+        lines.extend(
+            [
+                "## leakage_check (eval population)",
+                "",
+                f"- share tokens ∩ own label SCC name: "
+                f"{fmt(leakage.get('own_label_scc_name'))}",
+                f"- share tokens ∩ any catalog name: "
+                f"{fmt(leakage.get('any_catalog_name'))}",
+                "",
+            ]
+        )
+    if leakage_desc:
+        lines.extend(
+            [
+                "## leakage_check (line descriptions on same PDF eval bills)",
+                "",
+                f"- share tokens ∩ own label SCC name: "
+                f"{fmt(leakage_desc.get('own_label_scc_name'))}",
+                f"- share tokens ∩ any catalog name: "
+                f"{fmt(leakage_desc.get('any_catalog_name'))}",
+                "",
+            ]
+        )
+    masked_h2h = summary.get("masked_descriptions_on_pdf_population")
+    if masked_h2h:
+        lines.extend(
+            [
+                "## descriptions_catalog_masked (same PDF eval population)",
+                "",
+                "| variant | bill | dollar | cov_bill | cov_$ | cov_prec_bill | cov_prec_$ |",
+                "|---------|------|--------|----------|-------|---------------|-------------|",
+            ]
+        )
+        for v in VARIANTS:
+            block = masked_h2h.get(v, {})
+            lines.append(
+                f"| {v} | {fmt(block.get('bill'))} | {fmt(block.get('dollar'))} | "
+                f"{fmt(block.get('coverage_bill'))} | {fmt(block.get('coverage_dollar'))} | "
+                f"{fmt(block.get('covered_bill'))} | {fmt(block.get('covered_dollar'))} |"
+            )
+        lines.append("")
+    lines.extend(
+        [
+            "## head_to_head (top-1 over all | coverage bill | covered bill | covered dollar)",
+            "",
+            "| method | bill | dollar | cov_bill | cov_$ | cov_prec_bill | cov_prec_$ |",
+            "|--------|------|--------|----------|-------|---------------|-------------|",
+        ]
+    )
     for key, label in (
         ("history_a", "history_a"),
         ("history_b", "history_b"),
         ("V_same_vendor", "V_same_vendor"),
         ("V_any_vendor", "V_any_vendor"),
+        ("V_other_vendor", "V_other_vendor"),
         ("V_any_vendor_same_project", "V_any_vendor_same_project (Mode-A-paired)"),
         ("combined", "combined_A"),
         ("combined_mode_b", "combined_B"),
@@ -1602,6 +2203,29 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_AMOUNT_BAND_CAP_RATIO,
         help="Zero weight beyond this total ratio (default 4.0)",
     )
+    ap.add_argument(
+        "--text-source",
+        choices=TEXT_SOURCES,
+        default=TEXT_SOURCE_DESCRIPTIONS,
+        help="Token source for similarity (default: line descriptions + memo)",
+    )
+    ap.add_argument(
+        "--mask-catalog-in-descriptions",
+        action="store_true",
+        help="Remove SubCostCode/CostCode name tokens from description/memo tokens",
+    )
+    ap.add_argument(
+        "--pdf-read-workers",
+        type=int,
+        default=DEFAULT_PDF_READ_WORKERS,
+        help="Concurrent blob reads for PDF text (default 8)",
+    )
+    ap.add_argument(
+        "--pdf-read-timeout",
+        type=float,
+        default=DEFAULT_PDF_READ_TIMEOUT_SECONDS,
+        help="Per-blob read timeout in seconds (default 120)",
+    )
     args = ap.parse_args(argv)
 
     validate_windows(
@@ -1613,20 +2237,107 @@ def main(argv: list[str] | None = None) -> int:
 
     enriched = load_enriched_bills_from_db()
     n = len(enriched)
+
+    catalog_mask_tokens: frozenset[str] = frozenset()
+    scc_name_tokens: dict[int, frozenset[str]] = {}
+
+    pdf_tokens_by_bill_id: dict[int, frozenset[str]] = {}
+    pdf_load_stats: PdfTextLoadStats | None = None
+    if args.text_source in (TEXT_SOURCE_PDF, TEXT_SOURCE_PDF_PLUS_MASKED_DESCRIPTIONS):
+        blob_urls = filter_blob_urls_to_coded_bills(
+            load_blob_urls_from_db(), enriched
+        )
+        read_blob = make_text_blob_reader()
+
+        def _progress(done: int, total: int) -> None:
+            if done == total or done % max(1, total // 20) == 0:
+                print(f"U-691: PDF blob reads {done}/{total}", flush=True)
+
+        pdf_tokens_by_bill_id, pdf_load_stats = load_pdf_text_by_bill_id(
+            blob_urls,
+            read_blob=read_blob,
+            max_workers=args.pdf_read_workers,
+            timeout_seconds=args.pdf_read_timeout,
+            progress=_progress,
+        )
+        if pdf_load_stats:
+            print(
+                "U-691: PDF load "
+                f"linked={pdf_load_stats.linked} ok={pdf_load_stats.read_ok} "
+                f"stale={pdf_load_stats.stale_redaction} err={pdf_load_stats.read_error} "
+                f"empty={pdf_load_stats.empty_content}",
+                flush=True,
+            )
+
+    mask_for_config = (
+        catalog_mask_tokens
+        if args.mask_catalog_in_descriptions
+        or args.text_source == TEXT_SOURCE_PDF_PLUS_MASKED_DESCRIPTIONS
+        else frozenset()
+    )
+    token_config = TokenSourceConfig(
+        text_source=args.text_source,
+        catalog_mask_tokens=mask_for_config,
+        pdf_tokens_by_bill_id=pdf_tokens_by_bill_id,
+    )
+    population = compute_population_counts(
+        enriched,
+        cal_since=args.cal_since,
+        cal_until=args.cal_until,
+        eval_since=args.eval_since,
+        eval_until=args.eval_until,
+        token_config=token_config,
+    )
+
     print(
-        f"U-691: loaded {n} coded bills; "
+        f"U-691: loaded {n} coded bills; text_source={args.text_source}; "
         f"cal {args.cal_since}..{args.cal_until}, eval {args.eval_since}..{args.eval_until}"
     )
+    if token_config.requires_pdf_population:
+        print(
+            f"U-691: PDF population {population.with_usable_pdf_text} bills; "
+            f"eval {population.eval_pdf_population}/{population.eval_all}",
+            flush=True,
+        )
     if not args.run:
         print("Dry-run only (pass --run to score and write outputs).")
         return 0
 
+    needs_scc_catalog = (
+        args.mask_catalog_in_descriptions
+        or args.text_source
+        in (TEXT_SOURCE_PDF, TEXT_SOURCE_PDF_PLUS_MASKED_DESCRIPTIONS)
+    )
+    if needs_scc_catalog:
+        scc_name_tokens = load_scc_name_tokens_from_db()
+        catalog_mask_tokens = catalog_mask_from_scc_names(scc_name_tokens)
+    else:
+        scc_name_tokens = {}
+        catalog_mask_tokens = frozenset()
+    mask_for_config = (
+        catalog_mask_tokens
+        if args.mask_catalog_in_descriptions
+        or args.text_source == TEXT_SOURCE_PDF_PLUS_MASKED_DESCRIPTIONS
+        else frozenset()
+    )
+    token_config = TokenSourceConfig(
+        text_source=args.text_source,
+        catalog_mask_tokens=mask_for_config,
+        pdf_tokens_by_bill_id=pdf_tokens_by_bill_id,
+    )
+
     t0 = time.perf_counter()
     idf_eval = compute_idf_from_corpus(
-        enriched, since=args.cal_since, until=args.cal_until
+        enriched,
+        since=args.cal_since,
+        until=args.cal_until,
+        config=token_config,
     )
     idf_selection = compute_idf_from_corpus(
-        enriched, since=args.cal_since, until=args.cal_until
+        enriched,
+        since=args.cal_since,
+        until=args.cal_until,
+        config=token_config,
     )
     selection = pick_variants_on_calibration(
         enriched,
@@ -1636,6 +2347,7 @@ def main(argv: list[str] | None = None) -> int:
         top_k=args.top_k,
         band_pct=args.amount_band_pct,
         cap_ratio=args.amount_cap_ratio,
+        token_config=token_config,
     )
     best_variant = selection.best_variant
     best_variant_mode_b = selection.best_variant_mode_b
@@ -1648,8 +2360,67 @@ def main(argv: list[str] | None = None) -> int:
         top_k=args.top_k,
         band_pct=args.amount_band_pct,
         cap_ratio=args.amount_cap_ratio,
+        token_config=token_config,
     )
     runtime = time.perf_counter() - t0
+
+    eval_rows = eval_window_rows(
+        scored,
+        eval_since=args.eval_since,
+        eval_until=args.eval_until,
+        token_config=token_config,
+    )
+    leakage = compute_leakage_shares(
+        eval_rows,
+        token_config=token_config,
+        scc_name_tokens=scc_name_tokens,
+        catalog_mask_tokens=catalog_mask_tokens,
+    )
+    leakage_descriptions: dict[str, Optional[float]] | None = None
+    if token_config.requires_pdf_population:
+        desc_config = TokenSourceConfig(text_source=TEXT_SOURCE_DESCRIPTIONS)
+        leakage_descriptions = compute_leakage_shares(
+            eval_rows,
+            token_config=desc_config,
+            scc_name_tokens=scc_name_tokens,
+            catalog_mask_tokens=catalog_mask_tokens,
+        )
+
+    masked_descriptions_h2h: dict[str, dict[str, Any]] | None = None
+    if token_config.requires_pdf_population and args.mask_catalog_in_descriptions:
+        pdf_population = frozenset(token_config.usable_pdf_bill_ids)
+        masked_config = TokenSourceConfig(
+            text_source=TEXT_SOURCE_DESCRIPTIONS,
+            catalog_mask_tokens=catalog_mask_tokens,
+            population_bill_ids=pdf_population,
+        )
+        idf_masked = compute_idf_from_corpus(
+            enriched,
+            since=args.cal_since,
+            until=args.cal_until,
+            config=masked_config,
+        )
+        scored_masked = rescore_similar_rolling(
+            enriched,
+            idf_masked,
+            history_source=scored,
+            top_k=args.top_k,
+            band_pct=args.amount_band_pct,
+            cap_ratio=args.amount_cap_ratio,
+            token_config=masked_config,
+        )
+        masked_eval = eval_window_rows(
+            scored_masked,
+            eval_since=args.eval_since,
+            eval_until=args.eval_until,
+            token_config=masked_config,
+        )
+        masked_descriptions_h2h = {
+            v: head_to_head_block(
+                masked_eval, lambda r, variant=v: r.similar[variant]
+            )
+            for v in VARIANTS
+        }
 
     constants = {
         "top_k": args.top_k,
@@ -1657,6 +2428,8 @@ def main(argv: list[str] | None = None) -> int:
         "amount_cap_ratio": args.amount_cap_ratio,
         "history_strong_raw_score": HISTORY_STRONG_RAW_SCORE,
         "min_prior_bills": MIN_PRIOR_BILLS,
+        "text_source": args.text_source,
+        "mask_catalog_in_descriptions": args.mask_catalog_in_descriptions,
     }
 
     summary = build_summary(
@@ -1671,6 +2444,12 @@ def main(argv: list[str] | None = None) -> int:
         runtime_seconds=runtime,
         bill_count=n,
         constants=constants,
+        token_config=token_config,
+        population=population,
+        pdf_load_stats=pdf_load_stats,
+        leakage=leakage,
+        leakage_descriptions=leakage_descriptions,
+        masked_descriptions_h2h=masked_descriptions_h2h,
     )
 
     stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
@@ -1679,6 +2458,8 @@ def main(argv: list[str] | None = None) -> int:
         stamp=stamp,
         scored=scored,
         summary=summary,
+        token_config=token_config,
+        eval_rows=eval_rows,
     )
     print(
         f"U-691: scored in {runtime:.2f}s; best variant={best_variant}; "

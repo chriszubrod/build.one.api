@@ -48,6 +48,10 @@ From the API repo root (with `.env` pointing at the target database):
 | `--top-k` | 10 | Neighbours per variant |
 | `--amount-band` | 0.25 | Full-weight amount band (±fraction) |
 | `--amount-cap-ratio` | 4.0 | Zero weight beyond this total ratio |
+| `--text-source` | `descriptions` | `descriptions` (line text), `pdf` (vendor PDF extraction), or `pdf_plus_masked_descriptions` |
+| `--mask-catalog-in-descriptions` | off | Strip SubCostCode/CostCode name tokens from description/memo tokens (leakage probe; also reported on PDF population when set) |
+| `--pdf-read-workers` | 8 | Concurrent blob reads (PDF modes only) |
+| `--pdf-read-timeout` | 120 | Per-blob read timeout seconds (enforced on each storage read; slow reads count as `read_error`) |
 
 Requires CLI system-admin context (`assert_cli_system_admin`). The loader extends U-653b’s `_LOAD_SQL` with line text (read-only transaction, rollback after SELECT).
 
@@ -110,3 +114,79 @@ The masked run is deliberately too strict (it also removes genuine vendor words 
 - The question the business actually needs answered is similarity over **vendor-originated text** — the invoice's own words, available before anyone codes it: the drop-path's PDF-read description (U-676h, 5-word Title Case) and the extracted PDF text (U-535a). That is Scenario 2b's data; bills linked to their PDF are 90% in 2026 but ~0–13% before (U-535b backfill).
 - **U-639b trigger: not met on leakage-free evidence** (13.8% of history misses fixed, vs the ≥ 50% bar).
 - Method lesson for every future coding backtest: features written at coding time (line description, memo) must be masked or excluded, or the evaluation measures the label.
+
+## U-694 — vendor PDF text
+
+Extends this harness to score similarity on **vendor-originated PDF text** (U-535a extraction blobs) instead of human-typed line descriptions. Default `--text-source descriptions` is unchanged from U-691.
+
+### Modes
+
+```bash
+# Default — line descriptions + memo (same as U-691)
+./.venv/bin/python -m scripts.u691_similar_bills_backtest --run
+
+# Vendor PDF text only (current redaction stamp + content field)
+./.venv/bin/python -m scripts.u691_similar_bills_backtest --run --text-source pdf
+
+# PDF tokens ∪ catalog-masked description/memo tokens
+./.venv/bin/python -m scripts.u691_similar_bills_backtest --run --text-source pdf_plus_masked_descriptions
+
+# Leakage probe on descriptions (U-691 README run 2)
+./.venv/bin/python -m scripts.u691_similar_bills_backtest --run --mask-catalog-in-descriptions
+
+# On PDF population, also report masked descriptions (like-for-like bill set)
+./.venv/bin/python -m scripts.u691_similar_bills_backtest --run --text-source pdf --mask-catalog-in-descriptions
+```
+
+### Population (PDF modes)
+
+For `pdf` and `pdf_plus_masked_descriptions`, **evaluated bills and similarity priors** are restricted to bills with usable PDF text (linked completed extraction, current TIN-masking stamp, non-empty `content`). Blob reads and `pdf_blob_load` counts (`linked`, `read_ok`, …) include **coded bills only** — URLs for non-coded bills with extractions are dropped before any read. **History Modes A/B still use all coded bills** before each eval bill as priors; the report states this explicitly. Population counts are printed and written under `population` / `pdf_blob_load` in the summary.
+
+In PDF modes the summary also reports **leakage on line descriptions** for the same PDF eval bill set (`leakage_check_descriptions_on_pdf_eval`), alongside leakage for the active text source.
+
+When `--mask-catalog-in-descriptions` is set with a PDF text source, the **descriptions_catalog_masked** row uses catalog-masked description tokens with **priors and IDF restricted to the PDF population** (same bills as the main PDF eval set), reusing history from the main scoring pass. The report table includes the same head-to-head columns as the main block.
+
+### Similarity variant `V_other_vendor`
+
+Cross-vendor neighbours only (excludes the evaluated bill’s vendor). Included in calibration selection and all report tables — separates vendor boilerplate in PDF text from content overlap.
+
+### Privacy
+
+Only blobs passing `extraction_payload_is_current` are used. After load, **only tokens** are retained in memory — raw PDF text is **never** written to CSV, JSON, or markdown (same numeric-only guard as U-654a).
+
+### Tests
+
+```bash
+./.venv/bin/python -m pytest -o addopts="" -p no:cacheprovider -q tests/test_u694_pdf_text_backtest.py
+```
+
+### Results
+
+Prod, read-only, 2026-10-21 (one SELECT + 3,757 blob reads per run; windows cal 2025-10-11..2026-04-10, eval 2026-04-11..2026-10-10). Reports: `u694_report_20261021T123148Z_pdf.md` (`--text-source pdf --mask-catalog-in-descriptions`) and `u694_report_20261021T123351Z_pdf_plus_masked.md`, with their summaries.
+
+**Population.** 19,283 coded bills; 3,757 have usable PDF text (all 3,757 linked blobs read OK, 0 stale, 0 errors). Eval window: 2,374 of 2,555 bills (93%) have PDF text. Calibration window: only 1,338 of 16,659 (PDF links are sparse before 2026), so variant selection rests on a thinner sample. Similarity priors are limited to the 3,757 PDF bills; history uses all 19,283 — similarity is handicapped on its pool, not favoured.
+
+| method (top-1 over ALL 2,374 bills; abstain = wrong) | bill | dollar | coverage | history misses fixed |
+|---|---|---|---|---|
+| history Mode A | 58.3% | 60.1% | 96.3% | — |
+| history Mode B | 44.8% | 50.9% | 96.3% | — |
+| PDF similar, same vendor | 60.5% | 65.3% | 95.0% | 23.8% |
+| **PDF similar, any vendor** (calibration-selected) | **61.0%** | **65.0%** | 99.9% | **26.2%** |
+| PDF similar, other vendors only | 27.6% | 9.9% | 99.8% | 16.7% |
+| masked descriptions, any vendor (same bills, same prior pool) | 20.9% | 4.4% | 36.3% | — |
+| combined A vs history A | 62.6% vs 58.3% | | | lift **+4.4 pts** |
+| combined B vs history B | 61.1% vs 44.8% | | | lift **+16.3 pts** |
+
+`pdf_plus_masked_descriptions` is within 0.1 pt of `pdf` on every row: masked descriptions add nothing once the PDF text is there.
+
+**Leakage.** 36.0% of evaluated bills' PDF text shares a word with their own cost code's name (descriptions on the same bills: 68.0%). The PDF words are written by the vendor before anyone codes the bill, so this is signal, not leakage — the coding-time channel is closed. (98.5% share *some* catalog word: invoices are long, so that number carries no information.)
+
+**Confidence.** Restricting to strong matches trades coverage for precision: 85.6% precise at 27.4% coverage (bar 0.80), 90.5% at 15.0% (bar 0.90).
+
+### U-694 conclusion — Scenario 2b
+
+- **Vendor PDF text is an honest, history-level signal.** Standalone it matches or slightly beats history (61.0% vs 58.3%) with no coding-time leakage, and it is far stronger than descriptions once the leak is removed (61.0% vs 20.9% on the same bills and prior pool).
+- **Most of it is within-vendor.** Other-vendors-only scores 27.6%: the text mostly re-identifies the vendor and then finds which of that vendor's past bills it resembles. Cross-vendor content similarity is weak.
+- **As a fill-in behind history it adds +4.4 pts when the project is known (Mode A) and +16.3 pts when it is not (Mode B).**
+- **U-639b trigger: not met** (26.2% of history misses fixed vs the ≥ 50% bar), though it is double the leakage-free descriptions figure (13.8%).
+- Known gap (deferred): with neither `--mask-catalog-in-descriptions` nor a PDF source, the catalog is not loaded and the descriptions-mode `leakage_check.own_label_scc_name` prints 0.0 instead of "unavailable". It does not affect any run above.

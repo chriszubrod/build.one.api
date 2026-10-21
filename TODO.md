@@ -345,6 +345,12 @@ is driven elsewhere — so re-completion does not re-evaluate that hash today.
 | **QBO-77525** | **HP2 SharePoint `DETAILS`** | **2314** | `0` / `0.02` | `34` / `34` | **$107.52** |
 | QBO-77525 | HP2 Box `DETAILS` (file `2272202433598`) | not read | presumed same | `34` / `34` | same row |
 
+⚠️ **Receipts filed under `00.02` — QBO-76865 and QBO-77525.** Both were approved and completed via local
+service code on 2026-10-20/21 with `ALLOW_MS_WRITES=false`, so completion's SharePoint/Box pushes were refused
+and each still has only its pre-recode receipt filed under the suspense code (`00.02` in the filename) rather
+than its final code. Per Chris 2026-10-21: do **NOT** re-drive these through the CompletionJob reclaim path —
+the repair mode (U-692c) is what fixes them. Listed here so the repair has the refs.
+
 ⚠️ **QBO-77525 (added 2026-10-21, expense 32252, line 13162) is on HP2 — 4406 Harding Pike, an ACTIVE job.**
 Unlike the HE12 rows, which Chris deferred because that job is not active in practice, this $107.52 is
 excluded from a subtotal somebody is reading. It is a **pre-U-692a** record: the pull wrote its artifacts

@@ -1,0 +1,247 @@
+{
+  "best_variant": "V_same_vendor",
+  "best_variant_mode_b": "V_same_vendor",
+  "bill_count": 19238,
+  "calibration_best_variant": {
+    "bin_confidence": [
+      0.28314606741573034,
+      0.3685393258426966,
+      0.4337078651685393,
+      0.6,
+      0.7595505617977528,
+      0.6889089269612263
+    ],
+    "bin_edges": [
+      0.20411760723135144,
+      0.49453750911304173,
+      0.602505836339358,
+      0.7305507350361563,
+      0.8409526736359137,
+      0.9473840618156215,
+      1.0
+    ],
+    "model_version": "u653a-history-v1"
+  },
+  "calibration_selection_warnings": [],
+  "calibration_variant_metrics": {
+    "V_any_vendor": {
+      "bill": 0.14268563539228044,
+      "coverage_bill": 0.38981931688576743,
+      "coverage_dollar": 0.3741929237495827,
+      "covered_bill": 0.36603018170619034,
+      "covered_dollar": 0.26477486543666023,
+      "dollar": 0.09907688103314623
+    },
+    "V_any_vendor_same_project": {
+      "bill": 0.11093102827300558,
+      "coverage_bill": 0.24203133441383037,
+      "coverage_dollar": 0.24727647617774587,
+      "covered_bill": 0.4583333333333333,
+      "covered_dollar": 0.2835268307915474,
+      "dollar": 0.07010951561997784
+    },
+    "V_same_vendor": {
+      "bill": 0.1570322348280209,
+      "coverage_bill": 0.26670268323428775,
+      "coverage_dollar": 0.23298139033139995,
+      "covered_bill": 0.5887913571910871,
+      "covered_dollar": 0.6904127242499062,
+      "dollar": 0.16085331639823258
+    }
+  },
+  "combined_policy": {
+    "combined": 0.6198509219301687,
+    "combined_mode_b": 0.5296194586112201,
+    "history_a": 0.5963122793252256,
+    "history_b": 0.46959591996861516,
+    "lift_bill_top1_over_all": 0.0235386426049431,
+    "lift_mode_b_bill_top1_over_all": 0.06002353864260494
+  },
+  "confidence_sweep": [
+    [
+      0.5,
+      0.7147766323024055,
+      0.3424872499019223
+    ],
+    [
+      0.6,
+      0.7331606217616581,
+      0.3028638681836014
+    ],
+    [
+      0.7,
+      0.7503875968992249,
+      0.2530404080031385
+    ],
+    [
+      0.8,
+      0.7623574144486692,
+      0.20635543350333463
+    ],
+    [
+      0.85,
+      0.7744034707158352,
+      0.1808552373479796
+    ],
+    [
+      0.9,
+      0.7843137254901961,
+      0.1600627697136132
+    ]
+  ],
+  "constants": {
+    "amount_band_pct": 0.25,
+    "amount_cap_ratio": 4.0,
+    "history_strong_raw_score": 0.6,
+    "min_prior_bills": 3,
+    "top_k": 10
+  },
+  "fill_in": {
+    "abstain_accuracy": {
+      "V_any_vendor": 0.18681318681318682,
+      "V_any_vendor_same_project": 0.15384615384615385,
+      "V_same_vendor": 0.10989010989010989
+    },
+    "abstain_count": 91,
+    "coverage": {
+      "V_any_vendor": 0.4782267555904276,
+      "V_any_vendor_same_project": 0.33934876422126325,
+      "V_same_vendor": 0.39741074931345627
+    },
+    "weak_accuracy": {
+      "V_any_vendor": 0.23842794759825328,
+      "V_any_vendor_same_project": 0.19563318777292577,
+      "V_same_vendor": 0.23231441048034934
+    },
+    "weak_count": 1145
+  },
+  "head_to_head": {
+    "V_any_vendor": {
+      "bill": 0.26441741859552764,
+      "coverage_bill": 0.4782267555904276,
+      "coverage_dollar": 0.25140435616144063,
+      "covered_bill": 0.5529122231337161,
+      "covered_dollar": 0.37945606172933244,
+      "dollar": 0.09539690689061871
+    },
+    "V_any_vendor_same_project": {
+      "bill": 0.2228324833267948,
+      "coverage_bill": 0.33934876422126325,
+      "coverage_dollar": 0.151280405874687,
+      "covered_bill": 0.6566473988439306,
+      "covered_dollar": 0.3724891748083475,
+      "dollar": 0.056350313548934036,
+      "paired_with_history": "history_a",
+      "pairing_note": "Uses evaluated bill label project; comparable to history Mode A only."
+    },
+    "V_same_vendor": {
+      "bill": 0.2663789721459396,
+      "coverage_bill": 0.39741074931345627,
+      "coverage_dollar": 0.16041360955224104,
+      "covered_bill": 0.6702862783810464,
+      "covered_dollar": 0.664807100817125,
+      "dollar": 0.10664410669803565
+    },
+    "combined": {
+      "bill": 0.6198509219301687,
+      "coverage_bill": 0.9693997646135739,
+      "coverage_dollar": 0.9543841080296649,
+      "covered_bill": 0.6394172399838122,
+      "covered_dollar": 0.6427648837273102,
+      "dollar": 0.6134445902288802
+    },
+    "combined_mode_b": {
+      "bill": 0.5296194586112201,
+      "coverage_bill": 0.9693997646135739,
+      "coverage_dollar": 0.9543841080296649,
+      "covered_bill": 0.5463375151760421,
+      "covered_dollar": 0.5884467502215194,
+      "dollar": 0.5616042268331197
+    },
+    "history_a": {
+      "bill": 0.5963122793252256,
+      "coverage_bill": 0.964299725382503,
+      "coverage_dollar": 0.9534689653492209,
+      "covered_bill": 0.6183889340927583,
+      "covered_dollar": 0.6368247655097048,
+      "dollar": 0.6071926502792985
+    },
+    "history_b": {
+      "bill": 0.46959591996861516,
+      "coverage_bill": 0.964299725382503,
+      "coverage_dollar": 0.9534689653492209,
+      "covered_bill": 0.4869812855980472,
+      "covered_dollar": 0.5469806906037272,
+      "dollar": 0.5215291131359381
+    }
+  },
+  "history_model_version": "u653a-history-v1",
+  "idf_eval_corpus": "2025-10-11..2026-04-10",
+  "idf_selection_corpus": "2025-10-11..2026-04-10",
+  "line_count": {
+    "1": {
+      "bill": 0.26423785594639865,
+      "coverage_bill": 0.3739530988274707,
+      "covered_bill": 0.7066069428891377,
+      "n": 2388
+    },
+    "2-3": {
+      "bill": 0.3333333333333333,
+      "coverage_bill": 0.7555555555555555,
+      "covered_bill": 0.4411764705882353,
+      "n": 135
+    },
+    "4+": {
+      "bill": 0.11538461538461539,
+      "coverage_bill": 0.6923076923076923,
+      "covered_bill": 0.16666666666666666,
+      "n": 26
+    }
+  },
+  "model_version": "u691-similar-bills-v1",
+  "runtime_seconds": 6.166649916907772,
+  "scoring_convention": "head_to_head top-1 over all evaluated bills; abstention counts as wrong; coverage and covered precision reported separately",
+  "trigger_on_history_miss": {
+    "V_any_vendor": 0.1379980563654033,
+    "V_any_vendor_same_project": 0.12633624878522837,
+    "V_same_vendor": 0.10787172011661808
+  },
+  "vendor_consistency": {
+    "50-70%": {
+      "bill": 0.38933951332560834,
+      "coverage_bill": 0.541135573580533,
+      "covered_bill": 0.7194860813704497,
+      "n": 863
+    },
+    "70-90%": {
+      "bill": 0.24770642201834864,
+      "coverage_bill": 0.3394495412844037,
+      "covered_bill": 0.7297297297297297,
+      "n": 436
+    },
+    "<50%": {
+      "bill": 0.10423452768729642,
+      "coverage_bill": 0.2768729641693811,
+      "covered_bill": 0.3764705882352941,
+      "n": 921
+    },
+    ">=90%": {
+      "bill": 0.4633333333333333,
+      "coverage_bill": 0.4766666666666667,
+      "covered_bill": 0.972027972027972,
+      "n": 300
+    },
+    "no_prior": {
+      "bill": 0.0,
+      "coverage_bill": 0.0,
+      "covered_bill": null,
+      "n": 29
+    }
+  },
+  "windows": {
+    "cal_since": "2025-10-11",
+    "cal_until": "2026-04-10",
+    "eval_since": "2026-04-11",
+    "eval_until": "2026-10-10"
+  }
+}

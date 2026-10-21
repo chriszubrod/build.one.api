@@ -434,6 +434,15 @@ Related: [[project_box_details_sync_column_misalignment]], [[project_box_details
 [[feedback_in_place_workbook_cell_fixes_are_operator_work]], [[feedback_excel_draw_update]],
 U-632 (`814b994d`), U-580 (`20f6f23c`).
 
+## U-699 residuals — ODBC pooling + transaction-owned app locks (booked 2026-10-21, Gate 2)
+
+Production code verified (in-image: pooled reuse ~11 ms same session; all four lock helpers held/freed on every path; close() rolls back before a handle returns to the pool). Test-quality follow-ups from the round-2 re-review (round cap reached):
+- [ ] `tests_sqlserver/test_u699_odbc_pooling_applock.py`: the "observer is distinct" assertion compares against a third session opened inside the lock block, not the lock's own connection — spy the helper module's `get_connection` to record the lock connection's @@SPID and assert against that.
+- [ ] Same file: `_trancount(...) <= 1` checks cannot fail (close always rolls back; driver re-begins at 1) — replace with an observable-state check or drop.
+- [ ] Test gap (MEDIUM): nothing catches `get_connection` never committing (mutant: delete `conn.commit()` after `yield` in shared/database.py stays GREEN across 623 tests). Add a tests_sqlserver test: write via get_connection, read from a separate session.
+- [ ] `tests_sqlserver/test_u699_bill_publicid_index_sql.py`: remove the one-off `_maybe_drop_legacy_stub_dbo_bill` (still runs DDL on dbo.Bill each run); assert the scratch-SQL `.replace` substitutions took effect (else a drifted source file creates the index on a real dbo.Bill); drop the always-true final assert.
+- [ ] Note: session state persists across pooled checkouts (no sp_reset_connection under unixODBC pooling) — never set session-scoped state (SET outside sprocs, Session applocks, CONTEXT_INFO) on a get_connection() handle.
+
 ## U-676h residuals — memo / short description / line-1 single source (booked 2026-10-19)
 
 - [ ] **Excel formula injection (pre-existing, found in U-676h Pass 3):** `integrations/box/excel/business/workbook_editor.py`

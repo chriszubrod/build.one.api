@@ -104,7 +104,10 @@ def _build_box_expense_rows(monkeypatch, expense, line_items):
     )
     monkeypatch.setattr(
         scc_service, "SubCostCodeService",
-        lambda: SimpleNamespace(read_by_id=lambda **kw: SimpleNamespace(number="32.4")),
+        lambda: SimpleNamespace(
+            read_by_id=lambda **kw: SimpleNamespace(number="32.4"),
+            is_holding_code=lambda _id: False,
+        ),
     )
     return rb.build_details_rows("expense", expense.public_id, project_id=93)
 

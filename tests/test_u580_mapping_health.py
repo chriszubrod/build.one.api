@@ -121,6 +121,11 @@ def test_missing_module_folder_records_project_mapping_missing(
     entity = SimpleNamespace(public_id="11111111-1111-1111-1111-111111111111")
     line_items = [SimpleNamespace(public_id="22222222-2222-2222-2222-222222222222")]
     project_id = 56
+    if entity_key == "expense":
+        entity.id = 1
+        service._expense_line_item_service = MagicMock()
+        service._expense_line_item_service.read_by_expense_id.return_value = line_items
+        service.sub_cost_code_service.is_holding_code = MagicMock(return_value=False)
 
     service.module_service = MagicMock()
     service.module_service.read_by_name.return_value = SimpleNamespace(id=16)

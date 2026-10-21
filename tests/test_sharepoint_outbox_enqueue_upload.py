@@ -595,6 +595,9 @@ def _run_expense_module_folder_upload(*, enqueue_return, line_items):
         return_value=_shared_attachment_link()
     )
     service.attachment_service.read_by_id = MagicMock(return_value=_attachment())
+    service._expense_line_item_service = MagicMock()
+    service._expense_line_item_service.read_by_expense_id.return_value = line_items
+    service.sub_cost_code_service.is_holding_code = MagicMock(return_value=False)
 
     expense = SimpleNamespace(
         id=1,

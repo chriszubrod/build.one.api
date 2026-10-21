@@ -702,8 +702,15 @@ def repair_db_to_excel(
                         f"  [DB->Excel] Expense #{expense.reference_number}: {err}"
                     )
             else:
-                print(f"    Written {len(missing)} line item(s) to Excel")
-                synced_count += len(missing)
+                written = result.get("synced_count", 0)
+                print(f"    Written {written} line item(s) to Excel")
+                deferred = result.get("deferred_holding_count") or 0
+                if deferred:
+                    print(
+                        f"    Deferred {deferred} line item(s): "
+                        "parked on a holding cost code"
+                    )
+                synced_count += written
         except Exception as e:
             issues.append(
                 f"  [DB->Excel] Expense #{expense.reference_number} (id={expense_id}): sync failed: {e}"

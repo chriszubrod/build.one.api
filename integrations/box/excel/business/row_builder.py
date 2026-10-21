@@ -173,6 +173,10 @@ def build_details_rows(
 
         rows = []
         for li in line_items:
+            if sub_cost_code_service.is_holding_code(
+                getattr(li, "sub_cost_code_id", None)
+            ):
+                continue
             scc_number = _scc_number(li.sub_cost_code_id)
             row = _empty_row()
             row[1] = _cost_code_from_subcostcode(scc_number)            # B

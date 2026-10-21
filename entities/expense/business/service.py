@@ -1391,8 +1391,12 @@ class ExpenseService:
                     "success": True,
                     "message": f"No line items for project {project_id} on this expense",
                     "synced_count": 0,
+                    "deferred_holding_count": 0,
                     "errors": [],
                 }
+            line_items, deferred_holding_count = self._split_off_holding_lines(line_items)
+            if not line_items:
+                return _holding_deferred_excel_result(deferred_holding_count)
             from entities.bill.business.service import find_insertion_row_for_subcostcode
 
             # --- resolve workbook location ---
@@ -1469,7 +1473,16 @@ class ExpenseService:
 
             if not new_line_items:
                 logger.info(f"All {len(line_items)} line item(s) already in worksheet, nothing to sync")
-                return {"success": True, "message": f"All {len(line_items)} row(s) already synced", "synced_count": 0, "errors": []}
+                return {
+                    "success": True,
+                    "message": (
+                        f"{len(line_items)} row(s) already present "
+                        "(coding not re-verified)"
+                    ),
+                    "synced_count": 0,
+                    "deferred_holding_count": deferred_holding_count,
+                    "errors": [],
+                }
 
             if len(new_line_items) < len(line_items):
                 logger.info(f"{len(line_items) - len(new_line_items)} line item(s) already in worksheet, syncing {len(new_line_items)} new")
@@ -1589,7 +1602,13 @@ class ExpenseService:
                     errors.append({"error": "Excel append enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"})
 
             if synced_count == 0 and not errors:
-                return {"success": True, "message": "No rows to sync", "synced_count": 0, "errors": []}
+                return {
+                    "success": True,
+                    "message": "No rows to sync",
+                    "synced_count": 0,
+                    "deferred_holding_count": deferred_holding_count,
+                    "errors": [],
+                }
 
             logger.info(f"Queued {synced_count} row(s) for Excel workbook sync")
             has_errors = len(errors) > 0
@@ -1597,6 +1616,7 @@ class ExpenseService:
                 "success": synced_count > 0 or not has_errors,
                 "message": f"Queued {synced_count} row(s) for Excel sync",
                 "synced_count": synced_count,
+                "deferred_holding_count": deferred_holding_count,
                 "errors": errors,
             }
 
@@ -1627,7 +1647,24 @@ class ExpenseService:
             from entities.bill.business.service import find_insertion_row_for_subcostcode
 
             if not expense_line_pairs:
-                return {"success": True, "message": "No expenses to sync", "synced_count": 0, "errors": []}
+                return {
+                    "success": True,
+                    "message": "No expenses to sync",
+                    "synced_count": 0,
+                    "deferred_holding_count": 0,
+                    "errors": [],
+                }
+
+            deferred_holding_count = 0
+            filtered_pairs = []
+            for expense, line_items in expense_line_pairs:
+                kept, deferred = self._split_off_holding_lines(line_items)
+                deferred_holding_count += deferred
+                if kept:
+                    filtered_pairs.append((expense, kept))
+            expense_line_pairs = filtered_pairs
+            if not expense_line_pairs:
+                return _holding_deferred_excel_result(deferred_holding_count)
 
             # --- resolve workbook location (once) ---
             excel_mapping = self.project_excel_connector.get_excel_for_project(project_id=project_id)
@@ -1726,7 +1763,13 @@ class ExpenseService:
 
             if not all_new_rows:
                 logger.info(f"Project {project_id}: all line items already in worksheet, nothing to sync")
-                return {"success": True, "message": "All rows already synced", "synced_count": 0, "errors": []}
+                return {
+                    "success": True,
+                    "message": "All rows already present (coding not re-verified)",
+                    "synced_count": 0,
+                    "deferred_holding_count": deferred_holding_count,
+                    "errors": [],
+                }
 
             logger.info(f"Project {project_id}: {len(all_new_rows)} new row(s) to sync")
 
@@ -1815,6 +1858,7 @@ class ExpenseService:
                 "success": synced_count > 0 or not has_errors,
                 "message": f"Synced {synced_count} row(s) to Excel workbook",
                 "synced_count": synced_count,
+                "deferred_holding_count": deferred_holding_count,
                 "errors": errors,
             }
 
@@ -1825,6 +1869,31 @@ class ExpenseService:
             if session_id:
                 close_workbook_session(drive_id=drive.drive_id, item_id=driveitem.item_id, session_id=session_id)
 
+    def _split_off_holding_lines(self, line_items: List) -> tuple[list, int]:
+        """U-692a: (lines that may become DETAILS rows, count parked on a holding SCC)."""
+        kept = [
+            li for li in line_items
+            if not self.sub_cost_code_service.is_holding_code(getattr(li, "sub_cost_code_id", None))
+        ]
+        return kept, len(line_items) - len(kept)
+
+    def _expense_has_holding_line(self, expense, line_items: List) -> bool:
+        """U-692a: True when any line on the expense (caller subset or full set) is holding-coded.
+
+        Documents are expense-wide, and callers pass per-project subsets, so a clean
+        subset still reads the full line set. The memoized service is passed through
+        so the holding-id set is read once per instance.
+        """
+        scc_svc = self.sub_cost_code_service
+        if any_holding_sub_cost_code(sub_cost_code_ids_from_lines(line_items), scc_svc=scc_svc):
+            return True
+        return any_holding_sub_cost_code(
+            sub_cost_code_ids_from_lines(
+                self.expense_line_item_service.read_by_expense_id(expense_id=int(expense.id))
+            ),
+            scc_svc=scc_svc,
+        )
+
     def _upload_attachments_to_module_folder(
         self, expense, line_items: List, project_id: int, expense_line_items_count: int = 1
     ) -> dict:
@@ -1833,6 +1902,8 @@ class ExpenseService:
         an attachment shared by several line items is one upload and counts once.
         """
         try:
+            if self._expense_has_holding_line(expense, line_items):
+                return _holding_deferred_upload_result()
             module = self.module_service.read_by_name("Expenses") or self.module_service.read_by_name("Expense")
             if not module:
                 return {"success": False, "message": "Expense module not found — ensure a module named 'Expenses' exists", "synced_count": 0, "skipped_count": 0, "errors": [{"error": "Expense module not found"}]}
@@ -1939,10 +2010,19 @@ class ExpenseService:
                     tally.record(attachment_link.attachment_id, outcome)
                 except Exception as e:
                     tally.record_error({"line_item_id": line_item.id, "error": str(e)})
-            return tally.as_dict(success=not tally.errors, message=tally.message())
+            result = tally.as_dict(success=not tally.errors, message=tally.message())
+            result["deferred_holding"] = False
+            return result
         except Exception as e:
             logger.exception(f"Error uploading attachments for project {project_id}")
-            return {"success": False, "message": str(e), "synced_count": 0, "skipped_count": 0, "errors": [{"error": str(e)}]}
+            return {
+                "success": False,
+                "message": str(e),
+                "synced_count": 0,
+                "skipped_count": 0,
+                "deferred_holding": False,
+                "errors": [{"error": str(e)}],
+            }
 
     # -------------------------------------------------------------------------
     # General Receipts Folder — 520 - Current Receipts / yyyy / mm
@@ -2017,6 +2097,8 @@ class ExpenseService:
         Uses the same EXP filename convention as the project module folder upload.
         """
         try:
+            if self._expense_has_holding_line(expense, line_items):
+                return _holding_deferred_upload_result()
             if not expense.expense_date:
                 return {"success": False, "message": "No expense date — cannot determine receipts folder", "synced_count": 0, "skipped_count": 0, "errors": []}
 
@@ -2153,16 +2235,25 @@ class ExpenseService:
                 except Exception as e:
                     tally.record_error({"line_item_id": line_item.id, "error": str(e)})
 
-            return tally.as_dict(
+            result = tally.as_dict(
                 success=not tally.errors,
                 message=tally.message(
                     f"Uploaded {tally.synced_count} file(s) to receipts folder ({year_folder}/{month_folder})"
                 ),
             )
+            result["deferred_holding"] = False
+            return result
 
         except Exception as e:
             logger.exception("Error uploading to general receipts folder")
-            return {"success": False, "message": str(e), "synced_count": 0, "skipped_count": 0, "errors": [{"error": str(e)}]}
+            return {
+                "success": False,
+                "message": str(e),
+                "synced_count": 0,
+                "skipped_count": 0,
+                "deferred_holding": False,
+                "errors": [{"error": str(e)}],
+            }
 
     def _enqueue_box_uploads(self, expense, line_items: List, doc_kind: str) -> None:
         """
@@ -2178,6 +2269,11 @@ class ExpenseService:
         if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() != "true":
             return  # gate closed — skip the DB legwork, not just the enqueue
         try:
+            if self._expense_has_holding_line(expense, line_items):
+                logger.info(
+                    f"box.enqueue.deferred_holding expense={expense.public_id}"
+                )
+                return
             from integrations.box.folder.business.service import (
                 BoxProjectFolderService,
                 DOC_CLASS_INVOICES,
@@ -2295,3 +2391,26 @@ class ExpenseService:
             else:
                 skipped += 1
         return {"marked": marked, "skipped": skipped}
+
+
+def _holding_deferred_excel_result(deferred_holding_count: int) -> dict:
+    """U-692a: every line was parked on a holding SCC, so no DETAILS row was written."""
+    return {
+        "success": True,
+        "message": f"{deferred_holding_count} line(s) deferred: parked on a holding cost code",
+        "synced_count": 0,
+        "deferred_holding_count": deferred_holding_count,
+        "errors": [],
+    }
+
+
+def _holding_deferred_upload_result() -> dict:
+    """U-692a: a fresh dict each call (callers extend result["errors"])."""
+    return {
+        "success": True,
+        "message": "Deferred: expense has a line parked on a holding cost code",
+        "synced_count": 0,
+        "skipped_count": 0,
+        "deferred_holding": True,
+        "errors": [],
+    }

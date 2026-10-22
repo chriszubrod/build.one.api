@@ -1,7 +1,9 @@
 """U-701a: similar bills module parity, hashing, service, shadow (pure / fakes)."""
 from __future__ import annotations
 
+import itertools
 import json
+import logging
 import random
 import string
 import sys
@@ -1088,6 +1090,168 @@ def test_record_read_reread_without_shadow_writes_nulls(monkeypatch):
         similar_pred_sub_cost_code_id=None,
         similar_confidence=None,
     )
+
+
+_SENSITIVE_PDF_SNIPPET = "SECRET_INVOICE_DRYWALL_PAYMENT_701d"
+
+
+def _shadow_messages(caplog) -> list[str]:
+    return [r.message for r in caplog.records if r.message.startswith("similar_bills.shadow")]
+
+
+def test_shadow_log_no_text(caplog):
+    with caplog.at_level(logging.INFO):
+        BillIntakePredictionService._shadow_similar_prediction(
+            attachment_id=42,
+            shadow_extraction_content=None,
+            shadow_amount=Decimal("10"),
+            shadow_as_of=datetime(2026, 1, 1),
+        )
+    assert any("reason=no_text" in m and "attachment_id=42" in m for m in _shadow_messages(caplog))
+    assert _SENSITIVE_PDF_SNIPPET not in caplog.text
+
+
+def test_shadow_log_no_amount_unparseable(caplog):
+    with caplog.at_level(logging.INFO):
+        BillIntakePredictionService._shadow_similar_prediction(
+            attachment_id=7,
+            shadow_extraction_content=_SENSITIVE_PDF_SNIPPET,
+            shadow_amount="not-a-decimal",
+            shadow_as_of=datetime(2026, 1, 1),
+        )
+    assert any("reason=no_amount" in m and "attachment_id=7" in m for m in _shadow_messages(caplog))
+    assert _SENSITIVE_PDF_SNIPPET not in caplog.text
+
+
+def test_shadow_log_cold(caplog):
+    svc, _repo = _svc_with_repo()
+    with caplog.at_level(logging.INFO):
+        svc.shadow_predict_with_budget(
+            extraction_content=_SENSITIVE_PDF_SNIPPET,
+            amount=Decimal("10"),
+            as_of=datetime(2026, 1, 1),
+            attachment_id=99,
+        )
+    assert any("reason=cold" in m and "attachment_id=99" in m for m in _shadow_messages(caplog))
+    assert _SENSITIVE_PDF_SNIPPET not in caplog.text
+
+
+def test_shadow_log_empty_corpus(caplog):
+    t0 = datetime(2026, 1, 1)
+    svc, repo = _svc_with_repo()
+    repo.read_corpus_rows.return_value = []
+    repo.read_since.return_value = []
+    svc.refresh_incremental()
+    assert svc.snapshot_ready and not svc.cache_warm
+    with caplog.at_level(logging.INFO):
+        svc.shadow_predict_with_budget(
+            extraction_content="anything",
+            amount=Decimal("10"),
+            as_of=t0,
+            attachment_id=55,
+        )
+    assert any(
+        "reason=empty_corpus" in m and "attachment_id=55" in m for m in _shadow_messages(caplog)
+    )
+
+
+def test_shadow_log_over_budget_discards_pick(caplog):
+    t0 = datetime(2026, 1, 1)
+    SimilarBillsService._reset_shared_for_tests()
+    svc = SimilarBillsService(
+        settings=SimpleNamespace(
+            bill_text_token_hash_key=TEST_KEY,
+            similar_bills_shadow_budget_ms=100,
+        )
+    )
+    repo = MagicMock()
+    repo.read_for_attachment_ids.return_value = []
+    svc._token_repo = repo
+    _seed_corpus(repo, t0=t0)
+    svc.refresh_incremental()
+    import entities.coding_suggestion.business.similar_bills_service as svc_mod
+
+    # start, refresh-schedule check, elapsed — then hold the last reading so an extra clock read cannot raise.
+    times = itertools.chain([100.0, 100.0, 100.25], itertools.repeat(100.25))
+    with caplog.at_level(logging.INFO), patch.object(
+        svc_mod.time, "monotonic", side_effect=lambda: next(times)
+    ):
+        scc, conf = svc.shadow_predict_with_budget(
+            extraction_content="drywall invoice vendor payment",
+            amount=Decimal("105"),
+            as_of=t0 + timedelta(days=10),
+            attachment_id=12,
+        )
+    assert scc is None and conf is None
+    over = [m for m in _shadow_messages(caplog) if "reason=over_budget" in m]
+    assert len(over) == 1
+    assert "elapsed_ms=250" in over[0]
+    assert "budget_ms=100" in over[0]
+    assert "attachment_id=12" in over[0]
+
+
+def test_shadow_log_no_neighbours(caplog):
+    t0 = datetime(2026, 1, 1)
+    svc, repo = _svc_with_repo()
+    _seed_corpus(repo, t0=t0)
+    svc.refresh_incremental()
+    with caplog.at_level(logging.INFO):
+        scc, conf = svc.shadow_predict_with_budget(
+            extraction_content="zzqqonlynomatch words unique",
+            amount=Decimal("999999"),
+            as_of=t0 + timedelta(days=10),
+            attachment_id=3,
+        )
+    assert scc is None and conf is None
+    assert any(
+        "reason=no_neighbours" in m and "attachment_id=3" in m for m in _shadow_messages(caplog)
+    )
+
+
+def test_shadow_log_ok_warm_corpus(caplog):
+    t0 = datetime(2026, 1, 1)
+    svc, repo = _svc_with_repo()
+    _seed_corpus(repo, t0=t0)
+    svc.refresh_incremental()
+    with caplog.at_level(logging.INFO):
+        scc, conf = svc.shadow_predict_with_budget(
+            extraction_content="drywall invoice vendor payment",
+            amount=Decimal("105"),
+            as_of=t0 + timedelta(days=10),
+            attachment_id=8,
+        )
+    assert scc == 100 and conf is not None
+    ok = [m for m in _shadow_messages(caplog) if m.startswith("similar_bills.shadow_ok")]
+    assert len(ok) == 1
+    assert "scc=100" in ok[0]
+    assert "corpus_bills=3" in ok[0]
+    assert "attachment_id=8" in ok[0]
+    assert "confidence=" in ok[0]
+    assert "elapsed_ms=" in ok[0]
+
+
+def test_similar_bills_shadow_budget_ms_default_and_override(monkeypatch):
+    monkeypatch.delenv("SIMILAR_BILLS_SHADOW_BUDGET_MS", raising=False)
+    import config
+
+    assert config.Settings().similar_bills_shadow_budget_ms == 2000
+    monkeypatch.setenv("SIMILAR_BILLS_SHADOW_BUDGET_MS", "500")
+    assert config.Settings().similar_bills_shadow_budget_ms == 500
+
+    svc = SimilarBillsService(
+        settings=SimpleNamespace(
+            bill_text_token_hash_key=TEST_KEY,
+            similar_bills_shadow_budget_ms=750,
+        )
+    )
+    assert svc._shadow_budget_ms() == 750
+    svc_bad = SimilarBillsService(
+        settings=SimpleNamespace(
+            bill_text_token_hash_key=TEST_KEY,
+            similar_bills_shadow_budget_ms="nope",
+        )
+    )
+    assert svc_bad._shadow_budget_ms() == 2000
 
 
 def test_backfill_run_upserts_with_fakes(monkeypatch):

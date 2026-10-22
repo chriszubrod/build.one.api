@@ -110,12 +110,22 @@ class BillIntakePredictionService:
     @staticmethod
     def _shadow_similar_prediction(
         *,
+        attachment_id: Optional[int] = None,
         shadow_extraction_content: Optional[str] = None,
         shadow_vendor_id: Optional[int] = None,
         shadow_amount: Any = None,
         shadow_as_of: Optional[datetime] = None,
     ) -> tuple[Optional[int], Optional[Decimal]]:
-        if not shadow_extraction_content or shadow_as_of is None:
+        from entities.coding_suggestion.business.similar_bills_service import (
+            SimilarBillsService,
+            log_similar_bills_shadow_none,
+        )
+
+        if not shadow_extraction_content:
+            log_similar_bills_shadow_none("no_text", attachment_id=attachment_id)
+            return None, None
+        if shadow_as_of is None:
+            log_similar_bills_shadow_none("no_as_of", attachment_id=attachment_id)
             return None, None
         amount: Optional[Decimal] = None
         if shadow_amount is not None:
@@ -124,8 +134,8 @@ class BillIntakePredictionService:
             except (InvalidOperation, TypeError, ValueError):
                 amount = None
         if amount is None:
+            log_similar_bills_shadow_none("no_amount", attachment_id=attachment_id)
             return None, None
-        from entities.coding_suggestion.business.similar_bills_service import SimilarBillsService
 
         vendor_id = int(shadow_vendor_id) if shadow_vendor_id is not None else None
         return SimilarBillsService.shared().shadow_predict_with_budget(
@@ -133,6 +143,7 @@ class BillIntakePredictionService:
             amount=amount,
             vendor_id=vendor_id,
             as_of=shadow_as_of,
+            attachment_id=attachment_id,
         )
 
     def record_read(self, **build_kwargs: Any) -> None:
@@ -159,9 +170,16 @@ class BillIntakePredictionService:
         from entities.coding_suggestion.business.bill_text_token_hash import feature_enabled
 
         if not feature_enabled():
+            logger.debug(
+                "similar_bills.shadow_none reason=disabled attachment_id=%s",
+                int(params["AttachmentId"]),
+            )
             return
         try:
-            similar_scc, similar_conf = self._shadow_similar_prediction(**shadow_kwargs)
+            similar_scc, similar_conf = self._shadow_similar_prediction(
+                attachment_id=int(params["AttachmentId"]),
+                **shadow_kwargs,
+            )
             self.repo.update_similar_shadow(
                 attachment_id=int(params["AttachmentId"]),
                 similar_pred_sub_cost_code_id=similar_scc,

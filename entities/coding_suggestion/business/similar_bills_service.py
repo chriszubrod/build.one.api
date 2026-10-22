@@ -43,8 +43,22 @@ from shared.db_datetime import parse_db_datetime
 
 logger = logging.getLogger(__name__)
 
+
+def log_similar_bills_shadow_none(
+    reason: str,
+    *,
+    attachment_id: Optional[int] = None,
+    **fields: object,
+) -> None:
+    parts = [f"similar_bills.shadow_none reason={reason}"]
+    if attachment_id is not None:
+        parts.append(f"attachment_id={attachment_id}")
+    for key, value in fields.items():
+        parts.append(f"{key}={value}")
+    logger.info(" ".join(parts))
+
+
 _REFRESH_BACKOFF_SECONDS = 30.0
-_SHADOW_BUDGET_MS = 200.0
 _HASH_READ_OVERLAP = timedelta(minutes=5)
 _FULL_HASH_REREAD_EVERY_N = 6
 _EPOCH = datetime(2000, 1, 1)  # naive UTC floor: "read every hash row"
@@ -124,6 +138,13 @@ class SimilarBillsService:
         except (TypeError, ValueError):
             return 50
         return None if n <= 0 else n
+
+    def _shadow_budget_ms(self) -> int:
+        budget = getattr(self._settings, "similar_bills_shadow_budget_ms", 2000)
+        try:
+            return max(0, int(budget))
+        except (TypeError, ValueError):
+            return 2000
 
     @property
     def cache_warm(self) -> bool:
@@ -402,11 +423,14 @@ class SimilarBillsService:
         amount: Decimal,
         vendor_id: Optional[int] = None,
         as_of: datetime,
+        attachment_id: Optional[int] = None,
     ) -> tuple[Optional[int], Optional[Decimal]]:
         """Bounded shadow call for intake logging; never raises."""
         if not feature_enabled(self._settings):
+            logger.debug("similar_bills.shadow_none reason=disabled attachment_id=%s", attachment_id)
             return None, None
         start = time.monotonic()
+        budget_ms = self._shadow_budget_ms()
         try:
             key = bill_text_token_hash_key(self._settings)
             with self._state_lock:
@@ -414,8 +438,10 @@ class SimilarBillsService:
             if snapshot is None:
                 # Cold: start the first refresh, but never hash the PDF for a query that cannot match.
                 self._schedule_refresh_if_needed()
+                log_similar_bills_shadow_none("cold", attachment_id=attachment_id)
                 return None, None
             if not snapshot.profiles_by_bill:
+                log_similar_bills_shadow_none("empty_corpus", attachment_id=attachment_id)
                 return None, None
             tokens = token_hashes_from_text_int(extraction_content, key)
             result = self.similar_bills_for(
@@ -425,10 +451,30 @@ class SimilarBillsService:
                 exclude_bill_id=None,
                 as_of=as_of,
             )
-            if (time.monotonic() - start) * 1000 > _SHADOW_BUDGET_MS:
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            if elapsed_ms > budget_ms:
+                log_similar_bills_shadow_none(
+                    "over_budget",
+                    attachment_id=attachment_id,
+                    elapsed_ms=elapsed_ms,
+                    budget_ms=budget_ms,
+                )
                 return None, None
-            if result is None:
+            if result is None or result.predicted_scc_id is None:
+                log_similar_bills_shadow_none("no_neighbours", attachment_id=attachment_id)
                 return None, None
+            corpus_bills = len(snapshot.profiles_by_bill)
+            confidence = result.confidence
+            conf_str = f"{float(confidence):.2f}" if confidence is not None else "0.00"
+            ok_parts = [
+                f"similar_bills.shadow_ok scc={result.predicted_scc_id}",
+                f"confidence={conf_str}",
+                f"elapsed_ms={elapsed_ms}",
+                f"corpus_bills={corpus_bills}",
+            ]
+            if attachment_id is not None:
+                ok_parts.append(f"attachment_id={attachment_id}")
+            logger.info(" ".join(ok_parts))
             return result.predicted_scc_id, result.confidence
         except Exception as error:
             logger.warning("similar_bills.shadow_failed err=%s", type(error).__name__)

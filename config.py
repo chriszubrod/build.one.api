@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     # U-701a: live similar-bills cache tuning (footprint vs accuracy).
     similar_bills_max_tokens_per_bill: Optional[int] = 50
     similar_bills_refresh_seconds: int = 1800
+    similar_bills_shadow_budget_ms: int = 2000
 
     # Admin / scheduler-trigger secret. Shared with the build.one.scheduler
     # Azure Function; caller passes it in the X-Drain-Secret header. When

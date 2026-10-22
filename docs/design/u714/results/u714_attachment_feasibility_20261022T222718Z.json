@@ -1,0 +1,14 @@
+{
+  "completed_extractions_with_token_count": 2,
+  "completed_token_count_buckets": {
+    "50_199": 2,
+    "no_hash": 1888
+  },
+  "expense_attachments_with_token_hash": 2,
+  "extraction_status_counts": {
+    "None": 2,
+    "completed": 1890,
+    "pending": 2
+  },
+  "length_proxy_note": "Completed extractions: TokenCount from AttachmentTextTokenHash is a token-count proxy, not character length. Character/word length requires reading ExtractedTextBlobUrl."
+}

@@ -1,0 +1,1703 @@
+{
+  "calibration_window": {
+    "since": "2025-10-23",
+    "until": "2026-04-22"
+  },
+  "evaluation_window": {
+    "since": "2026-04-23",
+    "until": "2026-10-22"
+  },
+  "git_sha": "b77fdacdfc1cd272e519a610f44ae326a72fb04c",
+  "line_count": 5212,
+  "metrics": {
+    "bill_style_memo_off": {
+      "calibration": {
+        "bin_confidence": [
+          0.008620689655172414,
+          0.04838709677419355,
+          0.6463414634146342,
+          0.6206896551724138,
+          0.6447368421052632,
+          0.9850746268656716
+        ],
+        "bin_edges": [
+          0.13043478260869565,
+          0.19,
+          0.3888888888888889,
+          0.49206349206349204,
+          0.6,
+          0.78125,
+          0.9333333333333333
+        ],
+        "model_version": "u714-expense-v1"
+      },
+      "segments": {
+        "all": {
+          "both_correct": 0.10967741935483871,
+          "confident_wrong_rate": {
+            "0.60": 0.24496644295302014,
+            "0.70": 0.1016949152542373,
+            "0.85": 0.1016949152542373
+          },
+          "coverage": 0.9011627906976745,
+          "n_eval": 516,
+          "project_accuracy": 0.13118279569892474,
+          "project_coverage": 1.0,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": 0.020526799571047007,
+              "n": 167,
+              "observed_accuracy": 0.059880239520958084
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": 0.6402092216899055,
+              "n": 239,
+              "observed_accuracy": 0.7196652719665272
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": 0.9850746268656716,
+              "n": 59,
+              "observed_accuracy": 0.8983050847457628
+            }
+          ],
+          "scc_top1_accuracy": 0.5053763440860215
+        },
+        "card": {
+          "both_correct": 0.11627906976744186,
+          "confident_wrong_rate": {
+            "0.60": 0.27756653992395436,
+            "0.70": 0.23076923076923078,
+            "0.85": 0.23076923076923078
+          },
+          "coverage": 0.899581589958159,
+          "n_eval": 478,
+          "project_accuracy": 0.13953488372093023,
+          "project_coverage": 1.0,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": 0.020526799571047007,
+              "n": 167,
+              "observed_accuracy": 0.059880239520958084
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": 0.6403739437702218,
+              "n": 237,
+              "observed_accuracy": 0.7172995780590717
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": 0.9850746268656716,
+              "n": 26,
+              "observed_accuracy": 0.7692307692307693
+            }
+          ],
+          "scc_top1_accuracy": 0.46511627906976744
+        },
+        "manual": {
+          "both_correct": null,
+          "confident_wrong_rate": {
+            "0.60": null,
+            "0.70": null,
+            "0.85": null
+          },
+          "coverage": null,
+          "n_eval": 0,
+          "project_accuracy": null,
+          "project_coverage": null,
+          "reliability": [],
+          "scc_top1_accuracy": null
+        },
+        "qbo_pulled": {
+          "both_correct": 0.10967741935483871,
+          "confident_wrong_rate": {
+            "0.60": 0.24496644295302014,
+            "0.70": 0.1016949152542373,
+            "0.85": 0.1016949152542373
+          },
+          "coverage": 0.9011627906976745,
+          "n_eval": 516,
+          "project_accuracy": 0.13118279569892474,
+          "project_coverage": 1.0,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": 0.020526799571047007,
+              "n": 167,
+              "observed_accuracy": 0.059880239520958084
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": 0.6402092216899055,
+              "n": 239,
+              "observed_accuracy": 0.7196652719665272
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": 0.9850746268656716,
+              "n": 59,
+              "observed_accuracy": 0.8983050847457628
+            }
+          ],
+          "scc_top1_accuracy": 0.5053763440860215
+        },
+        "vendor_has_history_no": {
+          "both_correct": null,
+          "confident_wrong_rate": {
+            "0.60": null,
+            "0.70": null,
+            "0.85": null
+          },
+          "coverage": 0.0,
+          "n_eval": 51,
+          "project_accuracy": null,
+          "project_coverage": null,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            }
+          ],
+          "scc_top1_accuracy": null
+        },
+        "vendor_has_history_yes": {
+          "both_correct": 0.10967741935483871,
+          "confident_wrong_rate": {
+            "0.60": 0.24496644295302014,
+            "0.70": 0.1016949152542373,
+            "0.85": 0.1016949152542373
+          },
+          "coverage": 1.0,
+          "n_eval": 465,
+          "project_accuracy": 0.13118279569892474,
+          "project_coverage": 1.0,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": 0.020526799571047007,
+              "n": 167,
+              "observed_accuracy": 0.059880239520958084
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": 0.6402092216899055,
+              "n": 239,
+              "observed_accuracy": 0.7196652719665272
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": 0.9850746268656716,
+              "n": 59,
+              "observed_accuracy": 0.8983050847457628
+            }
+          ],
+          "scc_top1_accuracy": 0.5053763440860215
+        }
+      }
+    },
+    "bill_style_memo_on": {
+      "calibration": {
+        "bin_confidence": [
+          0.008620689655172414,
+          0.04838709677419355,
+          0.6463414634146342,
+          0.6206896551724138,
+          0.6447368421052632,
+          0.9850746268656716
+        ],
+        "bin_edges": [
+          0.13043478260869565,
+          0.19,
+          0.3888888888888889,
+          0.49206349206349204,
+          0.6,
+          0.78125,
+          0.9333333333333333
+        ],
+        "model_version": "u714-expense-v1"
+      },
+      "segments": {
+        "all": {
+          "both_correct": 0.10967741935483871,
+          "confident_wrong_rate": {
+            "0.60": 0.24496644295302014,
+            "0.70": 0.1016949152542373,
+            "0.85": 0.1016949152542373
+          },
+          "coverage": 0.9011627906976745,
+          "n_eval": 516,
+          "project_accuracy": 0.13118279569892474,
+          "project_coverage": 1.0,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": 0.020526799571047007,
+              "n": 167,
+              "observed_accuracy": 0.059880239520958084
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": 0.6402092216899055,
+              "n": 239,
+              "observed_accuracy": 0.7196652719665272
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": 0.9850746268656716,
+              "n": 59,
+              "observed_accuracy": 0.8983050847457628
+            }
+          ],
+          "scc_top1_accuracy": 0.5053763440860215
+        },
+        "card": {
+          "both_correct": 0.11627906976744186,
+          "confident_wrong_rate": {
+            "0.60": 0.27756653992395436,
+            "0.70": 0.23076923076923078,
+            "0.85": 0.23076923076923078
+          },
+          "coverage": 0.899581589958159,
+          "n_eval": 478,
+          "project_accuracy": 0.13953488372093023,
+          "project_coverage": 1.0,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": 0.020526799571047007,
+              "n": 167,
+              "observed_accuracy": 0.059880239520958084
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": 0.6403739437702218,
+              "n": 237,
+              "observed_accuracy": 0.7172995780590717
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": 0.9850746268656716,
+              "n": 26,
+              "observed_accuracy": 0.7692307692307693
+            }
+          ],
+          "scc_top1_accuracy": 0.46511627906976744
+        },
+        "manual": {
+          "both_correct": null,
+          "confident_wrong_rate": {
+            "0.60": null,
+            "0.70": null,
+            "0.85": null
+          },
+          "coverage": null,
+          "n_eval": 0,
+          "project_accuracy": null,
+          "project_coverage": null,
+          "reliability": [],
+          "scc_top1_accuracy": null
+        },
+        "qbo_pulled": {
+          "both_correct": 0.10967741935483871,
+          "confident_wrong_rate": {
+            "0.60": 0.24496644295302014,
+            "0.70": 0.1016949152542373,
+            "0.85": 0.1016949152542373
+          },
+          "coverage": 0.9011627906976745,
+          "n_eval": 516,
+          "project_accuracy": 0.13118279569892474,
+          "project_coverage": 1.0,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": 0.020526799571047007,
+              "n": 167,
+              "observed_accuracy": 0.059880239520958084
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": 0.6402092216899055,
+              "n": 239,
+              "observed_accuracy": 0.7196652719665272
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": 0.9850746268656716,
+              "n": 59,
+              "observed_accuracy": 0.8983050847457628
+            }
+          ],
+          "scc_top1_accuracy": 0.5053763440860215
+        },
+        "vendor_has_history_no": {
+          "both_correct": null,
+          "confident_wrong_rate": {
+            "0.60": null,
+            "0.70": null,
+            "0.85": null
+          },
+          "coverage": 0.0,
+          "n_eval": 51,
+          "project_accuracy": null,
+          "project_coverage": null,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            }
+          ],
+          "scc_top1_accuracy": null
+        },
+        "vendor_has_history_yes": {
+          "both_correct": 0.10967741935483871,
+          "confident_wrong_rate": {
+            "0.60": 0.24496644295302014,
+            "0.70": 0.1016949152542373,
+            "0.85": 0.1016949152542373
+          },
+          "coverage": 1.0,
+          "n_eval": 465,
+          "project_accuracy": 0.13118279569892474,
+          "project_coverage": 1.0,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": 0.020526799571047007,
+              "n": 167,
+              "observed_accuracy": 0.059880239520958084
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": 0.6402092216899055,
+              "n": 239,
+              "observed_accuracy": 0.7196652719665272
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": 0.9850746268656716,
+              "n": 59,
+              "observed_accuracy": 0.8983050847457628
+            }
+          ],
+          "scc_top1_accuracy": 0.5053763440860215
+        }
+      }
+    },
+    "engine_memo_off": {
+      "calibration": {
+        "bin_confidence": [
+          0.2,
+          0.34545454545454546,
+          0.43636363636363634,
+          0.7272727272727273,
+          0.6785714285714286,
+          0.6727272727272727,
+          0.6440677966101694,
+          0.6491228070175439,
+          0.8909090909090909,
+          0.926829268292683
+        ],
+        "bin_edges": [
+          0.10810810810810811,
+          0.24681528662420382,
+          0.2564102564102564,
+          0.3466666666666667,
+          0.6228070175438597,
+          0.7160647571606475,
+          0.7198443579766537,
+          0.725,
+          0.7307692307692307,
+          0.9202898550724637,
+          1.0
+        ],
+        "model_version": "u714-expense-v1"
+      },
+      "segments": {
+        "all": {
+          "both_correct": 0.0,
+          "confident_wrong_rate": {
+            "0.60": 0.25773195876288657,
+            "0.70": 0.18269230769230768,
+            "0.85": 0.03636363636363636
+          },
+          "coverage": 0.9011627906976745,
+          "n_eval": 516,
+          "project_accuracy": null,
+          "project_coverage": 0.0,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": 0.2,
+              "n": 29,
+              "observed_accuracy": 0.4827586206896552
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": 0.34545454545454546,
+              "n": 1,
+              "observed_accuracy": 0.0
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": 0.43636363636363634,
+              "n": 144,
+              "observed_accuracy": 0.4444444444444444
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": 0.6784139493117821,
+              "n": 187,
+              "observed_accuracy": 0.7005347593582888
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": 0.7272727272727273,
+              "n": 49,
+              "observed_accuracy": 0.6530612244897959
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": 0.8909090909090909,
+              "n": 22,
+              "observed_accuracy": 0.9090909090909091
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": 0.926829268292683,
+              "n": 33,
+              "observed_accuracy": 1.0
+            }
+          ],
+          "scc_top1_accuracy": 0.632258064516129
+        },
+        "card": {
+          "both_correct": 0.0,
+          "confident_wrong_rate": {
+            "0.60": 0.29296875,
+            "0.70": 0.2753623188405797,
+            "0.85": 0.1
+          },
+          "coverage": 0.899581589958159,
+          "n_eval": 478,
+          "project_accuracy": null,
+          "project_coverage": 0.0,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": 0.2,
+              "n": 29,
+              "observed_accuracy": 0.4827586206896552
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": 0.34545454545454546,
+              "n": 1,
+              "observed_accuracy": 0.0
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": 0.43636363636363634,
+              "n": 144,
+              "observed_accuracy": 0.4444444444444444
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": 0.6784139493117821,
+              "n": 187,
+              "observed_accuracy": 0.7005347593582888
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": 0.7272727272727273,
+              "n": 49,
+              "observed_accuracy": 0.6530612244897959
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": 0.8909090909090909,
+              "n": 11,
+              "observed_accuracy": 0.8181818181818182
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": 0.926829268292683,
+              "n": 9,
+              "observed_accuracy": 1.0
+            }
+          ],
+          "scc_top1_accuracy": 0.6023255813953489
+        },
+        "manual": {
+          "both_correct": null,
+          "confident_wrong_rate": {
+            "0.60": null,
+            "0.70": null,
+            "0.85": null
+          },
+          "coverage": null,
+          "n_eval": 0,
+          "project_accuracy": null,
+          "project_coverage": null,
+          "reliability": [],
+          "scc_top1_accuracy": null
+        },
+        "qbo_pulled": {
+          "both_correct": 0.0,
+          "confident_wrong_rate": {
+            "0.60": 0.25773195876288657,
+            "0.70": 0.18269230769230768,
+            "0.85": 0.03636363636363636
+          },
+          "coverage": 0.9011627906976745,
+          "n_eval": 516,
+          "project_accuracy": null,
+          "project_coverage": 0.0,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": 0.2,
+              "n": 29,
+              "observed_accuracy": 0.4827586206896552
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": 0.34545454545454546,
+              "n": 1,
+              "observed_accuracy": 0.0
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": 0.43636363636363634,
+              "n": 144,
+              "observed_accuracy": 0.4444444444444444
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": 0.6784139493117821,
+              "n": 187,
+              "observed_accuracy": 0.7005347593582888
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": 0.7272727272727273,
+              "n": 49,
+              "observed_accuracy": 0.6530612244897959
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": 0.8909090909090909,
+              "n": 22,
+              "observed_accuracy": 0.9090909090909091
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": 0.926829268292683,
+              "n": 33,
+              "observed_accuracy": 1.0
+            }
+          ],
+          "scc_top1_accuracy": 0.632258064516129
+        },
+        "vendor_has_history_no": {
+          "both_correct": null,
+          "confident_wrong_rate": {
+            "0.60": null,
+            "0.70": null,
+            "0.85": null
+          },
+          "coverage": 0.0,
+          "n_eval": 51,
+          "project_accuracy": null,
+          "project_coverage": null,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            }
+          ],
+          "scc_top1_accuracy": null
+        },
+        "vendor_has_history_yes": {
+          "both_correct": 0.0,
+          "confident_wrong_rate": {
+            "0.60": 0.25773195876288657,
+            "0.70": 0.18269230769230768,
+            "0.85": 0.03636363636363636
+          },
+          "coverage": 1.0,
+          "n_eval": 465,
+          "project_accuracy": null,
+          "project_coverage": 0.0,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": 0.2,
+              "n": 29,
+              "observed_accuracy": 0.4827586206896552
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": 0.34545454545454546,
+              "n": 1,
+              "observed_accuracy": 0.0
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": 0.43636363636363634,
+              "n": 144,
+              "observed_accuracy": 0.4444444444444444
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": 0.6784139493117821,
+              "n": 187,
+              "observed_accuracy": 0.7005347593582888
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": 0.7272727272727273,
+              "n": 49,
+              "observed_accuracy": 0.6530612244897959
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": 0.8909090909090909,
+              "n": 22,
+              "observed_accuracy": 0.9090909090909091
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": 0.926829268292683,
+              "n": 33,
+              "observed_accuracy": 1.0
+            }
+          ],
+          "scc_top1_accuracy": 0.632258064516129
+        }
+      }
+    },
+    "engine_memo_on": {
+      "calibration": {
+        "bin_confidence": [
+          0.22413793103448276,
+          0.41935483870967744,
+          0.5862068965517241,
+          0.6779661016949152,
+          0.7627118644067796,
+          0.9909502262443439,
+          0.9074074074074074
+        ],
+        "bin_edges": [
+          0.10810810810810811,
+          0.24720893141945774,
+          0.26666666666666666,
+          0.45454545454545453,
+          0.7232876712328767,
+          0.9188191881918819,
+          0.95,
+          1.0
+        ],
+        "model_version": "u714-expense-v1"
+      },
+      "segments": {
+        "all": {
+          "both_correct": 0.6105263157894737,
+          "confident_wrong_rate": {
+            "0.60": 0.016339869281045753,
+            "0.70": 0.007067137809187279,
+            "0.85": 0.0037735849056603774
+          },
+          "coverage": 0.9205426356589147,
+          "n_eval": 516,
+          "project_accuracy": 0.925,
+          "project_coverage": 0.7578947368421053,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": 0.22413793103448276,
+              "n": 26,
+              "observed_accuracy": 0.5384615384615384
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": 0.41935483870967744,
+              "n": 28,
+              "observed_accuracy": 0.35714285714285715
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": 0.5862068965517241,
+              "n": 115,
+              "observed_accuracy": 0.5391304347826087
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": 0.6779661016949152,
+              "n": 23,
+              "observed_accuracy": 0.8695652173913043
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": 0.7627118644067796,
+              "n": 18,
+              "observed_accuracy": 0.9444444444444444
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": 0.9304210895775824,
+              "n": 265,
+              "observed_accuracy": 0.9962264150943396
+            }
+          ],
+          "scc_top1_accuracy": 0.8147368421052632
+        },
+        "card": {
+          "both_correct": 0.6590909090909091,
+          "confident_wrong_rate": {
+            "0.60": 0.01845018450184502,
+            "0.70": 0.008064516129032258,
+            "0.85": 0.004201680672268907
+          },
+          "coverage": 0.9205020920502092,
+          "n_eval": 478,
+          "project_accuracy": 0.925,
+          "project_coverage": 0.8181818181818182,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": 0.22413793103448276,
+              "n": 26,
+              "observed_accuracy": 0.5384615384615384
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": 0.41935483870967744,
+              "n": 28,
+              "observed_accuracy": 0.35714285714285715
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": 0.5862068965517241,
+              "n": 115,
+              "observed_accuracy": 0.5391304347826087
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": 0.6779661016949152,
+              "n": 23,
+              "observed_accuracy": 0.8695652173913043
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": 0.7627118644067796,
+              "n": 10,
+              "observed_accuracy": 0.9
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": 0.9253094400153223,
+              "n": 238,
+              "observed_accuracy": 0.9957983193277311
+            }
+          ],
+          "scc_top1_accuracy": 0.8
+        },
+        "manual": {
+          "both_correct": null,
+          "confident_wrong_rate": {
+            "0.60": null,
+            "0.70": null,
+            "0.85": null
+          },
+          "coverage": null,
+          "n_eval": 0,
+          "project_accuracy": null,
+          "project_coverage": null,
+          "reliability": [],
+          "scc_top1_accuracy": null
+        },
+        "qbo_pulled": {
+          "both_correct": 0.6105263157894737,
+          "confident_wrong_rate": {
+            "0.60": 0.016339869281045753,
+            "0.70": 0.007067137809187279,
+            "0.85": 0.0037735849056603774
+          },
+          "coverage": 0.9205426356589147,
+          "n_eval": 516,
+          "project_accuracy": 0.925,
+          "project_coverage": 0.7578947368421053,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": 0.22413793103448276,
+              "n": 26,
+              "observed_accuracy": 0.5384615384615384
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": 0.41935483870967744,
+              "n": 28,
+              "observed_accuracy": 0.35714285714285715
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": 0.5862068965517241,
+              "n": 115,
+              "observed_accuracy": 0.5391304347826087
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": 0.6779661016949152,
+              "n": 23,
+              "observed_accuracy": 0.8695652173913043
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": 0.7627118644067796,
+              "n": 18,
+              "observed_accuracy": 0.9444444444444444
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": 0.9304210895775824,
+              "n": 265,
+              "observed_accuracy": 0.9962264150943396
+            }
+          ],
+          "scc_top1_accuracy": 0.8147368421052632
+        },
+        "vendor_has_history_no": {
+          "both_correct": 1.0,
+          "confident_wrong_rate": {
+            "0.60": 0.0,
+            "0.70": 0.0,
+            "0.85": 0.0
+          },
+          "coverage": 0.19607843137254902,
+          "n_eval": 51,
+          "project_accuracy": 1.0,
+          "project_coverage": 1.0,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": 0.9575330987095693,
+              "n": 10,
+              "observed_accuracy": 1.0
+            }
+          ],
+          "scc_top1_accuracy": 1.0
+        },
+        "vendor_has_history_yes": {
+          "both_correct": 0.6021505376344086,
+          "confident_wrong_rate": {
+            "0.60": 0.016891891891891893,
+            "0.70": 0.007326007326007326,
+            "0.85": 0.00392156862745098
+          },
+          "coverage": 1.0,
+          "n_eval": 465,
+          "project_accuracy": 0.9228571428571428,
+          "project_coverage": 0.7526881720430108,
+          "reliability": [
+            {
+              "decile": 1,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 2,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 3,
+              "mean_calibrated_confidence": 0.22413793103448276,
+              "n": 26,
+              "observed_accuracy": 0.5384615384615384
+            },
+            {
+              "decile": 4,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 5,
+              "mean_calibrated_confidence": 0.41935483870967744,
+              "n": 28,
+              "observed_accuracy": 0.35714285714285715
+            },
+            {
+              "decile": 6,
+              "mean_calibrated_confidence": 0.5862068965517241,
+              "n": 115,
+              "observed_accuracy": 0.5391304347826087
+            },
+            {
+              "decile": 7,
+              "mean_calibrated_confidence": 0.6779661016949152,
+              "n": 23,
+              "observed_accuracy": 0.8695652173913043
+            },
+            {
+              "decile": 8,
+              "mean_calibrated_confidence": 0.7627118644067796,
+              "n": 18,
+              "observed_accuracy": 0.9444444444444444
+            },
+            {
+              "decile": 9,
+              "mean_calibrated_confidence": null,
+              "n": 0,
+              "observed_accuracy": null
+            },
+            {
+              "decile": 10,
+              "mean_calibrated_confidence": 0.9293578735331908,
+              "n": 255,
+              "observed_accuracy": 0.996078431372549
+            }
+          ],
+          "scc_top1_accuracy": 0.810752688172043
+        }
+      }
+    }
+  },
+  "model_version": "u714-expense-v1",
+  "rolling_origin": {
+    "coding_lag_days": 7,
+    "evaluation_window_filters": "ExpenseDate",
+    "prior_inclusion": "Prior line counts when prior ExpenseDate <= (evaluated ExpenseDate \u2212 coding_lag_days); buffer 0 uses strictly earlier ExpenseDate. Same-expense lines never count. CreatedDatetime is tie-order only.",
+    "score_as_of": "Expense.ExpenseDate per line"
+  },
+  "run_metadata": {
+    "data_quality_status_datetime_minus_created_days": {
+      "label": "Backfill/import artifact \u2014 not used for prior inclusion",
+      "n": 5212,
+      "p50": 229.37357232638888,
+      "p90": 229.56788306712963
+    },
+    "qbo_pulled_reclassified_via_purchase_expense_mapping": 0,
+    "scoring_clock": {
+      "coding_lag_days_default": 7,
+      "field": "ExpenseDate",
+      "note": "Expense.StatusDatetime was mass-stamped by U-357 (2026-09-16); Expense.CreatedDatetime clusters on initial import (2026-01-30). Neither is a reliable completion/import clock for rolling-origin history.",
+      "status_datetime_not_used_as_clock": true
+    },
+    "segment_counts_loaded": {
+      "manual": 0,
+      "note": "Prod corpus may be all QBO-pulled; manual segment still reported at n=0 in metrics.",
+      "qbo_pulled": 5212
+    }
+  }
+}

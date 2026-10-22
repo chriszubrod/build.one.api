@@ -291,7 +291,12 @@ def test_persist_extraction_uses_explicit_aggressive():
     att = _attachment()
     svc.storage.download_file.return_value = (b"%PDF-1.4\n" + b"x" * 200, {})
     with patch.object(svc, "_persist_bill_drop_extraction_blob") as persist:
-        persist.return_value = ("name", "https://blob/out.json", "masked")
+        persist.return_value = (
+            "name",
+            "https://blob/out.json",
+            "masked",
+            {"content": "masked", "redaction_version": "u535g-v3"},
+        )
         with patch.object(svc, "_commit_terminal", return_value={"status": "completed"}):
             with patch(
                 "entities.attachment.business.extraction_service._has_usable_text",
@@ -1340,7 +1345,9 @@ def test_bill_drop_extract_parses_vendor_invoice_number(monkeypatch):
     )
     svc.storage.download_file.return_value = (b"%PDF-", {})
     with patch.object(
-        svc, "_persist_bill_drop_extraction_blob", return_value=("n", "https://b/n.json", "t")
+        svc,
+        "_persist_bill_drop_extraction_blob",
+        return_value=("n", "https://b/n.json", "t", {"content": "t", "redaction_version": "u535g-v3"}),
     ):
         svc._bill_drop_extract(att, aggressive=False)
     assert svc.repo.update_extraction.call_args.kwargs.get("vendor_invoice_number") == "12345"

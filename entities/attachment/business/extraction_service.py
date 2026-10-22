@@ -35,7 +35,16 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import config
+from entities.attachment.business.extraction_envelope import (
+    EXTRACTION_BLOB_KEYS,
+    EXTRACTION_KVP_KEYS,
+    REDACTION_VERSION,
+    extraction_payload_is_current,
+)
 from entities.attachment.business.model import Attachment
+from entities.attachment.business.text_token_hash_service import (
+    persist_token_hashes_failure_isolated,
+)
 from entities.attachment.business.tin_redaction import mask_tins, mask_tins_in_kvps
 from entities.attachment.persistence.repo import AttachmentRepository
 from integrations.azure.document_intelligence.external.client import (
@@ -59,43 +68,6 @@ _CLAIM_LEASE_MINUTES = 15
 _MIN_TEXT_LAYER_CHARS = 24
 
 _EXTRACTION_BLOB_PREFIX = "attachment-extractions"
-REDACTION_VERSION = "u535g-v3"
-# The exact top-level keys _persist_extraction_blob writes. The redaction stamp is a
-# true claim only for a blob of this shape: pre-U-535a blobs also carried pages /
-# paragraphs / tables, which repeat the document text unmasked.
-EXTRACTION_BLOB_KEYS = frozenset({
-    "attachment_public_id",
-    "source_file_hash",
-    "redaction_version",
-    "method",
-    "pages_count",
-    "content",
-    "key_value_pairs",
-})
-_EXTRACTION_BLOB_OPTIONAL_KEYS = frozenset({"masking"})
-_ALLOWED_EXTRACTION_BLOB_KEYS = EXTRACTION_BLOB_KEYS | _EXTRACTION_BLOB_OPTIONAL_KEYS
-# The fields _persist_extraction_blob writes inside each key_value_pairs entry.
-EXTRACTION_KVP_KEYS = frozenset({"key", "value", "confidence"})
-
-
-def extraction_payload_is_current(payload: object) -> bool:
-    """True only for an extraction blob the current writer could have produced: the
-    current redaction stamp and no keys outside its fixed set. Every reader that trusts
-    the stamp (the freshness check, the U-535h re-mask, the U-654b text tick) uses this."""
-    if not (
-        isinstance(payload, dict)
-        and payload.get("redaction_version") == REDACTION_VERSION
-        and set(payload) <= _ALLOWED_EXTRACTION_BLOB_KEYS
-        and isinstance(payload.get("content", ""), str)
-    ):
-        return False
-    kvps = payload.get("key_value_pairs", [])
-    return isinstance(kvps, list) and all(
-        isinstance(kvp, dict)
-        and set(kvp) <= EXTRACTION_KVP_KEYS
-        and all(kvp.get(f) is None or isinstance(kvp.get(f), str) for f in ("key", "value"))
-        for kvp in kvps
-    )
 
 
 def parse_extraction_groups(raw: Optional[str]) -> list[str]:
@@ -285,7 +257,7 @@ class AttachmentExtractionService:
         )
 
         try:
-            blob_name, blob_url = self._persist_extraction_blob(
+            blob_name, blob_url, extraction_payload = self._persist_extraction_blob(
                 attachment, text, key_value_pairs, pages_count, method
             )
         except Exception as e:
@@ -303,6 +275,12 @@ class AttachmentExtractionService:
             extracted_text_blob_url=blob_url,
             vendor_invoice_number=parsed_number,
             orphan_blob=(blob_name, blob_url),
+        )
+        self._maybe_persist_token_hashes(
+            attachment,
+            outcome,
+            extraction_payload,
+            is_taxpayer_document=attachment.is_taxpayer_document,
         )
         if (
             outcome.get("status") == "completed"
@@ -358,7 +336,7 @@ class AttachmentExtractionService:
         parsed_number = parse_vendor_invoice_number(key_value_pairs, text)
 
         try:
-            blob_name, blob_url, masked_text = self._persist_bill_drop_extraction_blob(
+            persisted = self._persist_bill_drop_extraction_blob(
                 attachment,
                 text,
                 key_value_pairs,
@@ -366,6 +344,7 @@ class AttachmentExtractionService:
                 method,
                 aggressive=aggressive,
             )
+            blob_name, blob_url, masked_text, extraction_payload = persisted
         except Exception as e:
             return self._bill_drop_fail(attachment, "persist_error", e, aggressive=aggressive)
 
@@ -381,6 +360,12 @@ class AttachmentExtractionService:
             extracted_text_blob_url=blob_url,
             vendor_invoice_number=parsed_number,
             orphan_blob=(blob_name, blob_url),
+        )
+        self._maybe_persist_token_hashes(
+            attachment,
+            outcome,
+            extraction_payload,
+            is_taxpayer_document=aggressive,
         )
         if (
             outcome.get("status") == "completed"
@@ -442,7 +427,7 @@ class AttachmentExtractionService:
         key_value_pairs: list[dict],
         pages_count: int,
         method: str,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, dict[str, Any]]:
         """Mask taxpayer ids, then upload. The ONLY writer of extraction JSON, so the
         redaction_version stamp is always true of what it stamps."""
         aggressive = attachment.is_taxpayer_document is not False  # unknown => fail closed
@@ -479,7 +464,7 @@ class AttachmentExtractionService:
             file_content=data,
             content_type="application/json",
         )
-        return blob_name, blob_url
+        return blob_name, blob_url, payload
 
     def _persist_bill_drop_extraction_blob(
         self,
@@ -490,9 +475,8 @@ class AttachmentExtractionService:
         method: str,
         *,
         aggressive: bool,
-    ) -> tuple[str, str, str]:
-        """Mask, upload, and return (blob_name, blob_url, masked_text) — the caller sends
-        the returned masked text onward, never its own raw copy."""
+    ) -> tuple[str, str, str, dict[str, Any]]:
+        """Mask, upload, and return (blob_name, blob_url, masked_text, payload)."""
         text, tins_masked = mask_tins(text, aggressive=aggressive)
         key_value_pairs, kvp_count = mask_tins_in_kvps(key_value_pairs, aggressive=aggressive)
         tins_masked += kvp_count
@@ -526,7 +510,37 @@ class AttachmentExtractionService:
             file_content=data,
             content_type="application/json",
         )
-        return blob_name, blob_url, text or ""
+        return blob_name, blob_url, text or "", payload
+
+    def _maybe_persist_token_hashes(
+        self,
+        attachment: Attachment,
+        outcome: dict,
+        envelope: Optional[dict[str, Any]],
+        *,
+        is_taxpayer_document: Optional[bool],
+    ) -> None:
+        if outcome.get("status") != "completed" or envelope is None:
+            return
+        taxpayer = is_taxpayer_document
+        if taxpayer is None:
+            try:
+                _linked, is_taxpayer = self.repo.read_link_state(int(attachment.id))
+                taxpayer = is_taxpayer
+            except Exception as error:
+                logger.warning(
+                    "attachment_extraction.taxpayer_resolve_failed id=%s err=%s",
+                    attachment.id,
+                    type(error).__name__,
+                )
+                taxpayer = True
+        if taxpayer:
+            return
+
+        persist_token_hashes_failure_isolated(
+            attachment_id=int(attachment.id),
+            envelope=envelope,
+        )
 
     def _already_extracted_same_content(self, attachment: Attachment) -> bool:
         """True when a prior extraction blob was written for this exact file hash.

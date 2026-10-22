@@ -524,6 +524,7 @@ async def run_bill_read_attachment(
     chosen_project_id_for_persist: Optional[int] = None
     fields_for_persist: dict[str, Any] = _empty_fields()
     intake_svc = intake_prediction_service or BillIntakePredictionService()
+    shadow_extraction_content: Optional[str] = None
 
     async def _finish(
         result: dict[str, Any],
@@ -534,6 +535,10 @@ async def run_bill_read_attachment(
         if persist_enabled and attachment_id:
             status = str(result.get("status", "unknown"))
             if status != "disabled":
+                total_field = (result.get("fields") or fields_for_persist).get("total_amount")
+                shadow_amount = None
+                if isinstance(total_field, dict):
+                    shadow_amount = total_field.get("value")
                 _schedule_record_read(
                     intake_svc,
                     attachment_id=attachment_id,
@@ -548,6 +553,10 @@ async def run_bill_read_attachment(
                     header_model=header_model_id,
                     vendor_id=vendor_id_for_persist,
                     vendor_extracted_name=vendor_extracted_name,
+                    shadow_extraction_content=shadow_extraction_content,
+                    shadow_vendor_id=vendor_id_for_persist,
+                    shadow_amount=shadow_amount,
+                    shadow_as_of=as_of,
                 )
         if attachment_id:
             _log_read_attachment_timing(
@@ -611,6 +620,7 @@ async def run_bill_read_attachment(
             )
 
         masked_text = extract_out.get("masked_text") or ""
+        shadow_extraction_content = masked_text
         if not masked_text.strip():
             return await _finish(
                 _result_shell("unreadable"),

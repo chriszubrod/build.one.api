@@ -15,6 +15,7 @@ Sprocs
   ReadBillIntakePredictionByBillId
   ReadBillIntakePredictionsForAccuracy
   RecordBillIntakePredictionFinal
+  UpdateBillIntakePredictionSimilarShadow
   UpsertBillIntakePrediction
 """
 from __future__ import annotations
@@ -106,14 +107,69 @@ class BillIntakePredictionService:
     def __init__(self, repo: Optional[BillIntakePredictionRepository] = None):
         self.repo = repo or BillIntakePredictionRepository()
 
+    @staticmethod
+    def _shadow_similar_prediction(
+        *,
+        shadow_extraction_content: Optional[str] = None,
+        shadow_vendor_id: Optional[int] = None,
+        shadow_amount: Any = None,
+        shadow_as_of: Optional[datetime] = None,
+    ) -> tuple[Optional[int], Optional[Decimal]]:
+        if not shadow_extraction_content or shadow_as_of is None:
+            return None, None
+        amount: Optional[Decimal] = None
+        if shadow_amount is not None:
+            try:
+                amount = abs(Decimal(str(shadow_amount)))
+            except (InvalidOperation, TypeError, ValueError):
+                amount = None
+        if amount is None:
+            return None, None
+        from entities.coding_suggestion.business.similar_bills_service import SimilarBillsService
+
+        vendor_id = int(shadow_vendor_id) if shadow_vendor_id is not None else None
+        return SimilarBillsService.shared().shadow_predict_with_budget(
+            extraction_content=shadow_extraction_content,
+            amount=amount,
+            vendor_id=vendor_id,
+            as_of=shadow_as_of,
+        )
+
     def record_read(self, **build_kwargs: Any) -> None:
         """Build upsert params and persist; never raises (failure-isolated)."""
+        shadow_kwargs = {
+            k: build_kwargs.pop(k)
+            for k in (
+                "shadow_extraction_content",
+                "shadow_vendor_id",
+                "shadow_amount",
+                "shadow_as_of",
+            )
+            if k in build_kwargs
+        }
         try:
             params = self.build_upsert_params_from_read(**build_kwargs)
             self.repo.upsert(**params)
         except Exception as error:
             logger.warning(
                 "bill_intake_prediction.persist_failed err=%s",
+                type(error).__name__,
+            )
+            return
+        from entities.coding_suggestion.business.bill_text_token_hash import feature_enabled
+
+        if not feature_enabled():
+            return
+        try:
+            similar_scc, similar_conf = self._shadow_similar_prediction(**shadow_kwargs)
+            self.repo.update_similar_shadow(
+                attachment_id=int(params["AttachmentId"]),
+                similar_pred_sub_cost_code_id=similar_scc,
+                similar_confidence=similar_conf,
+            )
+        except Exception as error:
+            logger.warning(
+                "bill_intake_prediction.similar_shadow_failed err=%s",
                 type(error).__name__,
             )
 

@@ -52,6 +52,14 @@ class Settings(BaseSettings):
     # encryption_key.
     azure_encryption_key: Optional[str] = None
 
+    # U-701a: HMAC key for bill PDF token hashes (AttachmentTextTokenHash). When unset,
+    # similar-bills storage and matching are disabled (fail-soft, one-time warning).
+    bill_text_token_hash_key: Optional[str] = None
+
+    # U-701a: live similar-bills cache tuning (footprint vs accuracy).
+    similar_bills_max_tokens_per_bill: Optional[int] = 50
+    similar_bills_refresh_seconds: int = 1800
+
     # Admin / scheduler-trigger secret. Shared with the build.one.scheduler
     # Azure Function; caller passes it in the X-Drain-Secret header. When
     # unset, the admin endpoints fail closed with 503.

@@ -5,7 +5,7 @@
 --   (IDENTITY keys are never reused). Keeps bill delete, attachment delete, and vendor merge from SQL 547.
 -- Residual: UpsertBillIntakePrediction stamps ExtractedDatetime from the attachment row at upsert time; a
 --   concurrent re-extraction of the same attachment between that read and the MERGE is a known, accepted race.
--- Sprocs: BindBillIntakePredictionToBill, ReadBillIntakePredictionByAttachmentId, ReadBillIntakePredictionByBillId, ReadBillIntakePredictionsForAccuracy, RecordBillIntakePredictionFinal, UpsertBillIntakePrediction
+-- Sprocs: BindBillIntakePredictionToBill, ReadBillIntakePredictionByAttachmentId, ReadBillIntakePredictionByBillId, ReadBillIntakePredictionsForAccuracy, RecordBillIntakePredictionFinal, UpdateBillIntakePredictionSimilarShadow, UpsertBillIntakePrediction
 --
 -- Run: ./.venv/bin/python scripts/run_sql.py entities/bill_intake_prediction/sql/dbo.bill_intake_prediction.sql
 
@@ -81,6 +81,33 @@ BEGIN
     CREATE INDEX [IX_BillIntakePrediction_BillId]
         ON dbo.[BillIntakePrediction] ([BillId])
         WHERE [BillId] IS NOT NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.BillIntakePrediction', 'U') IS NOT NULL
+BEGIN
+    IF COL_LENGTH('dbo.BillIntakePrediction', 'SimilarPredSubCostCodeId') IS NULL
+    BEGIN
+        ALTER TABLE dbo.[BillIntakePrediction]
+            ADD [SimilarPredSubCostCodeId] BIGINT NULL;
+    END
+
+    IF COL_LENGTH('dbo.BillIntakePrediction', 'SimilarConfidence') IS NULL
+    BEGIN
+        ALTER TABLE dbo.[BillIntakePrediction]
+            ADD [SimilarConfidence] DECIMAL(5,4) NULL;
+    END
+END
+GO
+
+IF EXISTS (
+    SELECT 1 FROM sys.foreign_keys
+    WHERE name = 'FK_BillIntakePrediction_SimilarPredSubCostCode'
+      AND parent_object_id = OBJECT_ID('dbo.BillIntakePrediction')
+)
+BEGIN
+    ALTER TABLE dbo.[BillIntakePrediction]
+        DROP CONSTRAINT [FK_BillIntakePrediction_SimilarPredSubCostCode];
 END
 GO
 
@@ -209,7 +236,9 @@ BEGIN
             [TimingJson] = @TimingJson,
             [InputTokens] = @InputTokens,
             [OutputTokens] = @OutputTokens,
-            [CostUsd] = @CostUsd
+            [CostUsd] = @CostUsd,
+            [SimilarPredSubCostCodeId] = NULL,
+            [SimilarConfidence] = NULL
     WHEN NOT MATCHED THEN
         INSERT
             ([CreatedDatetime], [ModifiedDatetime], [CreatedByUserId], [AttachmentId],
@@ -218,7 +247,8 @@ BEGIN
              [PredTotalAmount], [PredDescription], [PredSubCostCodeId], [PredProjectId],
              [CodingMode], [CodingChosenProjectId], [HeaderConfidence], [HeaderModel],
              [CodingConfidence], [CodingModel], [LatencyMsTotal], [TimingJson],
-             [InputTokens], [OutputTokens], [CostUsd])
+             [InputTokens], [OutputTokens], [CostUsd],
+             [SimilarPredSubCostCodeId], [SimilarConfidence])
         VALUES
             (@Now, @Now, COALESCE(@CreatedByUserId, 17), @AttachmentId,
              @LinkedBillId, @ExtractedDatetime, @IntakeSource, @ModelVersion, @Status,
@@ -226,7 +256,8 @@ BEGIN
              @PredTotalAmount, @PredDescription, @PredSubCostCodeId, @PredProjectId,
              @CodingMode, @CodingChosenProjectId, @HeaderConfidence, @HeaderModel,
              @CodingConfidence, @CodingModel, @LatencyMsTotal, @TimingJson,
-             @InputTokens, @OutputTokens, @CostUsd)
+             @InputTokens, @OutputTokens, @CostUsd,
+             NULL, NULL)
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -292,6 +323,42 @@ BEGIN
         );
 
     COMMIT TRANSACTION;
+END;
+GO
+
+CREATE OR ALTER PROCEDURE UpdateBillIntakePredictionSimilarShadow
+(
+    @AttachmentId BIGINT,
+    @SimilarPredSubCostCodeId BIGINT = NULL,
+    @SimilarConfidence DECIMAL(5,4) = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+    DECLARE @RowsUpdated INT;
+
+    UPDATE dbo.[BillIntakePrediction]
+    SET
+        [SimilarPredSubCostCodeId] = @SimilarPredSubCostCodeId,
+        [SimilarConfidence] = @SimilarConfidence,
+        [ModifiedDatetime] = @Now
+    WHERE [AttachmentId] = @AttachmentId
+      AND [BillId] IS NULL
+      AND [FinalizedDatetime] IS NULL;
+
+    SET @RowsUpdated = @@ROWCOUNT;
+
+    COMMIT TRANSACTION;
+
+    SELECT
+        @RowsUpdated AS [RowsUpdated],
+        @AttachmentId AS [AttachmentId],
+        @SimilarPredSubCostCodeId AS [SimilarPredSubCostCodeId],
+        @SimilarConfidence AS [SimilarConfidence];
 END;
 GO
 

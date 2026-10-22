@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 # Literal call_procedure(name=...) references for tests/test_entity_docstrings.py.
 if False:  # pragma: no cover
     call_procedure(cursor=None, name="UpsertBillIntakePrediction")
+    call_procedure(cursor=None, name="UpdateBillIntakePredictionSimilarShadow")
     call_procedure(cursor=None, name="BindBillIntakePredictionToBill")
     call_procedure(cursor=None, name="RecordBillIntakePredictionFinal")
     call_procedure(cursor=None, name="ReadBillIntakePredictionByBillId")
@@ -133,6 +134,24 @@ class BillIntakePredictionRepository:
     def upsert(self, **params: Any) -> Optional[BillIntakePrediction]:
         row = self._call("UpsertBillIntakePrediction", params, fetch="one")
         return self._from_row(row)
+
+    def update_similar_shadow(
+        self,
+        *,
+        attachment_id: int,
+        similar_pred_sub_cost_code_id: Optional[int],
+        similar_confidence: Any,
+    ) -> bool:
+        row = self._call(
+            "UpdateBillIntakePredictionSimilarShadow",
+            {
+                "AttachmentId": attachment_id,
+                "SimilarPredSubCostCodeId": similar_pred_sub_cost_code_id,
+                "SimilarConfidence": similar_confidence,
+            },
+            fetch="one",
+        )
+        return row is not None and int(getattr(row, "RowsUpdated", 0) or 0) > 0
 
     def bind_to_bill(self, *, attachment_id: int, bill_id: int) -> bool:
         row = self._call(

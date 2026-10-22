@@ -2,6 +2,90 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## QBO external `update_*` clients are FULL-REPLACE by default — this is what wiped a vendor record (booked 2026-10-22, Vendor Agent run)
+
+Owner reported that a past vendor update "removed all else that was not updated — cleared each field
+completely." Root cause found; the mechanism is real and still in the code.
+
+**`QboVendorClient.update_vendor`** (`integrations/intuit/qbo/vendor/external/client.py:68`):
+
+```python
+payload = vendor.dict(by_alias=True, exclude_none=True)   # line 74
+```
+
+Two things combine:
+1. **`exclude_none=True`** drops every field the caller did not explicitly set.
+2. **`sparse` is never set** — the schema *has* the field (`vendor/external/schemas.py:41`); nothing
+   populates it.
+
+**QBO's update is a FULL REPLACE unless the payload carries `sparse: true`.** So an update built from
+`Id` + `SyncToken` + the one field being changed tells QBO *"this is the whole vendor now"*, and QBO
+clears every writable field that is absent: `BillAddr`, `PrimaryEmailAddr`, `PrimaryPhone`, `Mobile`,
+`Fax`, `AcctNum`, `WebAddr`, `TaxIdentifier`, `Vendor1099`, `CompanyName`, `PrintOnCheckName`.
+
+**Currently ARMED BUT NOT WIRED.** The local→QBO vendor push is dead code: `sync_local_to_qbo` was
+deleted in U-314 as confirmed-unused and `scripts/sync_qbo_vendor.py:129` hardcodes
+`{"vendors_pushed": 0}` — vendor sync is one-way, QBO→local. `update_vendor` has **no live caller**
+(only the client, its `__init__` export, and tests). So whatever cleared the fields was a hand-run or
+a since-removed caller; the landmine is waiting for whoever next writes a vendor push.
+
+**NOT the agent tool — do not "fix" that.** `vendor_specialist`'s `update_vendor`
+(`entities/vendor/intelligence/tools.py:282`) calls `PUT /api/v1/update/vendor/{public_id}`, the
+**local** route. `VendorService.update_by_public_id` reads the row first and merges, so unset fields
+really are preserved and the tool's description is accurate.
+⚠️ Note the local path's own latent edge: `UpdateVendorById` sets `Name`, `Abbreviation` and `Notes`
+**unconditionally** (only the FK/BIT columns have `CASE WHEN` preserve-on-NULL guards). It is safe
+*only* because the service always supplies those three from the existing row. **A future caller that
+hits the sproc directly, bypassing the service, loses them.**
+
+### It is a FAMILY, not a one-off
+
+Every QBO external update method shares the shape — `exclude_none=True`, nothing enforcing `sparse`:
+**bill, invoice, purchase, term, vendorcredit, company_info, vendor**. Each is safe only for as long as
+every one of its callers happens to pass a complete record. Nothing checks that invariant.
+
+The sharpest evidence the rule was known and still not enforced is
+`integrations/intuit/qbo/invoice/external/client.py`:
+
+- **line 104** (docstring): *"QBO requires a full-record update (sparse=False or all fields) to avoid
+  losing existing lines."*
+- **line 107**: `payload = invoice.model_dump(by_alias=True, exclude_none=True, mode="json")`
+
+The invariant is stated in a comment directly above code that does not enforce it. That is how this
+survived.
+
+### The correct pattern already exists in this repo
+
+`PurchaseExpenseConnector.recode_purchase_line`
+(`integrations/intuit/qbo/purchase/connector/expense/business/service.py:572-574`) fetches the **raw**
+QBO JSON, mutates only the target line, strips the server-owned markers, and sends the whole document
+back, so every sibling field and line survives byte-identical:
+
+```python
+for _read_only in ("MetaData", "domain", "sparse"):
+    raw.pop(_read_only, None)
+updated = client.update_purchase_raw(raw)
+```
+
+`CLAUDE.md` documents this and explicitly warns against the rebuild-from-local alternative because it
+drops siblings — the same failure one level down.
+
+- [ ] 🟠 **Fix at the CLIENT, not per caller.** Either read-modify-write the raw record (preferred —
+  matches `recode_purchase_line` and handles QBO's address sub-object quirks) or set `sparse=True` and
+  send only the changed fields. Per-caller discipline is precisely what already failed.
+- [ ] 🟠 **Audit the live callers of the other six clients.** A client is safe only while every caller
+  passes a complete record; confirm that holds today before assuming only vendor is affected.
+- [ ] 🟡 **Add a guard test** — any QBO external `update_*` must either set `sparse` or round-trip a raw
+  document. Same shape as `tests/test_sproc_single_source.py`: make the next occurrence impossible
+  rather than documented.
+- [ ] 🟡 **Move the invoice docstring's rule into code.** A comment asserting an invariant above code
+  that doesn't enforce it is the proximate cause of this surviving.
+- [ ] 🟢 If the vendor→QBO push is ever revived, it must **not** be revived on the current
+  `update_vendor`.
+
+⚠️ This touches seven external clients ⇒ **its own unit with all three review passes**, not an
+incidental fix. P0-surface (external writes) ⇒ Pass 3 applies.
+
 ## Long-standing subs were never swept into compliance tracking — 4 confirmed, ~12 more (booked 2026-10-20, Vendor Agent run)
 
 Found by onboarding **Contractors Mirror & Glass** (dbo 207): a **$165,848** sub across **35 bills since

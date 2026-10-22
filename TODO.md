@@ -2,6 +2,16 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-701a deferred — similar-bills token hashes (booked 2026-10-22, shipped `92a92024`)
+
+Shadow-only today (nothing user-facing reads it). Items before or with U-701b:
+- **Tenant filter (must-do before user-facing).** `ReadSimilarBillsCorpusRows` has no `CompanyId` predicate and `SimilarBillsService` is a process-global singleton. Fine while the output is shadow telemetry; filter by company before any prompt/UI uses it.
+- **Shadow write race (P2, telemetry only).** `record_read` upserts (clearing Similar*) then writes the shadow in a second call; two reads of one attachment on the 2-worker executor can interleave and leave A's shadow on B's row. Fold the shadow into the upsert or guard by a read token.
+- **Hash row outlives a later taxpayer link.** A hash written before a `TaxpayerAttachment` link is never deleted. The corpus sproc already excludes it, so it never matches; delete the row when the link is created (hardening).
+- **Malformed hash row is gap-filled on every refresh** (bounded by malformed-row count, warning each time). Remember skipped ids for the snapshot's lifetime.
+- **Memory compaction (U-701b).** `_hash_by_attachment` keeps full frozensets of Python ints for IDF; store arrays / capped sets. Every 6th refresh re-reads the whole table's `TokenHashes`.
+- **Quality, deferred from Pass 2:** pass `shadow_amount`/`shadow_vendor_id` from `params["PredTotalAmount"]`/`["PredVendorId"]` instead of a second parse; one shared blob-read-with-timeout helper for `scripts/u701a_backfill_token_hashes.py` and `scripts/u691_similar_bills_backtest.py`; `feature_enabled()` builds `config.Settings()` per intake read and `warn_once_if_disabled` takes no settings; one canonical int form in `bill_text_token_hash.py` (hex only at storage, pin the stored string with a test).
+
 ## QBO external `update_*` clients are FULL-REPLACE by default — this is what wiped a vendor record (booked 2026-10-22, Vendor Agent run)
 
 Owner reported that a past vendor update "removed all else that was not updated — cleared each field

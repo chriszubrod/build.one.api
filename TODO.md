@@ -125,7 +125,7 @@ our insurer, not a trade vendor.
 - [ ] 🟢 Add a standing report for "vendor with spend over $X and no COI", so the next four are found by
   the dashboard instead of by onboarding the fifth by hand.
 
-## W-9 / Taxpayer coverage is 12% — a CY2026 1099-NEC exposure with a filing deadline (booked 2026-10-20, Vendor Agent run)
+## W-9 / Taxpayer coverage is 12% — a CY2026 1099-NEC exposure with a filing deadline (booked 2026-10-20; MATERIALLY CORRECTED 2026-10-22, Vendor Agent run)
 
 Surfaced alongside the COI sweep above and **kept separate deliberately**: a missing COI is an
 insurance risk we carry, a missing W-9 is a **reporting obligation with a statutory deadline**.
@@ -142,6 +142,35 @@ Measured 2026-10-20 against `dbo.Vendor.TaxpayerId`:
 
 Only **12%** of vendors we have ever billed carry a Taxpayer record.
 
+### ⚠️ CORRECTION 2026-10-22 — most of this is a MISSING BRIDGE, not a missing W-9
+
+**The original framing ("chase ~168 vendors") was wrong and would have sent someone down a far longer
+road than necessary.** Measured realm-wide 2026-10-22: **QBO holds a `TaxIdentifier` for 267 vendors**
+while `dbo.Taxpayer` records only 66. Cross-referencing the CY2026 ≥$600 population:
+
+| | Vendors | CY2026 spend |
+|---|---|---|
+| No `dbo` Taxpayer, CY2026 ≥ $600 | **169** | $7,216,688 |
+| → **QBO ALREADY HOLDS the TIN** | **92** | **$3,644,492** |
+| → genuinely missing everywhere | **77** | $3,572,196 |
+
+More than half the gap — and the **largest balances** — are already in QuickBooks: J A Guzman Masonry
+($487K), Southern Stone Surfaces ($286K), Middle TN Custom Trim ($173K), Cobra ($171K), Emilson
+Cordova ($112K). So the work splits: **backfill 92 (no vendor contact needed at all), chase 77.**
+
+**Root cause — there is no bridge, and no sync will ever build one.** QBO's `Vendor.TaxIdentifier` and
+our `dbo.Taxpayer` entity are separate stores. `integrations/intuit/qbo/vendor/connector/vendor/
+business/service.py` contains **zero** references to `Taxpayer` or `tax_identifier`, so a QBO
+TaxIdentifier never becomes a `dbo.Taxpayer` row. Proven live: the Owner added the EIN for **360 Window
+Wash LLC** (QBO 1492) on 2026-10-22; `dbo.Vendor` 1234 `TaxpayerId` stayed **NULL**. Anyone reasoning
+"I put it in QBO, so we have it" is wrong — and that assumption is a plausible cause of the whole 12%.
+
+⚠️ **A QBO `TaxIdentifier` is NOT a W-9.** It records that someone typed a number. It carries no signed
+certification and, critically, **no federal tax classification** — which is what decides *whether* a
+1099 is owed. For filing you need the number; for the exempt/not-exempt decision you still need the
+W-9. Do not let the backfill be mistaken for closing the compliance question.
+
+
 ⚠️ **168 is an UPPER BOUND on 1099s owed, not a count of them.** Most corporations are exempt from
 1099-NEC (the usual exceptions being legal and medical payees), and that population has not been split
 out here — doing so is the first task below, not a conclusion this entry reaches. What *is* certain is
@@ -154,12 +183,20 @@ Construction, Inc** and it was signed **2015-08-24** — furnished to a differen
 **Presence of a W-9 file is not evidence of a W-9 to us**; check the requester block and the date.
 Same family as [[feedback_verify_compliance_doc_content_not_filename]].
 
-- [ ] 🟠 **Split the 168 by federal tax classification** before any chase, so corporations are not
-  chased for forms they do not owe. The classification lives on the W-9 itself, so for vendors with no
-  W-9 this is a judgement from entity name + QBO data, flagged as provisional.
-- [ ] 🟠 **Get the Owner's decision on chasing W-9s at this volume** before drafting. At ~168 vendors
-  this is a campaign, not a handful of drafts, and the chase emails get **SENT within hours** of being
-  staged ([[reference_vendor_document_request_email]]) — so a bad batch cannot be recalled.
+- [ ] 🟠 **Backfill the 92 from QBO first** — they need no vendor contact at all, and they carry the
+  largest balances. Create `dbo.Taxpayer` rows from QBO's `TaxIdentifier`. ⚠️ **CREATE only** — the
+  update path is the plaintext-TIN P0 (last task below), and it cannot repair its own damage.
+- [ ] 🟠 **Build the bridge so the gap stops reopening.** Either teach the vendor pull connector to
+  create/attach a `Taxpayer` from `TaxIdentifier`, or add a standing reconcile that reports QBO-has /
+  dbo-lacks. Without it, every TIN the Owner adds in QBO goes missing from our side exactly as 360
+  Window Wash did.
+- [ ] 🟠 **Split the remaining 77 by federal tax classification** before any chase, so corporations are
+  not chased for forms they do not owe. The classification lives on the W-9 itself, so for vendors with
+  none this is a judgement from entity name + QBO data, flagged as provisional. Several of the 77 are
+  plainly exempt or miscategorised (A-1 Appliance, SBI Materials, **The Cincinnati Insurance Company**).
+- [ ] 🟠 **Get the Owner's decision before drafting any chase.** Even at 77 this is a campaign, and the
+  chase emails get **SENT within hours** of being staged
+  ([[reference_vendor_document_request_email]]) — a bad batch cannot be recalled.
 - [ ] 🟡 **Richard A. Hamblen (CMG, dbo 207) is a sole proprietor** — box checked on the 2015 W-9 — and
   has taken **$165,848 across 35 bills since 2022** with no Taxpayer record. Sole props are squarely
   1099-NEC reportable. A W-9 request draft is already staged in `invoice@rogersbuild.com`.

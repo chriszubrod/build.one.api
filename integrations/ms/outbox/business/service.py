@@ -36,6 +36,7 @@ KIND_UPDATE_DRAFT = "update_draft"  # U-549 Phase C1
 # the same two service methods the tick used, so a Graph outage retries instead
 # of being swallowed to a WARN.
 KIND_EXPENSE_PULL_FANOUT = "expense_pull_fanout"
+
 # Kinds that WRITE Excel (directly or via a child row). A dead-letter of any of
 # these is `critical` in reconciliation (failed Excel writes must be followed up).
 EXCEL_WRITING_KINDS = frozenset({KIND_APPEND_EXCEL_ROW, KIND_INSERT_EXCEL_ROW, KIND_EXPENSE_PULL_FANOUT})
@@ -675,27 +676,34 @@ class MsOutboxService:
     def enqueue_expense_pull_fanout(
         self,
         *,
-        expense_public_id: str,
+        project_public_id: str,
         project_id: int,
+        expense_public_ids: list[str],
     ) -> Optional[MsOutbox]:
         """
-        Enqueue the per-(expense, project) MS fan-out for a QBO-pulled expense:
-        Excel DETAILS rows + SharePoint module-folder upload. One row per
-        (expense, project); never coalesces (two pulls of the same expense are
-        two refreshes, each idempotent on its own guards — column Z for Excel,
-        the done-row target match for uploads).
+        Enqueue the per-project MS fan-out for QBO-pulled expenses on one
+        project: one batched Excel sync + SharePoint module-folder upload per
+        expense at drain. One row per project per tick (unchunked — see the
+        caller in scripts/sync_qbo_purchase.py); ids are re-read at drain
+        (deleted expenses are skipped).
         """
         tenant_id = _resolve_tenant_id()
         if not tenant_id:
             logger.error("ms.outbox.enqueue_expense_pull_fanout.no_tenant_id")
             return None
 
+        if not expense_public_ids:
+            return None
+
         return self.enqueue(
             kind=KIND_EXPENSE_PULL_FANOUT,
-            entity_type="Expense",
-            entity_public_id=str(expense_public_id),
+            entity_type="Project",
+            entity_public_id=str(project_public_id),
             tenant_id=tenant_id,
-            payload={"project_id": int(project_id)},
+            payload={
+                "project_id": int(project_id),
+                "expense_public_ids": [str(e) for e in expense_public_ids],
+            },
         )
 
     def enqueue_sharepoint_upload(

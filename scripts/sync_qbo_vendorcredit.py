@@ -334,8 +334,8 @@ def sync_qbo_to_local(
         pace_batch(i, len(vendor_credits), logger, "vendor credits")
 
     # --- Batch budget-tracker Excel sync: one worksheet read + batched insert per project ---
-    # Mirrors the purchase pull (sync_expenses_batch_to_excel). Best-effort: an Excel
-    # failure is logged and never blocks the credit watermark.
+    # Mirrors the purchase pull (per-project expense_pull_fanout; Excel batched at drain).
+    # Best-effort: an Excel failure is logged and never blocks the credit watermark.
     if synced_credits:
         project_credit_map = {}  # project_id -> [(bill_credit, [line_items_for_this_project])]
         for bill_credit, bill_credit_id in synced_credits:

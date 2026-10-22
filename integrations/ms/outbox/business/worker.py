@@ -37,8 +37,9 @@ logger = get_ms_logger(__name__)
 # Chapter 5 parity with QBO: dead-letter after 5 failed attempts.
 MAX_ATTEMPTS = 5
 
-# `ExpenseService.sync_to_excel_workbook` / `_upload_attachments_to_module_folder`
-# report an UNMAPPED project with these messages. They are configuration, not
+# `ExpenseService.sync_expenses_batch_to_excel` /
+# `_upload_attachments_to_module_folder` report an UNMAPPED project with these
+# messages. They are configuration, not
 # failures — the QBO purchase tick logged them and moved on, and so does the
 # fan-out handler (a retry cannot map a project).
 _UNMAPPED_MESSAGE_PREFIXES = (
@@ -50,6 +51,50 @@ _UNMAPPED_MESSAGE_PREFIXES = (
 def _is_unmapped_result(result: Dict[str, Any]) -> bool:
     message = str((result or {}).get("message") or "")
     return any(message.startswith(prefix) for prefix in _UNMAPPED_MESSAGE_PREFIXES)
+
+
+# Stable ExpenseService `errors[].error` literals — safe to persist on MsOutbox.LastError.
+_SAFE_FANOUT_ERROR_LITERALS = frozenset(
+    {
+        "Drive not found",
+        "DriveItem not found",
+        "Vendor not found",
+        "Worksheet name not found",
+        "Expense module not found",
+        "Module folder missing drive or item_id",
+    }
+)
+
+
+def _label_fanout_error(
+    entry: Any,
+    *,
+    phase: str,
+    expense_public_id: Optional[str] = None,
+) -> str:
+    """Map a service error dict to a step label without raw exception text."""
+    if not isinstance(entry, dict):
+        return f"{phase}:failed"
+    line_item_id = entry.get("line_item_id")
+    step = entry.get("step") or phase
+    err_text = str(entry.get("error") or "")
+    if err_text in _SAFE_FANOUT_ERROR_LITERALS:
+        label = err_text
+    else:
+        label = "failed"
+    if line_item_id is not None:
+        return f"{step}:{label} line_item_id={line_item_id}"
+    if expense_public_id is not None:
+        return f"{step}:{label} expense_public_id={expense_public_id}"
+    return f"{step}:{label}"
+
+
+def _raise_fanout_transient_db_error(*, step: str, project_id: int, entity_public_id: str) -> None:
+    raise MsServerError(
+        f"expense_pull_fanout: {step} failed",
+        request_path=f"expense_pull_fanout/{entity_public_id}/project/{project_id}",
+    )
+
 
 # Cross-process drain lock.
 DRAIN_LOCK_NAME = "ms_outbox_drain"
@@ -393,17 +438,16 @@ class MsOutboxWorker:
 
     def _handle_expense_pull_fanout(self, row: MsOutbox, payload: Dict[str, Any]) -> None:
         """
-        Run the Excel + SharePoint fan-out for one (expense, project) that the
-        QBO purchase tick projected. Re-reads the expense at drain time (the
-        payload carries only ids), then calls the same two `ExpenseService`
-        methods the tick used to call inline. Both return result dicts rather
-        than raising; a non-empty `errors` list here is turned back into a
-        retryable `MsServerError` so the row retries with backoff and eventually
-        dead-letters with a ReconciliationIssue instead of vanishing into a WARN.
+        Run the Excel + SharePoint fan-out for one project that the QBO purchase
+        tick projected. Re-reads each expense at drain time (payload carries
+        project_id + expense public_ids), batches Excel via
+        `sync_expenses_batch_to_excel` (one worksheet snapshot per project),
+        then SharePoint module-folder upload per expense. Service methods return
+        result dicts rather than raising; a non-empty `errors` list here becomes
+        a retryable `MsServerError` so the row retries with backoff.
 
-        An unmapped project (no Excel workbook / no module folder) is a
-        configuration state, not a failure: it is logged and the row is done,
-        matching what the inline path did (a warning, no retry).
+        An unmapped project (no Excel workbook / no module folder) is
+        configuration, not failure: logged at INFO and the row is done.
         """
         from entities.expense.business.service import ExpenseService
         from entities.expense_line_item.business.service import ExpenseLineItemService
@@ -413,85 +457,165 @@ class MsOutboxWorker:
             raise ValueError("expense_pull_fanout payload missing project_id")
         project_id = int(project_id)
 
+        expense_public_ids = payload.get("expense_public_ids")
+        if expense_public_ids is None:
+            raise ValueError("expense_pull_fanout payload missing expense_public_ids")
+        if not isinstance(expense_public_ids, list):
+            raise ValueError("expense_pull_fanout expense_public_ids must be a list")
+
+        seen_ids: set[str] = set()
+        deduped_ids: list = []
+        for raw_id in expense_public_ids:
+            key = str(raw_id)
+            if key not in seen_ids:
+                seen_ids.add(key)
+                deduped_ids.append(raw_id)
+        expense_public_ids = deduped_ids
+
+        entity_public_id = str(row.entity_public_id)
         expense_service = ExpenseService()
-        expense = expense_service.read_by_public_id(public_id=str(row.entity_public_id))
-        if expense is None:
-            # Deleted between enqueue and drain — nothing to file for.
-            logger.warning(
-                "ms.outbox.expense_pull_fanout.expense_missing",
-                extra={
-                    "event_name": "ms.outbox.expense_pull_fanout.expense_missing",
-                    "outbox_public_id": row.public_id,
-                    "entity_public_id": row.entity_public_id,
-                },
-            )
+        eli_service = ExpenseLineItemService()
+
+        expense_line_pairs: list = []
+        sharepoint_jobs: list = []
+
+        for expense_public_id in expense_public_ids:
+            try:
+                expense = expense_service.read_by_public_id(public_id=str(expense_public_id))
+            except Exception as e:
+                logger.warning(
+                    "ms.outbox.expense_pull_fanout.transient_db_error",
+                    extra={
+                        "event_name": "ms.outbox.expense_pull_fanout.transient_db_error",
+                        "step": "read_expense",
+                        "project_id": project_id,
+                        "entity_public_id": entity_public_id,
+                        "error_type": type(e).__name__,
+                    },
+                )
+                _raise_fanout_transient_db_error(
+                    step="read_expense",
+                    project_id=project_id,
+                    entity_public_id=entity_public_id,
+                )
+            if expense is None:
+                logger.warning(
+                    "ms.outbox.expense_pull_fanout.expense_missing",
+                    extra={
+                        "event_name": "ms.outbox.expense_pull_fanout.expense_missing",
+                        "outbox_public_id": row.public_id,
+                        "entity_public_id": entity_public_id,
+                        "expense_public_id": expense_public_id,
+                        "project_id": project_id,
+                    },
+                )
+                continue
+
+            try:
+                line_items = eli_service.read_by_expense_id(expense_id=expense.id) or []
+            except Exception as e:
+                logger.warning(
+                    "ms.outbox.expense_pull_fanout.transient_db_error",
+                    extra={
+                        "event_name": "ms.outbox.expense_pull_fanout.transient_db_error",
+                        "step": "read_expense_lines",
+                        "project_id": project_id,
+                        "entity_public_id": entity_public_id,
+                        "error_type": type(e).__name__,
+                    },
+                )
+                _raise_fanout_transient_db_error(
+                    step="read_expense_lines",
+                    project_id=project_id,
+                    entity_public_id=entity_public_id,
+                )
+
+            project_items = [li for li in line_items if li.project_id == project_id]
+            if not project_items:
+                logger.info(
+                    "ms.outbox.expense_pull_fanout.no_lines_for_project",
+                    extra={
+                        "event_name": "ms.outbox.expense_pull_fanout.no_lines_for_project",
+                        "entity_public_id": entity_public_id,
+                        "expense_public_id": expense_public_id,
+                        "project_id": project_id,
+                    },
+                )
+                continue
+
+            expense_line_pairs.append((expense, project_items))
+            sharepoint_jobs.append((expense, project_items, len(line_items)))
+
+        if not expense_line_pairs:
             return
 
-        line_items = ExpenseLineItemService().read_by_expense_id(expense_id=expense.id) or []
-        project_items = [li for li in line_items if li.project_id == project_id]
-        if not project_items:
-            logger.info(
-                "ms.outbox.expense_pull_fanout.no_lines_for_project",
-                extra={
-                    "event_name": "ms.outbox.expense_pull_fanout.no_lines_for_project",
-                    "entity_public_id": row.entity_public_id,
-                    "project_id": project_id,
-                },
-            )
-            return
-        # Drain-time truth (the SharePoint filename differs for multi-line expenses).
-        line_items_count = len(line_items)
-
-        errors: list = []
-
-        excel_result = expense_service.sync_to_excel_workbook(
-            expense=expense, line_items=project_items, project_id=project_id,
+        labeled_errors: list[tuple[str, Any, Optional[str]]] = []
+        excel_result = expense_service.sync_expenses_batch_to_excel(
+            expense_line_pairs, project_id,
         )
         if _is_unmapped_result(excel_result):
             logger.info(
                 "ms.outbox.expense_pull_fanout.excel_unmapped",
-                extra={"entity_public_id": row.entity_public_id, "project_id": project_id,
-                       "message": excel_result.get("message")},
+                extra={
+                    "entity_public_id": entity_public_id,
+                    "project_id": project_id,
+                    "result_message": excel_result.get("message"),
+                },
             )
         else:
-            errors.extend(excel_result.get("errors") or [])
+            for entry in excel_result.get("errors") or []:
+                labeled_errors.append(("excel", entry, None))
 
-        sp_result = expense_service._upload_attachments_to_module_folder(
-            expense=expense,
-            line_items=project_items,
-            project_id=project_id,
-            expense_line_items_count=line_items_count,
-        )
-        if _is_unmapped_result(sp_result):
-            logger.info(
-                "ms.outbox.expense_pull_fanout.sharepoint_unmapped",
-                extra={"entity_public_id": row.entity_public_id, "project_id": project_id,
-                       "message": sp_result.get("message")},
+        sp_synced = 0
+        sp_skipped = 0
+        for expense, project_items, line_items_count in sharepoint_jobs:
+            sp_result = expense_service._upload_attachments_to_module_folder(
+                expense=expense,
+                line_items=project_items,
+                project_id=project_id,
+                expense_line_items_count=line_items_count,
             )
-        else:
-            errors.extend(sp_result.get("errors") or [])
+            if _is_unmapped_result(sp_result):
+                logger.info(
+                    "ms.outbox.expense_pull_fanout.sharepoint_unmapped",
+                    extra={
+                        "entity_public_id": entity_public_id,
+                        "expense_public_id": str(expense.public_id),
+                        "project_id": project_id,
+                        "result_message": sp_result.get("message"),
+                    },
+                )
+            else:
+                for entry in sp_result.get("errors") or []:
+                    labeled_errors.append(
+                        ("sharepoint", entry, str(expense.public_id)),
+                    )
+            sp_synced += int(sp_result.get("synced_count") or 0)
+            sp_skipped += int(sp_result.get("skipped_count") or 0)
 
         logger.info(
             "ms.outbox.expense_pull_fanout.completed",
             extra={
                 "event_name": "ms.outbox.expense_pull_fanout.completed",
-                "entity_public_id": row.entity_public_id,
+                "entity_public_id": entity_public_id,
                 "project_id": project_id,
+                "expense_count": len(expense_line_pairs),
                 "excel_rows": excel_result.get("synced_count", 0),
-                "sharepoint_uploads": sp_result.get("synced_count", 0),
-                "sharepoint_skipped": sp_result.get("skipped_count", 0),
-                "error_count": len(errors),
+                "sharepoint_uploads": sp_synced,
+                "sharepoint_skipped": sp_skipped,
+                "error_count": len(labeled_errors),
             },
         )
-        if errors:
-            # Both ExpenseService methods catch internally and report through
-            # `errors`, so a Graph 503 can never surface as an MsGraphError from
-            # here. Raise a RETRYABLE MsGraphError subclass: `_process` routes it
-            # to `_handle_ms_error` (backoff, MAX_ATTEMPTS, then dead-letter). A
-            # plain RuntimeError would dead-letter on attempt 1.
+        if labeled_errors:
             raise MsServerError(
-                "expense_pull_fanout: " + "; ".join(str(e.get("error", e)) for e in errors),
-                request_path=f"expense_pull_fanout/{row.entity_public_id}/project/{project_id}",
+                "expense_pull_fanout: "
+                + "; ".join(
+                    _label_fanout_error(
+                        entry, phase=phase, expense_public_id=expense_pid,
+                    )
+                    for phase, entry, expense_pid in labeled_errors
+                ),
+                request_path=f"expense_pull_fanout/{entity_public_id}/project/{project_id}",
             )
 
     def _handle_upload_sharepoint_file(

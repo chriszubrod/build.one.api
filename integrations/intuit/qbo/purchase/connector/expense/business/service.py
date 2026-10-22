@@ -18,7 +18,11 @@ from integrations.intuit.qbo.base.identity_consistency import verify_identity_db
 from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_ref, qbo_ref_or_placeholder
 from integrations.intuit.qbo.base.identity_fastpath import run_identity_fastpath_dbo_only
 from integrations.intuit.qbo.base.ids import coerce_id
-from integrations.intuit.qbo.base.errors import QboNotFoundError
+from integrations.intuit.qbo.base.errors import (
+    QboBudgetExceededError,
+    QboNotFoundError,
+    QboWriteRefusedError,
+)
 from integrations.intuit.qbo.base.reconciliation_recorder import (
     record_holding_code_on_completed_deduped,
     record_mapping_issue,
@@ -500,10 +504,14 @@ class PurchaseExpenseConnector:
         except QboNotFoundError as not_found:
             self._vendor_not_found.add(cache_key)
             raise self._not_a_vendor_error("vendor GET -> 404") from not_found
+        except (QboBudgetExceededError, QboWriteRefusedError):
+            raise
         except Exception as resolve_e:
             logger.warning(
-                f"On-demand vendor resolve failed for QBO vendor {qbo_entity_ref_value} "
-                f"(realm {realm_id}): {resolve_e}"
+                "On-demand vendor resolve failed for QBO vendor %s (realm %s): %s",
+                qbo_entity_ref_value,
+                realm_id,
+                type(resolve_e).__name__,
             )
             resolved = None
         # Drop the negative cache entry the first lookup wrote, then look again

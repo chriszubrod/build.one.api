@@ -164,7 +164,12 @@ def _count_lines(expense_line_item_service, expense_id: int, phase: str):
     try:
         return expense_line_item_service.read_by_expense_id(expense_id=expense_id)
     except Exception as cnt_e:
-        logger.warning(f"Could not count lines for Expense {expense_id} {phase} projection: {cnt_e}")
+        logger.warning(
+            "Could not count lines for Expense %s %s projection: %s",
+            expense_id,
+            phase,
+            type(cnt_e).__name__,
+        )
         return None
 
 
@@ -180,8 +185,11 @@ def _sync_and_link_purchase_attachables(
     """
     Download a purchase's attachables into the Attachment module and link them
     to its ExpenseLineItems. Returns links created. Budget/write-refused errors
-    propagate (they must end the tick); anything else is logged and counts 0 —
-    the ONLY two paths that link receipts share this rule.
+    propagate to the caller: in the per-purchase projection loop that records a
+    hold for that purchase's watermark (same as master); from the late-attach
+    pass (_link_attachables_for_unchanged_purchases) it ends the tick. Anything
+    else is logged and counts 0 — the ONLY two paths that link receipts share
+    this rule.
     """
     try:
         qbo_attachables = attachable_service.sync_attachables_for_purchase(
@@ -196,33 +204,11 @@ def _sync_and_link_purchase_attachables(
     except (QboBudgetExceededError, QboWriteRefusedError):
         raise
     except Exception as att_e:
-        logger.warning(f"Could not sync/link attachments for Purchase {purchase_qbo_id}: {att_e}")
-        return 0
-
-
-def _link_late_attachables(
-    *,
-    realm_id: str,
-    attachable_service: QboAttachableService,
-    expense_service: ExpenseService,
-    changed_qbo_ids: set,
-) -> int:
-    """
-    Failure-isolated wrapper: a problem linking late receipts must never fail
-    the tick (the watermark still commits — continuity is per attachable, and
-    the next tick's bound starts from this one's query start, not from here).
-    """
-    try:
-        return _link_attachables_for_unchanged_purchases(
-            realm_id=realm_id,
-            attachable_service=attachable_service,
-            expense_service=expense_service,
-            changed_qbo_ids=changed_qbo_ids,
+        logger.warning(
+            "Could not sync/link attachments for Purchase %s: %s",
+            purchase_qbo_id,
+            type(att_e).__name__,
         )
-    except (QboBudgetExceededError, QboWriteRefusedError):
-        raise
-    except Exception as orphan_e:
-        logger.warning(f"Could not link late-attached receipts: {orphan_e}")
         return 0
 
 
@@ -245,7 +231,16 @@ def _link_attachables_for_unchanged_purchases(
     transaction date (`_attachable_window_for_create`), which covers any
     receipt matched in the meantime.
     """
-    touched = attachable_service.entity_ids_in_snapshot(realm_id, "Purchase")
+    try:
+        touched = attachable_service.entity_ids_in_snapshot(realm_id, "Purchase")
+    except (QboBudgetExceededError, QboWriteRefusedError):
+        raise
+    except Exception as orphan_e:
+        logger.warning(
+            "Could not link late-attached receipts: %s",
+            type(orphan_e).__name__,
+        )
+        return 0
     pending = sorted(touched - set(changed_qbo_ids))
     if not pending:
         return 0
@@ -260,7 +255,11 @@ def _link_attachables_for_unchanged_purchases(
         except (QboBudgetExceededError, QboWriteRefusedError):
             raise
         except Exception as read_e:
-            logger.warning(f"Could not read the local Expense for Purchase {qbo_id} (late attach): {read_e}")
+            logger.warning(
+                "Could not read the local Expense for Purchase %s (late attach): %s",
+                qbo_id,
+                type(read_e).__name__,
+            )
             continue
         if expense is None:
             continue
@@ -320,7 +319,7 @@ def sync_qbo_to_local(
     expense_line_item_service = ExpenseLineItemService()
     late_linked = 0
     if last_sync_time:
-        late_linked = _link_late_attachables(
+        late_linked = _link_attachables_for_unchanged_purchases(
             realm_id=realm_id,
             attachable_service=attachable_service,
             expense_service=expense_service,
@@ -336,6 +335,7 @@ def sync_qbo_to_local(
             "attachments_linked": late_linked,
             "ms_fanout_enqueued": 0,
             "ms_fanout_refused": 0,
+            "ms_fanout_failed": 0,
             "box_excel_batches": 0,
             "skipped_count": 0,
             "skipped_purchase_ids": [],
@@ -352,6 +352,7 @@ def sync_qbo_to_local(
     attachments_linked = late_linked
     ms_fanout_enqueued = 0   # expense_pull_fanout outbox rows written (Excel + SharePoint run at drain)
     ms_fanout_refused = 0    # ALLOW_MS_WRITES gate off / no tenant — nothing enqueued
+    ms_fanout_failed = 0     # project lookup / enqueue exception — no row written
     box_excel_batches = 0
     synced_expenses = []     # (expense, expense_id) — collected for the per-project fan-out
     lines_by_expense_id = {}  # expense_id -> line rows already read after projection (saves a re-read)
@@ -440,9 +441,9 @@ def sync_qbo_to_local(
         pace_batch(i, len(purchases), logger, "purchases")
 
     # --- MS fan-out (Excel DETAILS rows + SharePoint module-folder upload) ---
-    # A2: enqueued, never run inline. Each (expense, project) pair becomes one
-    # `expense_pull_fanout` outbox row; the drain handler re-reads the expense
-    # and runs the same ExpenseService methods this tick used to call directly
+    # A2: enqueued, never run inline. Each project touched this tick becomes one
+    # `expense_pull_fanout` outbox row; the drain handler re-reads expenses and
+    # batches Excel via sync_expenses_batch_to_excel (one snapshot per project)
     # (folder resolution, workbook session, used-range read, blob probes — all
     # MS Graph HTTP that used to sit inside the pull and stretch it past the
     # next timer). Box doc-push and Box Excel were already enqueue-only.
@@ -461,24 +462,53 @@ def sync_qbo_to_local(
                 for proj_id, proj_items in by_project.items():
                     project_expense_map.setdefault(proj_id, []).append((expense, proj_items))
             except Exception as e:
-                logger.warning(f"Could not read line items for Expense {expense_id} for Excel sync: {e}")
+                logger.warning(
+                    "Could not read line items for Expense %s for Excel sync: %s",
+                    expense_id,
+                    type(e).__name__,
+                )
 
         if project_expense_map:
             logger.info(f"MS fan-out: {len(project_expense_map)} project(s) across {len(synced_expenses)} expense(s) — enqueueing")
+        from entities.project.business.service import ProjectService
         from integrations.ms.outbox.business.service import MsOutboxService
         ms_outbox = MsOutboxService()
+        project_service = ProjectService()
         for proj_id, expense_line_pairs in project_expense_map.items():
-            for expense, proj_items in expense_line_pairs:
-                try:
-                    queued = ms_outbox.enqueue_expense_pull_fanout(
-                        expense_public_id=str(expense.public_id), project_id=proj_id,
+            try:
+                project = project_service.read_by_id(proj_id)
+                if not project:
+                    logger.warning(
+                        "Could not enqueue MS fan-out: project %s not found",
+                        proj_id,
                     )
-                    if queued is None:
-                        ms_fanout_refused += 1
-                    else:
-                        ms_fanout_enqueued += 1
-                except Exception as fan_e:
-                    logger.warning(f"Could not enqueue MS fan-out for Expense {expense.public_id} / project {proj_id}: {fan_e}")
+                    ms_fanout_failed += 1
+                    continue
+                expense_public_ids = [
+                    str(expense.public_id) for expense, _ in expense_line_pairs
+                ]
+                # ONE row per project per tick, deliberately unchunked: every row
+                # computes Excel insert indices from its own used-range snapshot,
+                # and a second row for the same project created now would drain
+                # before the first row's insert children apply, landing its rows
+                # in the wrong SubCostCode section. Chunk only once a row defers
+                # while undrained inserts exist for its workbook (TODO, U-621 api).
+                queued = ms_outbox.enqueue_expense_pull_fanout(
+                    project_public_id=str(project.public_id),
+                    project_id=proj_id,
+                    expense_public_ids=expense_public_ids,
+                )
+                if queued is None:
+                    ms_fanout_refused += 1
+                else:
+                    ms_fanout_enqueued += 1
+            except Exception as fan_e:
+                logger.warning(
+                    "Could not enqueue MS fan-out for project %s: %s",
+                    proj_id,
+                    type(fan_e).__name__,
+                )
+                ms_fanout_failed += 1
 
         # --- Box: doc-push (PDFs -> project's "14 - Invoices") + BATCHED Box Excel ---
         # Best-effort, ALLOW_BOX_WRITES-gated. Box Excel is batched per project (one
@@ -524,6 +554,7 @@ def sync_qbo_to_local(
         "attachments_linked": attachments_linked,
         "ms_fanout_enqueued": ms_fanout_enqueued,
         "ms_fanout_refused": ms_fanout_refused,
+        "ms_fanout_failed": ms_fanout_failed,
         "box_excel_batches": box_excel_batches,
         "skipped_count": len(outcome.skipped_ids),
         "skipped_purchase_ids": outcome.skipped_ids,

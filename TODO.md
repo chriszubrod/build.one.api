@@ -862,6 +862,31 @@ same date. Everything below was confirmed against source and is open. Severity i
   raise the timeout.
 - [ ] 🟠 **P2 (web) — `usePaginatedList.load` has no request-sequence guard** (~165-184); fast tab/search
   changes can let an older response overwrite a newer one. Shared with BillList.
+### U-621 (api) residuals
+- 🟠 **Fan-out rows are unchunked (one per project per tick) on purpose.** A large backfill can make one row run past the drain time budget. Chunking (tried in U-621a round 2) made every chunk after the first read the used range before the earlier chunk's insert children applied — the wrong-section bug again — so it was reverted. Chunk only after a fan-out row defers (retryable, ReadyAfter) while undrained insert/append children exist for the same workbook item_id; that same defer also closes the cross-tick window (R2).
+- 🟢 **A retried insert child can land out of order** (pre-existing, also bill/bill credit): `ClaimNextPendingMsOutbox` has no head-of-line blocking, so if a lower insert fails and retries after an upper one succeeds, it lands too high. Rides with the defer above / U-712.
+- 🟢 `ms_fanout_failed` "project not found" branch is not pinned by a test (only the enqueue-exception branch); the runbook Symptom section does not mention `ms_fanout_failed`.
+
+- [ ] 🟠 **P2 — cross-tick stale Excel snapshot** (two ticks' `expense_pull_fanout` rows for one project
+  pending together can read the used range before the earlier row's child `insert_excel_row` inserts apply;
+  coalesce at enqueue or defer while undrained inserts exist for the `item_id`).
+- [ ] 🟡 **P3 — structured unmapped/error codes from ExpenseService** instead of message-prefix / literal
+  matching (`worker._UNMAPPED_MESSAGE_PREFIXES` / `_SAFE_FANOUT_ERROR_LITERALS` are coupled to message text).
+- [ ] 🟡 **P3 — connector reports created/prior-line-count** so the purchase script skips two pre-reads per
+  purchase.
+- [ ] 🟡 **P3 — one attachable cache keyed by the oldest bound** (instead of separate snapshot / create-window
+  / full-list caches).
+- [ ] 🟡 **P3 — public `QboVendorService.sync_one_vendor`** instead of the private `_upsert_vendor`.
+- [ ] 🟡 **P3 — batch read of late-attach ids** (instead of per-purchase `read_by_qbo_identity` in the late pass).
+- [ ] 🟡 **P3 — R8 parity:** batch Excel path writes a blank vendor instead of retrying "Vendor not found"
+  (same as master).
+
+- [ ] 🟠 **P2 — no reclaim of stale `in_progress` MS outbox rows** (QBO has one; a restart mid-row leaves
+  it stuck with no alert — pre-existing across MS kinds).
+- [ ] 🟡 **P3 — `shared/scheduler.py` in-process fallback and the deprecated combined `/outbox/drain` still call
+  `drain_once`** instead of the bounded `drain_all` loop.
+- [ ] 🟡 **P3 — `_QBO_SYNC_LOCK_BUSY_STREAK` is per gunicorn worker** (undercounts consecutive skips under `-w 2`).
+
 - [ ] 🟡 **P3** — `by-reference-number-and-vendor` omits coding state (`router.py` ~302); memo/total cannot be
   nulled via PUT (`service.py` ~719); read sprocs lack `SET NOCOUNT ON` (`dbo.expense.sql` 490/524/641/
   677/1179); `MarkExpenseDraftForCoding` returns `datetime2` via `OUTPUT INSERTED.*`; `recode_purchase_line`

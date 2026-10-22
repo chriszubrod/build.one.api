@@ -296,7 +296,7 @@ def test_r1_p1_2_admin_drain_ms_route_redacts_body_and_log(
     err = _sensitive_pyodbc_error()
 
     class _BoomWorker:
-        def drain_once(self):
+        def drain_all(self, max_rows=None, time_budget_seconds=None):
             raise err
 
     monkeypatch.setattr(

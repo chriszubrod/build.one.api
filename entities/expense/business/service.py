@@ -1551,10 +1551,10 @@ class ExpenseService:
                     logger.info(f"SubCostCode {sub_cost_code_number or 'None'}: no match found, will append at end")
                     rows_to_append.extend(group_rows)
 
-            # Enqueue each insert/append as a distinct outbox row. Worker
-            # drains one at a time so order is preserved naturally; no need
-            # to process bottom-to-top to avoid row-shift races.
-            insert_groups.sort(key=lambda g: g[0])
+            # Enqueue each insert/append as a distinct outbox row. Worker drains
+            # in outbox Id order; each insert at row_index shifts lower rows down,
+            # so process highest insertion_row first (bottom-up).
+            insert_groups.sort(key=lambda g: g[0], reverse=True)
 
             from integrations.ms.outbox.business.service import MsOutboxService
             ms_outbox = MsOutboxService()
@@ -1795,8 +1795,9 @@ class ExpenseService:
                 else:
                     rows_to_append.extend(group_rows)
 
-            # Enqueue each insert/append as distinct outbox rows.
-            insert_groups.sort(key=lambda g: g[0])
+            # Enqueue each insert/append as distinct outbox rows (bottom-up — see
+            # sync_to_excel_workbook insert_groups sort above).
+            insert_groups.sort(key=lambda g: g[0], reverse=True)
 
             from integrations.ms.outbox.business.service import MsOutboxService
             ms_outbox = MsOutboxService()

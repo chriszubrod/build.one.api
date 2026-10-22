@@ -172,6 +172,8 @@ class QboAttachableService:
 
     def _ensure_create_window(self, client, window_since: str) -> list:
         """Load (or widen) the create-window list: attachables updated after `window_since`."""
+        if self._full_attachables_cache is not None:
+            return self._full_attachables_cache
         if self._create_window_cache is None or str(window_since) < str(self._create_window_since):
             self._create_window_since = str(window_since)
             self._create_window_cache = client.query_all_attachables(last_updated_time=window_since)
@@ -202,12 +204,11 @@ class QboAttachableService:
         to a parent-keyed pull. With an incremental snapshot this is cheap — the
         set is exactly the entities touched by attachables since the watermark.
         """
-        qbo_auth = self.auth_service.ensure_valid_token(realm_id=realm_id)
-        if not qbo_auth or not qbo_auth.access_token:
-            raise ValueError(f"No valid QBO auth found for realm {realm_id}")
-
         rows = self._all_attachables_cache
         if rows is None:
+            qbo_auth = self.auth_service.ensure_valid_token(realm_id=realm_id)
+            if not qbo_auth or not qbo_auth.access_token:
+                raise ValueError(f"No valid QBO auth found for realm {realm_id}")
             with QboAttachableClient(realm_id=realm_id) as client:
                 rows = self._ensure_snapshot(client)
 

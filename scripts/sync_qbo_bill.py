@@ -393,8 +393,8 @@ def sync_qbo_to_local(
         pace_batch(i, len(bills), logger, "bills")
 
     # --- Batch budget-tracker Excel sync: one worksheet read + batched insert per project ---
-    # Mirrors the purchase pull (sync_expenses_batch_to_excel). Best-effort: an Excel
-    # failure is logged and never blocks the bill watermark.
+    # Mirrors the purchase pull (per-project expense_pull_fanout; Excel batched at drain).
+    # Best-effort: an Excel failure is logged and never blocks the bill watermark.
     if synced_bills:
         project_bill_map = {}  # project_id -> [(bill, [line_items_for_this_project])]
         bill_line_counts = {}  # bill.id -> total line count (SharePoint filename parity with completion)

@@ -166,7 +166,15 @@ def _make_qbo_purchase(*, purchase_id=42, qbo_id="qbo-purchase-123"):
     )
 
 
-def _run_script(*, last_sync_time, attachable_service, ms_outbox, line_items, late_expense=None):
+def _run_script(
+    *,
+    last_sync_time,
+    attachable_service,
+    ms_outbox,
+    line_items,
+    late_expense=None,
+    extra_expenses=None,
+):
     from scripts.sync_qbo_purchase import sync_qbo_to_local
 
     purchase = _make_qbo_purchase()
@@ -177,12 +185,17 @@ def _run_script(*, last_sync_time, attachable_service, ms_outbox, line_items, la
 
     expense = SimpleNamespace(id=99, public_id="33333333-3333-3333-3333-333333333333")
     purchase_connector = MagicMock()
-    purchase_connector.sync_from_qbo_purchase.return_value = expense
+    extra = extra_expenses or []
+    purchase_connector.sync_from_qbo_purchase.side_effect = [expense, *extra]
 
     expense_service = MagicMock()
     expense_service.read_by_qbo_identity.return_value = late_expense
     eli_service = MagicMock()
     eli_service.read_by_expense_id.return_value = line_items
+    project_service = MagicMock()
+    project_service.read_by_id.side_effect = lambda pid: SimpleNamespace(
+        id=pid, public_id=f"proj-pub-{pid}",
+    )
 
     with patch("scripts.sync_qbo_purchase.QboAttachableService", return_value=attachable_service) as svc_cls, patch(
         "entities.expense.business.service.ExpenseService", return_value=expense_service
@@ -190,6 +203,8 @@ def _run_script(*, last_sync_time, attachable_service, ms_outbox, line_items, la
         "entities.expense_line_item.business.service.ExpenseLineItemService", return_value=eli_service
     ), patch(
         "integrations.ms.outbox.business.service.MsOutboxService", return_value=ms_outbox
+    ), patch(
+        "entities.project.business.service.ProjectService", return_value=project_service
     ), patch(
         "scripts.sync_qbo_purchase.read_lines_riding_out_race", return_value=[MagicMock()]
     ), patch(
@@ -409,8 +424,10 @@ def test_script_enqueues_ms_fanout_instead_of_inline_graph():
     expense_service._upload_attachments_to_module_folder.assert_not_called()
     calls = sorted(c.kwargs["project_id"] for c in ms_outbox.enqueue_expense_pull_fanout.call_args_list)
     assert calls == [10, 20]
-    # The line count is NOT carried in the payload: the handler derives it at drain.
-    assert all("expense_line_items_count" not in c.kwargs for c in ms_outbox.enqueue_expense_pull_fanout.call_args_list)
+    assert all(
+        c.kwargs.get("expense_public_ids") == ["33333333-3333-3333-3333-333333333333"]
+        for c in ms_outbox.enqueue_expense_pull_fanout.call_args_list
+    )
     assert result["ms_fanout_enqueued"] == 2
     assert result["ms_fanout_refused"] == 0
     assert "excel_rows_synced" not in result
@@ -435,23 +452,44 @@ def test_script_counts_gate_refusals():
 # A2 — the outbox handler + bounded drain
 # --------------------------------------------------------------------------- #
 
+PROJECT_PUBLIC_ID = "44444444-4444-4444-4444-444444444444"
+EXPENSE_PUBLIC_ID = "33333333-3333-3333-3333-333333333333"
+
+
 def _row(payload):
     return MsOutbox(
         id=7505, public_id="outbox-7505", row_version="rv-1",
-        kind=KIND_EXPENSE_PULL_FANOUT, entity_type="Expense",
-        entity_public_id="33333333-3333-3333-3333-333333333333", tenant_id="tenant-1",
+        kind=KIND_EXPENSE_PULL_FANOUT, entity_type="Project",
+        entity_public_id=PROJECT_PUBLIC_ID, tenant_id="tenant-1",
         request_id="req-1", payload=json.dumps(payload), status="in_progress",
         attempts=0, ready_after=None, correlation_id=None,
     )
 
 
-def _handler_env(*, expense, line_items, excel_result, sp_result):
+def _fanout_payload(*, project_id=10, expense_public_ids=None):
+    return {
+        "project_id": project_id,
+        "expense_public_ids": expense_public_ids or [EXPENSE_PUBLIC_ID],
+    }
+
+
+def _handler_env(*, expenses, line_items_by_expense_id, excel_result, sp_result):
+    """expenses: list of expense objects (or None for missing). line_items_by_expense_id: id -> lines."""
     expense_service = MagicMock()
-    expense_service.read_by_public_id.return_value = expense
-    expense_service.sync_to_excel_workbook.return_value = excel_result
+
+    def _read(public_id):
+        for exp in expenses:
+            if exp is not None and str(exp.public_id) == str(public_id):
+                return exp
+        return None
+
+    expense_service.read_by_public_id.side_effect = _read
+    expense_service.sync_expenses_batch_to_excel.return_value = excel_result
     expense_service._upload_attachments_to_module_folder.return_value = sp_result
     eli_service = MagicMock()
-    eli_service.read_by_expense_id.return_value = line_items
+    eli_service.read_by_expense_id.side_effect = (
+        lambda expense_id: line_items_by_expense_id.get(expense_id, [])
+    )
     return (
         patch("entities.expense.business.service.ExpenseService", return_value=expense_service),
         patch("entities.expense_line_item.business.service.ExpenseLineItemService", return_value=eli_service),
@@ -468,37 +506,42 @@ def test_fanout_kind_is_dispatched_and_escalated():
     recon.return_value.flag_dead_letter.assert_called_once()
 
 
-def test_fanout_handler_runs_excel_then_sharepoint_for_the_project_lines_only():
-    expense = SimpleNamespace(id=99, public_id="33333333-3333-3333-3333-333333333333")
+def test_fanout_handler_runs_batch_excel_then_sharepoint_for_the_project_lines_only():
+    expense = SimpleNamespace(id=99, public_id=EXPENSE_PUBLIC_ID)
     lines = [SimpleNamespace(project_id=10), SimpleNamespace(project_id=20)]
     p1, p2, svc = _handler_env(
-        expense=expense, line_items=lines,
+        expenses=[expense],
+        line_items_by_expense_id={99: lines},
         excel_result={"success": True, "synced_count": 1, "errors": []},
         sp_result={"success": True, "synced_count": 1, "skipped_count": 0, "errors": []},
     )
     with p1, p2:
         MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(
-            _row({"project_id": 10, "expense_line_items_count": 2}), {"project_id": 10, "expense_line_items_count": 2}
+            _row(_fanout_payload(project_id=10)), _fanout_payload(project_id=10),
         )
-    excel_kwargs = svc.sync_to_excel_workbook.call_args.kwargs
-    assert excel_kwargs["project_id"] == 10 and excel_kwargs["line_items"] == [lines[0]]
+    batch_args = svc.sync_expenses_batch_to_excel.call_args
+    assert batch_args.args[1] == 10
+    assert batch_args.args[0] == [(expense, [lines[0]])]
     sp_kwargs = svc._upload_attachments_to_module_folder.call_args.kwargs
     assert sp_kwargs["project_id"] == 10
     assert sp_kwargs["line_items"] == [lines[0]]
     assert sp_kwargs["expense_line_items_count"] == 2   # filename parity with completion
 
 
-def test_fanout_handler_treats_unmapped_project_as_done_not_failure():
-    expense = SimpleNamespace(id=99, public_id="33333333-3333-3333-3333-333333333333")
+def test_fanout_handler_treats_unmapped_project_as_done_not_failure(caplog):
+    expense = SimpleNamespace(id=99, public_id=EXPENSE_PUBLIC_ID)
     p1, p2, _ = _handler_env(
-        expense=expense, line_items=[SimpleNamespace(project_id=10)],
+        expenses=[expense],
+        line_items_by_expense_id={99: [SimpleNamespace(project_id=10)]},
         excel_result={"success": False, "message": "Excel not linked for project 10",
                       "synced_count": 0, "errors": [{"error": "Excel not linked for project 10"}]},
         sp_result={"success": False, "message": "Module folder not linked for project 10",
                    "synced_count": 0, "skipped_count": 0, "errors": [{"error": "Module folder not linked for project 10"}]},
     )
-    with p1, p2:
-        result = MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(_row({"project_id": 10}), {"project_id": 10})
+    with p1, p2, caplog.at_level(logging.INFO, logger="integrations.ms.outbox"):
+        result = MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(
+            _row(_fanout_payload(project_id=10)), _fanout_payload(project_id=10),
+        )
     assert result is None  # returned normally: the row is marked done, not failed
 
 
@@ -509,34 +552,41 @@ def test_unmapped_prefixes_match_the_expense_service_messages():
     import inspect
     from entities.expense.business.service import ExpenseService
     from integrations.ms.outbox.business.worker import _UNMAPPED_MESSAGE_PREFIXES
-    source = inspect.getsource(ExpenseService.sync_to_excel_workbook) + inspect.getsource(
-        ExpenseService._upload_attachments_to_module_folder
+    source = (
+        inspect.getsource(ExpenseService.sync_to_excel_workbook)
+        + inspect.getsource(ExpenseService.sync_expenses_batch_to_excel)
+        + inspect.getsource(ExpenseService._upload_attachments_to_module_folder)
     )
     for prefix in _UNMAPPED_MESSAGE_PREFIXES:
         assert prefix in source, f"ExpenseService no longer emits {prefix!r}"
 
 
 def test_fanout_handler_raises_on_real_errors_so_the_row_retries():
-    expense = SimpleNamespace(id=99, public_id="33333333-3333-3333-3333-333333333333")
+    expense = SimpleNamespace(id=99, public_id=EXPENSE_PUBLIC_ID)
     p1, p2, _ = _handler_env(
-        expense=expense, line_items=[SimpleNamespace(project_id=10)],
+        expenses=[expense],
+        line_items_by_expense_id={99: [SimpleNamespace(project_id=10)]},
         excel_result={"success": True, "synced_count": 1, "errors": []},
         sp_result={"success": False, "message": "Drive not found", "synced_count": 0,
                    "skipped_count": 0, "errors": [{"error": "Drive not found"}]},
     )
     from integrations.ms.base.errors import MsGraphError
-    with p1, p2, pytest.raises(MsGraphError, match="Drive not found") as excinfo:
-        MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(_row({"project_id": 10}), {"project_id": 10})
-    # Retryable: `_process` routes MsGraphError to `_handle_ms_error` (backoff,
-    # MAX_ATTEMPTS, then dead-letter). A plain RuntimeError dead-lettered on attempt 1.
+    with p1, p2, pytest.raises(MsGraphError, match="sharepoint:Drive not found") as excinfo:
+        MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(
+            _row(_fanout_payload(project_id=10)), _fanout_payload(project_id=10),
+        )
     assert excinfo.value.is_retryable is True
 
 
 def test_fanout_handler_is_done_when_expense_was_deleted():
-    p1, p2, svc = _handler_env(expense=None, line_items=[], excel_result={}, sp_result={})
+    p1, p2, svc = _handler_env(
+        expenses=[], line_items_by_expense_id={}, excel_result={}, sp_result={},
+    )
     with p1, p2:
-        MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(_row({"project_id": 10}), {"project_id": 10})
-    svc.sync_to_excel_workbook.assert_not_called()
+        MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(
+            _row(_fanout_payload(project_id=10)), _fanout_payload(project_id=10),
+        )
+    svc.sync_expenses_batch_to_excel.assert_not_called()
 
 
 def test_drain_all_honours_max_rows_and_time_budget():
@@ -756,20 +806,18 @@ def test_payee_less_purchase_is_a_permanent_skip_not_a_hold():
 
 
 def test_fanout_handler_uses_the_drain_time_line_count_for_the_filename():
-    """Re-review P2: the handler re-reads the lines at drain but took the line count
-    from the ENQUEUE-time payload. A second line projected before the drain yields a
-    single-line filename for a multi-line expense; completed-upload dedup compares
-    filenames exactly, so a later refresh creates a second SharePoint file."""
-    expense = SimpleNamespace(id=99, public_id="33333333-3333-3333-3333-333333333333")
+    """Re-review P2: SharePoint filename uses drain-time line count, not enqueue-time."""
+    expense = SimpleNamespace(id=99, public_id=EXPENSE_PUBLIC_ID)
     lines = [SimpleNamespace(project_id=10), SimpleNamespace(project_id=10)]
     p1, p2, svc = _handler_env(
-        expense=expense, line_items=lines,
+        expenses=[expense],
+        line_items_by_expense_id={99: lines},
         excel_result={"success": True, "synced_count": 1, "errors": []},
         sp_result={"success": True, "synced_count": 1, "skipped_count": 0, "errors": []},
     )
     with p1, p2:
         MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(
-            _row({"project_id": 10, "expense_line_items_count": 1}), {"project_id": 10, "expense_line_items_count": 1}
+            _row(_fanout_payload(project_id=10)), _fanout_payload(project_id=10),
         )
     assert svc._upload_attachments_to_module_folder.call_args.kwargs["expense_line_items_count"] == 2
 
@@ -782,7 +830,7 @@ def test_fanout_dead_letter_is_critical_like_the_other_excel_kinds():
     from integrations.ms.reconciliation.business.service import MsReconciliationIssueService
     repo = MagicMock()
     MsReconciliationIssueService(repo=repo).flag_dead_letter(
-        kind=KIND_EXPENSE_PULL_FANOUT, entity_type="Expense", entity_public_id="e-1",
+        kind=KIND_EXPENSE_PULL_FANOUT, entity_type="Project", entity_public_id="e-1",
         tenant_id="t", outbox_public_id="o-1", details="5 attempts",
     )
     assert repo.create.call_args.kwargs["severity"] == "critical"
@@ -824,3 +872,480 @@ def test_update_with_an_unreadable_line_count_relists_receipts_authoritatively()
     a = SimpleNamespace(project_id=10)
     assert _run_update(line_reads=[[a], RuntimeError("read failed after projection"), [a]]) == (True, None)
     assert _run_update(line_reads=[RuntimeError("read failed before projection"), [a], [a]]) == (True, None)
+
+
+# --------------------------------------------------------------------------- #
+# U-621a fix round 1 — regressions (F1–F7)
+# --------------------------------------------------------------------------- #
+
+EXPENSE_B_PUBLIC_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+FAKE_TIN = "123-45-6789"
+
+
+def test_script_one_fanout_row_per_project_when_two_expenses_share_a_project():
+    """F3: one tick, two expenses on project 10 → one enqueue with both public_ids."""
+    attachable_service = MagicMock()
+    attachable_service.sync_attachables_for_purchase.return_value = []
+    attachable_service.entity_ids_in_snapshot.return_value = set()
+    ms_outbox = MagicMock()
+    ms_outbox.enqueue_expense_pull_fanout.return_value = MagicMock()
+    line_a = SimpleNamespace(project_id=10)
+    expense_b = SimpleNamespace(id=100, public_id=EXPENSE_B_PUBLIC_ID)
+    from scripts.sync_qbo_purchase import sync_qbo_to_local
+
+    purchase = _make_qbo_purchase()
+    outcome = SyncOutcome.for_service_pull()
+    outcome.synced = [purchase, purchase]
+    qbo_purchase_service = MagicMock()
+    qbo_purchase_service.sync_from_qbo.return_value = outcome
+    expense = SimpleNamespace(id=99, public_id=EXPENSE_PUBLIC_ID)
+    purchase_connector = MagicMock()
+    purchase_connector.sync_from_qbo_purchase.side_effect = [expense, expense_b]
+    expense_service = MagicMock()
+    expense_service.read_by_qbo_identity.return_value = None
+    eli_service = MagicMock()
+    eli_service.read_by_expense_id.side_effect = lambda expense_id: [line_a]
+    project_service = MagicMock()
+    project_service.read_by_id.return_value = SimpleNamespace(id=10, public_id="proj-pub-10")
+    with patch("scripts.sync_qbo_purchase.QboAttachableService", return_value=attachable_service), patch(
+        "entities.expense.business.service.ExpenseService", return_value=expense_service
+    ), patch(
+        "entities.expense_line_item.business.service.ExpenseLineItemService", return_value=eli_service
+    ), patch(
+        "integrations.ms.outbox.business.service.MsOutboxService", return_value=ms_outbox
+    ), patch(
+        "entities.project.business.service.ProjectService", return_value=project_service
+    ), patch(
+        "scripts.sync_qbo_purchase.read_lines_riding_out_race", return_value=[MagicMock()]
+    ), patch(
+        "scripts.sync_qbo_purchase.with_retry", side_effect=lambda fn, *a, **k: fn(*a)
+    ), patch("scripts.sync_qbo_purchase.pace_batch"), patch.dict("os.environ", {"ALLOW_BOX_WRITES": "false"}):
+        result, _ = sync_qbo_to_local(
+            realm_id=REALM_ID,
+            last_sync_time="2026-10-03T11:59:00+00:00",
+            qbo_purchase_service=qbo_purchase_service,
+            purchase_connector=purchase_connector,
+        )
+    assert ms_outbox.enqueue_expense_pull_fanout.call_count == 1
+    assert ms_outbox.enqueue_expense_pull_fanout.call_args.kwargs["expense_public_ids"] == [
+        EXPENSE_PUBLIC_ID,
+        EXPENSE_B_PUBLIC_ID,
+    ]
+    assert result["ms_fanout_enqueued"] == 1
+
+
+def test_fanout_handler_batches_two_expenses_into_one_sync_expenses_batch_to_excel():
+    """F3: handler calls sync_expenses_batch_to_excel once with both expenses' project lines."""
+    expense_a = SimpleNamespace(id=99, public_id=EXPENSE_PUBLIC_ID)
+    expense_b = SimpleNamespace(id=100, public_id=EXPENSE_B_PUBLIC_ID)
+    line_a = SimpleNamespace(project_id=10)
+    line_b = SimpleNamespace(project_id=10)
+    ok = {"success": True, "synced_count": 2, "errors": []}
+    sp = {"success": True, "synced_count": 1, "skipped_count": 0, "errors": []}
+    p1, p2, svc = _handler_env(
+        expenses=[expense_a, expense_b],
+        line_items_by_expense_id={99: [line_a], 100: [line_b]},
+        excel_result=ok,
+        sp_result=sp,
+    )
+    payload = _fanout_payload(
+        project_id=10,
+        expense_public_ids=[EXPENSE_PUBLIC_ID, EXPENSE_B_PUBLIC_ID],
+    )
+    with p1, p2:
+        MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(_row(payload), payload)
+    svc.sync_expenses_batch_to_excel.assert_called_once()
+    pairs = svc.sync_expenses_batch_to_excel.call_args.args[0]
+    assert pairs == [(expense_a, [line_a]), (expense_b, [line_b])]
+    assert svc._upload_attachments_to_module_folder.call_count == 2
+
+
+def test_fanout_handler_skips_deleted_expense_but_syncs_the_rest():
+    """F3: deleted expense in payload is skipped; batch still runs for survivors."""
+    expense_b = SimpleNamespace(id=100, public_id=EXPENSE_B_PUBLIC_ID)
+    line_b = SimpleNamespace(project_id=10)
+    p1, p2, svc = _handler_env(
+        expenses=[expense_b],
+        line_items_by_expense_id={100: [line_b]},
+        excel_result={"success": True, "synced_count": 1, "errors": []},
+        sp_result={"success": True, "synced_count": 1, "skipped_count": 0, "errors": []},
+    )
+    payload = _fanout_payload(
+        project_id=10,
+        expense_public_ids=[EXPENSE_PUBLIC_ID, EXPENSE_B_PUBLIC_ID],
+    )
+    with p1, p2:
+        MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(_row(payload), payload)
+    svc.sync_expenses_batch_to_excel.assert_called_once_with([(expense_b, [line_b])], 10)
+
+
+@pytest.mark.usefixtures("grant_qbo_app_lock")
+def test_on_demand_vendor_resolve_propagates_budget_exceeded():
+    """F4 / R4: connector layer — QboBudgetExceededError propagates from on-demand vendor resolve."""
+    from integrations.intuit.qbo.base.errors import QboBudgetExceededError
+
+    connector = _connector(MagicMock(side_effect=QboBudgetExceededError("monthly cap")))
+    connector._get_vendor_public_id = MagicMock(return_value=None)
+    with pytest.raises(QboBudgetExceededError):
+        connector.sync_from_qbo_purchase(_purchase(), [])
+
+
+def test_script_budget_exceeded_from_projection_holds_purchase_watermark():
+    """R4: purchase script records a watermark hold when projection raises QboBudgetExceededError."""
+    from integrations.intuit.qbo.base.errors import QboBudgetExceededError
+    from scripts.sync_qbo_purchase import sync_qbo_to_local
+
+    purchase = _make_qbo_purchase()
+    outcome = SyncOutcome.for_service_pull()
+    outcome.synced = [purchase]
+    qbo_purchase_service = MagicMock()
+    qbo_purchase_service.sync_from_qbo.return_value = outcome
+    purchase_connector = MagicMock()
+    purchase_connector.sync_from_qbo_purchase.side_effect = QboBudgetExceededError("monthly cap")
+    attachable_service = MagicMock()
+    attachable_service.entity_ids_in_snapshot.return_value = set()
+    with patch("scripts.sync_qbo_purchase.QboAttachableService", return_value=attachable_service), patch(
+        "entities.expense.business.service.ExpenseService"
+    ), patch(
+        "entities.expense_line_item.business.service.ExpenseLineItemService"
+    ), patch(
+        "integrations.ms.outbox.business.service.MsOutboxService", return_value=MagicMock()
+    ), patch(
+        "scripts.sync_qbo_purchase.read_lines_riding_out_race", return_value=[MagicMock()]
+    ), patch(
+        "scripts.sync_qbo_purchase.with_retry", side_effect=lambda fn, *a, **k: fn(*a)
+    ), patch("scripts.sync_qbo_purchase.pace_batch"), patch.dict("os.environ", {"ALLOW_BOX_WRITES": "false"}):
+        result, returned_outcome = sync_qbo_to_local(
+            realm_id=REALM_ID,
+            last_sync_time="2026-10-03T11:59:00+00:00",
+            qbo_purchase_service=qbo_purchase_service,
+            purchase_connector=purchase_connector,
+        )
+    assert returned_outcome.should_hold is True
+    assert str(purchase.qbo_id) in returned_outcome.projection_failed_ids
+    assert result["expenses_module_synced"] == 0
+
+
+@pytest.mark.parametrize(
+    "step,expense_read,lines_read",
+    [
+        ("read_expense", RuntimeError("deadlock"), None),
+        (
+            "read_expense_lines",
+            SimpleNamespace(id=99, public_id=EXPENSE_PUBLIC_ID),
+            RuntimeError("deadlock"),
+        ),
+    ],
+)
+def test_fanout_handler_transient_db_read_raises_retryable_ms_server_error(
+    step, expense_read, lines_read, caplog,
+):
+    """F5 / R5: DB read failure → MsServerError (retry), with step logged."""
+    expense_service = MagicMock()
+    if isinstance(expense_read, Exception):
+        expense_service.read_by_public_id.side_effect = expense_read
+    else:
+        expense_service.read_by_public_id.return_value = expense_read
+    eli_service = MagicMock()
+    if lines_read is not None:
+        eli_service.read_by_expense_id.side_effect = lines_read
+    with patch("entities.expense.business.service.ExpenseService", return_value=expense_service), patch(
+        "entities.expense_line_item.business.service.ExpenseLineItemService", return_value=eli_service
+    ):
+        from integrations.ms.base.errors import MsServerError
+
+        payload = _fanout_payload(project_id=10)
+        caplog.set_level(logging.WARNING)
+        with pytest.raises(MsServerError, match=f"{step} failed") as excinfo:
+            MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(_row(payload), payload)
+        assert excinfo.value.is_retryable is True
+        assert "deadlock" not in str(excinfo.value)
+        assert any(
+            getattr(r, "error_type", None) == "RuntimeError"
+            and getattr(r, "step", None) == step
+            for r in caplog.records
+        )
+
+
+def test_fanout_handler_missing_expense_public_ids_raises_value_error():
+    """F5: bad payload still dead-letters (ValueError)."""
+    with pytest.raises(ValueError, match="expense_public_ids"):
+        MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(
+            _row({"project_id": 10}), {"project_id": 10},
+        )
+
+
+def test_fanout_handler_ms_server_error_omits_driver_shaped_exception_text():
+    """F7: persisted MsServerError uses step labels, not raw pyodbc exception text."""
+    expense = SimpleNamespace(id=99, public_id=EXPENSE_PUBLIC_ID)
+    sensitive = (
+        f"[42000] [Microsoft][ODBC Driver 18 for SQL Server][SQL Server]"
+        f"Violation TIN {FAKE_TIN} (50001) (SQLExecDirectW)"
+    )
+    p1, p2, _ = _handler_env(
+        expenses=[expense],
+        line_items_by_expense_id={99: [SimpleNamespace(project_id=10)]},
+        excel_result={"success": True, "synced_count": 0, "errors": [{"error": sensitive}]},
+        sp_result={"success": True, "synced_count": 0, "skipped_count": 0, "errors": []},
+    )
+    from integrations.ms.base.errors import MsServerError
+
+    payload = _fanout_payload(project_id=10)
+    with p1, p2, pytest.raises(MsServerError) as excinfo:
+        MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(_row(payload), payload)
+    msg = str(excinfo.value)
+    assert FAKE_TIN not in msg
+    assert "excel:failed" in msg
+
+
+def test_on_demand_vendor_resolve_warning_omits_exception_text(caplog):
+    """F6: connector logs type name only on resolve failure."""
+    connector = _connector(MagicMock(side_effect=RuntimeError(f"secret {FAKE_TIN}")))
+    connector._get_vendor_public_id = MagicMock(return_value=None)
+    caplog.set_level(logging.WARNING)
+    connector._resolve_vendor_on_demand("v-1", REALM_ID)
+    assert FAKE_TIN not in caplog.text
+    assert "RuntimeError" in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+# U-621a fix round 2 — regressions (R1, R3, Q4, …)
+# --------------------------------------------------------------------------- #
+
+
+def test_batch_excel_inserts_land_in_their_own_sections_when_applied_in_order():
+    """R1 (U-621a / U-712): drive the REAL sync_expenses_batch_to_excel, then apply the
+    enqueued insert children in enqueue (= drain) order with real row-shift semantics.
+    Every new row must sit inside its own SubCostCode section. Ascending insert order
+    puts the 20.01 row above its section header, inside the 10.01 block."""
+    import entities.expense.business.service as exp_mod
+
+    header = ["", "", "SCC"] + [""] * 23
+    def data(scc, tag):
+        r = ["", scc.split(".")[0], scc] + [""] * 23
+        r[8], r[9], r[25] = "2026-01-01", "Vendor", tag
+        return r
+    def section(scc):
+        return ["", scc.split(".")[0], scc] + [""] * 23
+    sheet = [
+        header,
+        section("10.01"), data("10.01", "old-a"),
+        section("20.01"), data("20.01", "old-b"),
+        section("30.01"), data("30.01", "old-c"),
+    ]
+
+    scc_by_id = {1: "10.01", 2: "20.01"}
+    svc = exp_mod.ExpenseService.__new__(exp_mod.ExpenseService)
+    svc._split_off_holding_lines = lambda lines: (list(lines), 0)
+    svc._project_excel_connector = MagicMock()
+    svc._project_excel_connector.get_excel_for_project.return_value = {"id": 7, "worksheet_name": "DETAILS"}
+    svc._drive_repo = MagicMock()
+    svc._drive_repo.read_by_id.return_value = SimpleNamespace(drive_id="drv")
+    svc.vendor_service = MagicMock()
+    svc.sub_cost_code_service = MagicMock()
+    svc.sub_cost_code_service.read_by_id.side_effect = lambda id: SimpleNamespace(number=scc_by_id[int(id)])
+
+    def li(n, scc_id):
+        return SimpleNamespace(id=n, public_id=f"new-{n}", sub_cost_code_id=scc_id,
+                               description=f"line {n}", price=None, amount=Decimal("10"))
+    expense = SimpleNamespace(public_id="e-1", vendor_id=None, is_credit=False,
+                              expense_date="2026-10-01", reference_number="R1")
+    pairs = [(expense, [li(1, 1), li(2, 1), li(3, 2)])]
+
+    driveitem_repo = MagicMock()
+    driveitem_repo.read_all.return_value = [SimpleNamespace(id=7, ms_drive_id=3, item_id="itm")]
+    ms_outbox = MagicMock()
+    ms_outbox.enqueue_excel_insert.return_value = MagicMock()
+    with patch.object(exp_mod, "MsDriveItemRepository", return_value=driveitem_repo), patch.object(
+        exp_mod, "create_workbook_session", return_value="sess"
+    ), patch.object(exp_mod, "close_workbook_session"), patch.object(
+        exp_mod, "get_excel_used_range_values",
+        return_value={"status_code": 200, "range": {"values": [list(r) for r in sheet]}},
+    ), patch("integrations.ms.outbox.business.service.MsOutboxService", return_value=ms_outbox):
+        result = svc.sync_expenses_batch_to_excel(pairs, project_id=5)
+
+    assert result["errors"] == []
+    calls = ms_outbox.enqueue_excel_insert.call_args_list
+    assert len(calls) == 2  # one insert child per SubCostCode group
+    applied = [list(r) for r in sheet]
+    for c in calls:  # drain order == enqueue order; insert at row_index shifts rows >= it down
+        r = int(c.kwargs["row_index"])
+        for offset, row in enumerate(c.kwargs["values"]):
+            applied.insert(r - 1 + offset, list(row))
+
+    for i, row in enumerate(applied):
+        if str(row[25]).startswith("new-"):
+            above = applied[i - 1]
+            assert above[2] == row[2], (
+                f"new {row[2]} row at sheet row {i + 1} sits under a {above[2]} row (wrong section)"
+            )
+
+def test_script_one_unchunked_fanout_row_per_project_even_for_60_expenses():
+    """One row per project per tick, unchunked: a second row for the same project
+    would read the sheet before the first row's inserts apply (wrong section)."""
+    attachable_service = MagicMock()
+    attachable_service.sync_attachables_for_purchase.return_value = []
+    attachable_service.entity_ids_in_snapshot.return_value = set()
+    ms_outbox = MagicMock()
+    ms_outbox.enqueue_expense_pull_fanout.return_value = MagicMock()
+    line_a = SimpleNamespace(project_id=10)
+    expenses = []
+    for n in range(60):
+        expenses.append(
+            SimpleNamespace(id=100 + n, public_id=f"{n:08d}-0000-0000-0000-000000000000"),
+        )
+    from scripts.sync_qbo_purchase import sync_qbo_to_local
+
+    purchase = _make_qbo_purchase()
+    outcome = SyncOutcome.for_service_pull()
+    outcome.synced = [purchase] * 60
+    qbo_purchase_service = MagicMock()
+    qbo_purchase_service.sync_from_qbo.return_value = outcome
+    purchase_connector = MagicMock()
+    purchase_connector.sync_from_qbo_purchase.side_effect = expenses
+    expense_service = MagicMock()
+    expense_service.read_by_qbo_identity.return_value = None
+    eli_service = MagicMock()
+    eli_service.read_by_expense_id.return_value = [line_a]
+    project_service = MagicMock()
+    project_service.read_by_id.return_value = SimpleNamespace(id=10, public_id=PROJECT_PUBLIC_ID)
+    with patch("scripts.sync_qbo_purchase.QboAttachableService", return_value=attachable_service), patch(
+        "entities.expense.business.service.ExpenseService", return_value=expense_service
+    ), patch(
+        "entities.expense_line_item.business.service.ExpenseLineItemService", return_value=eli_service
+    ), patch(
+        "integrations.ms.outbox.business.service.MsOutboxService", return_value=ms_outbox
+    ), patch(
+        "entities.project.business.service.ProjectService", return_value=project_service
+    ), patch(
+        "scripts.sync_qbo_purchase.read_lines_riding_out_race", return_value=[MagicMock()]
+    ), patch(
+        "scripts.sync_qbo_purchase.with_retry", side_effect=lambda fn, *a, **k: fn(*a)
+    ), patch("scripts.sync_qbo_purchase.pace_batch"), patch.dict("os.environ", {"ALLOW_BOX_WRITES": "false"}):
+        result, _ = sync_qbo_to_local(
+            realm_id=REALM_ID,
+            last_sync_time="2026-10-03T11:59:00+00:00",
+            qbo_purchase_service=qbo_purchase_service,
+            purchase_connector=purchase_connector,
+        )
+    assert ms_outbox.enqueue_expense_pull_fanout.call_count == 1
+    ids = ms_outbox.enqueue_expense_pull_fanout.call_args.kwargs["expense_public_ids"]
+    assert len(ids) == 60 and len(set(ids)) == 60
+    assert result["ms_fanout_enqueued"] == 1
+
+
+def test_enqueue_expense_pull_fanout_row_shape_and_empty_list():
+    """Q4: entity_type Project, payload ids only; empty list → None."""
+    from integrations.ms.outbox.business.service import MsOutboxService
+
+    svc = MsOutboxService()
+    svc.repo = MagicMock()
+    captured = {}
+
+    def _enqueue(**kwargs):
+        captured.update(kwargs)
+        return MagicMock()
+
+    svc.enqueue = _enqueue
+    with patch(
+        "integrations.ms.outbox.business.service._resolve_tenant_id",
+        return_value="tenant-1",
+    ), patch(
+        "integrations.ms.outbox.business.service._writes_allowed",
+        return_value=True,
+    ):
+        assert svc.enqueue_expense_pull_fanout(
+            project_public_id=PROJECT_PUBLIC_ID,
+            project_id=10,
+            expense_public_ids=[],
+        ) is None
+        svc.enqueue_expense_pull_fanout(
+            project_public_id=PROJECT_PUBLIC_ID,
+            project_id=10,
+            expense_public_ids=[EXPENSE_PUBLIC_ID],
+        )
+    assert captured["kind"] == KIND_EXPENSE_PULL_FANOUT
+    assert captured["entity_type"] == "Project"
+    assert captured["entity_public_id"] == PROJECT_PUBLIC_ID
+    assert captured["payload"] == {
+        "project_id": 10,
+        "expense_public_ids": [EXPENSE_PUBLIC_ID],
+    }
+    assert "line_items_count" not in captured["payload"]
+    assert "expense_line_items_count" not in captured["payload"]
+
+
+def test_fanout_handler_sharepoint_error_label_includes_expense_public_id():
+    """R6: SharePoint errors without line_item_id carry expense_public_id."""
+    expense = SimpleNamespace(id=99, public_id=EXPENSE_PUBLIC_ID)
+    p1, p2, _ = _handler_env(
+        expenses=[expense],
+        line_items_by_expense_id={99: [SimpleNamespace(project_id=10)]},
+        excel_result={"success": True, "synced_count": 0, "errors": []},
+        sp_result={
+            "success": False,
+            "synced_count": 0,
+            "skipped_count": 0,
+            "errors": [{"error": "Drive not found", "step": "sharepoint"}],
+        },
+    )
+    from integrations.ms.base.errors import MsServerError
+
+    payload = _fanout_payload(project_id=10)
+    with p1, p2, pytest.raises(MsServerError) as excinfo:
+        MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(_row(payload), payload)
+    assert f"expense_public_id={EXPENSE_PUBLIC_ID}" in str(excinfo.value)
+
+
+def test_script_ms_fanout_failed_increments_on_missing_project():
+    """R7: missing project and enqueue failures count toward ms_fanout_failed."""
+    attachable_service = MagicMock()
+    attachable_service.sync_attachables_for_purchase.return_value = []
+    attachable_service.entity_ids_in_snapshot.return_value = set()
+    ms_outbox = MagicMock()
+    ms_outbox.enqueue_expense_pull_fanout.side_effect = RuntimeError("db down")
+    line_items = [SimpleNamespace(project_id=10)]
+    result, _, _, _ = _run_script(
+        last_sync_time="2026-10-03T11:59:00+00:00",
+        attachable_service=attachable_service,
+        ms_outbox=ms_outbox,
+        line_items=line_items,
+    )
+    assert result["ms_fanout_failed"] == 1
+    assert result["ms_fanout_enqueued"] == 0
+
+
+def test_create_window_reuses_full_attachables_cache_without_extra_query():
+    """Q1: after authoritative full list load, create-window path skips another query."""
+    bounded = [_attachable("new", _ref("Purchase", "77"))]
+    full = [_attachable("old", _ref("Purchase", "77")), _attachable("new", _ref("Purchase", "77"))]
+    service, fake_client = _service_with_fake_client(bounded, attachables_since="2026-10-03T12:00:00+00:00")
+    fake_client.query_all_attachables.side_effect = (
+        lambda last_updated_time=None: full if last_updated_time is None else bounded
+    )
+    with patch(f"{ATTACHABLE_SERVICE_MODULE}.QboAttachableClient", return_value=fake_client):
+        service._sync_to_attachments = MagicMock(side_effect=lambda rows, realm: rows)
+        service.sync_attachables_for_purchase(REALM_ID, "77")
+        service.sync_attachables_for_purchase(REALM_ID, "77", authoritative=True)
+        service.sync_attachables_for_purchase(
+            REALM_ID, "77", window_since="2026-09-01T00:00:00+00:00",
+        )
+    assert fake_client.query_all_attachables.call_count == 2
+
+
+def test_fanout_handler_dedupes_duplicate_expense_public_ids():
+    """Q3: duplicate ids in payload are processed once."""
+    expense = SimpleNamespace(id=99, public_id=EXPENSE_PUBLIC_ID)
+    p1, p2, svc = _handler_env(
+        expenses=[expense],
+        line_items_by_expense_id={99: [SimpleNamespace(project_id=10)]},
+        excel_result={"success": True, "synced_count": 1, "errors": []},
+        sp_result={"success": True, "synced_count": 0, "skipped_count": 0, "errors": []},
+    )
+    payload = _fanout_payload(
+        project_id=10,
+        expense_public_ids=[EXPENSE_PUBLIC_ID, EXPENSE_PUBLIC_ID],
+    )
+    with p1, p2:
+        MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(_row(payload), payload)
+    assert svc.sync_expenses_batch_to_excel.call_args.args[0] == [(expense, [SimpleNamespace(project_id=10)])]

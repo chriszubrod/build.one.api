@@ -1,9 +1,11 @@
 # Python Standard Library Imports
 import logging
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # Local Imports
 from integrations.intuit.qbo.base.client import QboHttpClient, _format_datetime_for_qbo_query
+from integrations.intuit.qbo.base.errors import QboUnexpectedError
+from integrations.intuit.qbo.base.ids import normalize_qbo_id
 from integrations.intuit.qbo.base.paging import page_all_record_ids
 from integrations.intuit.qbo.purchase.external.schemas import (
     QboPurchase,
@@ -13,6 +15,49 @@ from integrations.intuit.qbo.purchase.external.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+_BY_IDS_BATCH_SIZE = 100
+
+
+def _strict_parse_purchase_query_response(data: Any, *, where: str) -> List[QboPurchase]:
+    if not isinstance(data, dict):
+        raise QboUnexpectedError(
+            "QBO Purchase query returned a non-dict body",
+            detail=where,
+        )
+    if "Fault" in data:
+        raise QboUnexpectedError(
+            "QBO Purchase query returned a Fault",
+            detail=where,
+        )
+    if "QueryResponse" not in data:
+        raise QboUnexpectedError(
+            "QBO Purchase query returned no QueryResponse",
+            detail=where,
+        )
+    query_response = data.get("QueryResponse")
+    if not isinstance(query_response, dict):
+        raise QboUnexpectedError(
+            "QBO Purchase query returned a null or non-dict QueryResponse",
+            detail=where,
+        )
+    if "Fault" in query_response:
+        raise QboUnexpectedError(
+            "QBO Purchase query returned a Fault inside QueryResponse",
+            detail=where,
+        )
+    if "Purchase" not in query_response:
+        rows: List[Any] = []
+    else:
+        rows = query_response.get("Purchase")
+    if isinstance(rows, dict):
+        rows = [rows]
+    if not isinstance(rows, list):
+        raise QboUnexpectedError(
+            "QBO Purchase query returned a non-list Purchase payload",
+            detail=where,
+        )
+    return [QboPurchase(**purchase) for purchase in rows]
 
 
 class QboPurchaseClient:
@@ -240,3 +285,32 @@ class QboPurchaseClient:
             entity="Purchase",
             operation_name="qbo.purchase.query_ids",
         )
+
+    def query_purchases_by_ids(self, ids: List[str]) -> List[QboPurchase]:
+        """Fetch full Purchase records by QBO Id (batched, strict QueryResponse guards)."""
+        if not ids:
+            return []
+        all_purchases: List[QboPurchase] = []
+        for offset in range(0, len(ids), _BY_IDS_BATCH_SIZE):
+            batch = ids[offset : offset + _BY_IDS_BATCH_SIZE]
+            numeric_ids: List[str] = []
+            for raw_id in batch:
+                norm = normalize_qbo_id(raw_id)
+                if not norm or not norm.isdigit():
+                    logger.warning(
+                        "Skipping non-numeric QBO Purchase id for by-ids query: %r", raw_id
+                    )
+                    continue
+                numeric_ids.append(norm)
+            if not numeric_ids:
+                continue
+            in_clause = ",".join(f"'{i}'" for i in numeric_ids)
+            query_string = f"SELECT * FROM Purchase WHERE Id IN ({in_clause}) MAXRESULTS 1000"
+            where = f"entity=Purchase ids={len(numeric_ids)}"
+            data = self._http_client.get(
+                "query",
+                params={"query": query_string},
+                operation_name="qbo.purchase.query_by_ids",
+            )
+            all_purchases.extend(_strict_parse_purchase_query_response(data, where=where))
+        return all_purchases

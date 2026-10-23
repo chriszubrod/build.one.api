@@ -9,6 +9,7 @@ import pyodbc
 
 # Local Imports
 from integrations.intuit.qbo.bill.business.model import QboBill, QboBillLine
+from integrations.intuit.qbo.billable_refresh.business.staged import StagedBillableQboLine
 from shared.database import (
     call_procedure,
     get_connection,
@@ -622,4 +623,80 @@ class QboBillLineRepository:
                         pass
         except Exception as error:
             logger.error(f"Error during delete qbo bill line by ID: {error}")
+            raise map_database_error(error)
+
+    def _staged_billable_from_db(self, row: pyodbc.Row) -> StagedBillableQboLine:
+        amount = getattr(row, "Amount", None)
+        return StagedBillableQboLine(
+            id=getattr(row, "Id", None),
+            qbo_line_id=getattr(row, "QboLineId", None),
+            amount=Decimal(str(amount)) if amount is not None else None,
+            billable_status=getattr(row, "BillableStatus", None),
+            header_qbo_id=getattr(row, "HeaderQboId", None),
+            realm_id=getattr(row, "RealmId", None),
+        )
+
+    def read_by_billable_status_and_realm_id(
+        self,
+        realm_id: str,
+        billable_status: str = "Billable",
+    ) -> List[StagedBillableQboLine]:
+        """Staged Bill lines with the given BillableStatus for one realm (U-718)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadQboBillLinesByBillableStatusAndRealmId",
+                        params={
+                            "RealmId": realm_id,
+                            "BillableStatus": billable_status,
+                        },
+                    )
+                    rows = cursor.fetchall()
+                    return [self._staged_billable_from_db(row) for row in rows if row]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(
+                "Error during read qbo bill lines by billable status and realm: %s", error
+            )
+            raise map_database_error(error)
+
+    def update_billable_status_by_id(
+        self,
+        *,
+        id: int,
+        expected_billable_status: str,
+        billable_status: str,
+    ) -> bool:
+        """CAS update BillableStatus only; True when a row was updated."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="UpdateQboBillLineBillableStatusById",
+                        params={
+                            "Id": id,
+                            "ExpectedBillableStatus": expected_billable_status,
+                            "BillableStatus": billable_status,
+                        },
+                    )
+                    row = cursor.fetchone()
+                    return row is not None
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(
+                "Error during update qbo bill line billable status by ID: %s", error
+            )
             raise map_database_error(error)

@@ -1,7 +1,7 @@
 # Python Standard Library Imports
 import base64
 import logging
-from typing import Optional
+from typing import List, Optional
 from decimal import Decimal
 
 # Third-party Imports
@@ -9,6 +9,7 @@ import pyodbc
 
 # Local Imports
 from integrations.intuit.qbo.vendorcredit.business.model import QboVendorCredit, QboVendorCreditLine
+from integrations.intuit.qbo.billable_refresh.business.staged import StagedBillableQboLine
 from shared.api.money import to_decimal_or_none
 from shared.database import call_procedure, get_connection, map_database_error
 
@@ -285,4 +286,80 @@ class QboVendorCreditRepository:
                 call_procedure(cursor, "DeleteQboVendorCreditByQboId", {"QboId": qbo_id})
         except Exception as e:
             logger.error(f"Error deleting QboVendorCredit by QboId: {e}")
+            raise map_database_error(e)
+
+    def _staged_billable_from_db(self, row: pyodbc.Row) -> StagedBillableQboLine:
+        amount = getattr(row, "Amount", None)
+        return StagedBillableQboLine(
+            id=getattr(row, "Id", None),
+            qbo_line_id=getattr(row, "QboLineId", None),
+            amount=to_decimal_or_none(amount),
+            billable_status=getattr(row, "BillableStatus", None),
+            header_qbo_id=getattr(row, "HeaderQboId", None),
+            realm_id=getattr(row, "RealmId", None),
+        )
+
+    def read_by_billable_status_and_realm_id(
+        self,
+        realm_id: str,
+        billable_status: str = "Billable",
+    ) -> List[StagedBillableQboLine]:
+        """Staged VendorCredit lines with the given BillableStatus for one realm (U-718)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor,
+                        "ReadQboVendorCreditLinesByBillableStatusAndRealmId",
+                        {
+                            "RealmId": realm_id,
+                            "BillableStatus": billable_status,
+                        },
+                    )
+                    rows = cursor.fetchall()
+                    return [self._staged_billable_from_db(row) for row in rows if row]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.error(
+                "Error during read qbo vendor credit lines by billable status and realm: %s", e
+            )
+            raise map_database_error(e)
+
+    def update_billable_status_by_id(
+        self,
+        *,
+        id: int,
+        expected_billable_status: str,
+        billable_status: str,
+    ) -> bool:
+        """CAS update BillableStatus only; True when a row was updated."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor,
+                        "UpdateQboVendorCreditLineBillableStatusById",
+                        {
+                            "Id": id,
+                            "ExpectedBillableStatus": expected_billable_status,
+                            "BillableStatus": billable_status,
+                        },
+                    )
+                    row = cursor.fetchone()
+                    return row is not None
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.error(
+                "Error during update qbo vendor credit line billable status by ID: %s", e
+            )
             raise map_database_error(e)

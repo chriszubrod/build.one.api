@@ -612,6 +612,45 @@ async def reconcile_qbo_router():
     return await _timed("reconcile.qbo", _run)
 
 
+@router.post(
+    "/reconcile/qbo/billable-status",
+    dependencies=[Depends(_require_drain_secret)],
+)
+async def reconcile_qbo_billable_status_router(
+    dry_run: bool = Query(default=False),
+):
+    """Refresh staged BillableStatus from live QBO Bill/Purchase/VendorCredit lines (U-718)."""
+
+    def _run() -> dict[str, Any]:
+        from integrations.intuit.qbo.auth.business.service import QboAuthService
+        from integrations.intuit.qbo.bill.external.client import QboBillClient
+        from integrations.intuit.qbo.billable_refresh.business.service import (
+            QboBillableStatusRefreshService,
+        )
+        from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
+        from integrations.intuit.qbo.vendorcredit.external.client import QboVendorCreditClient
+        from shared.authz.context import system_authz
+
+        auth = QboAuthService().ensure_valid_token()
+        if not auth or not auth.realm_id:
+            return {"skipped": True, "reason": "no valid QBO auth"}
+
+        with qbo_sync_lock("billable_refresh", timeout_ms=0) as got_lock:
+            if not got_lock:
+                return {"skipped": True, "reason": "lock_busy"}
+
+            realm_id = auth.realm_id
+            with system_authz():
+                service = QboBillableStatusRefreshService(
+                    bill_client=QboBillClient(realm_id=realm_id),
+                    purchase_client=QboPurchaseClient(realm_id=realm_id),
+                    vendor_credit_client=QboVendorCreditClient(realm_id=realm_id),
+                )
+                return service.run(realm_id, dry_run=dry_run)
+
+    return await _timed("reconcile.qbo.billable_status", _run)
+
+
 @router.post("/reconcile/ms", dependencies=[Depends(_require_drain_secret)])
 async def reconcile_ms_router():
     """Run the MS daily Excel missing-row reconciliation."""

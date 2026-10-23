@@ -474,3 +474,51 @@ GO
 -- own QboId/RealmId columns (U-278) are the sole identity store; qbo.VendorCredit
 -- (this file's staging table, above) is untouched. See
 -- docs/design/u349-qbo-mapping-table-retirement.md family 4.
+
+
+CREATE OR ALTER PROCEDURE ReadQboVendorCreditLinesByBillableStatusAndRealmId
+(
+    @RealmId NVARCHAR(50),
+    @BillableStatus NVARCHAR(50) = 'Billable'
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        vl.[Id],
+        vl.[QboLineId],
+        vl.[Amount],
+        vl.[BillableStatus],
+        vc.[QboId] AS [HeaderQboId],
+        vc.[RealmId]
+    FROM [qbo].[VendorCreditLine] vl
+    INNER JOIN [qbo].[VendorCredit] vc ON vl.[QboVendorCreditId] = vc.[Id]
+    WHERE vc.[RealmId] = @RealmId
+      AND vl.[BillableStatus] = @BillableStatus;
+END;
+GO
+
+
+CREATE OR ALTER PROCEDURE UpdateQboVendorCreditLineBillableStatusById
+(
+    @Id BIGINT,
+    @ExpectedBillableStatus NVARCHAR(50),
+    @BillableStatus NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    UPDATE [qbo].[VendorCreditLine]
+    SET
+        [BillableStatus] = @BillableStatus,
+        [ModifiedDatetime] = @Now
+    OUTPUT INSERTED.[Id]
+    WHERE [Id] = @Id
+      AND [BillableStatus] = @ExpectedBillableStatus;
+END;
+GO
+

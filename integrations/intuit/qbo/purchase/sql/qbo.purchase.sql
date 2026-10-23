@@ -846,3 +846,50 @@ GO
 -- qbo.Attachable.EntityRefType/EntityRefValue outside that table's own file.
 DROP PROCEDURE IF EXISTS dbo.ReadQboPurchaseLinesNeedingUpdate;
 GO
+
+
+CREATE OR ALTER PROCEDURE ReadQboPurchaseLinesByBillableStatusAndRealmId
+(
+    @RealmId NVARCHAR(50),
+    @BillableStatus NVARCHAR(50) = 'Billable'
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        pl.[Id],
+        pl.[QboLineId],
+        pl.[Amount],
+        pl.[BillableStatus],
+        p.[QboId] AS [HeaderQboId],
+        p.[RealmId]
+    FROM [qbo].[PurchaseLine] pl
+    INNER JOIN [qbo].[Purchase] p ON pl.[QboPurchaseId] = p.[Id]
+    WHERE p.[RealmId] = @RealmId
+      AND pl.[BillableStatus] = @BillableStatus;
+END;
+GO
+
+
+CREATE OR ALTER PROCEDURE UpdateQboPurchaseLineBillableStatusById
+(
+    @Id BIGINT,
+    @ExpectedBillableStatus NVARCHAR(50),
+    @BillableStatus NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    UPDATE [qbo].[PurchaseLine]
+    SET
+        [BillableStatus] = @BillableStatus,
+        [ModifiedDatetime] = @Now
+    OUTPUT INSERTED.[Id]
+    WHERE [Id] = @Id
+      AND [BillableStatus] = @ExpectedBillableStatus;
+END;
+GO

@@ -1,9 +1,11 @@
 # Python Standard Library Imports
 import logging
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # Local Imports
 from integrations.intuit.qbo.base.client import QboHttpClient, _format_datetime_for_qbo_query
+from integrations.intuit.qbo.base.errors import QboUnexpectedError
+from integrations.intuit.qbo.base.ids import normalize_qbo_id
 from integrations.intuit.qbo.base.paging import page_all_record_ids
 from integrations.intuit.qbo.bill.external.schemas import (
     QboBill,
@@ -13,6 +15,50 @@ from integrations.intuit.qbo.bill.external.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+_BY_IDS_BATCH_SIZE = 100
+
+
+def _strict_parse_bill_query_response(data: Any, *, where: str) -> List[QboBill]:
+    """Mirror base/paging.py strict guards for a full Bill query page."""
+    if not isinstance(data, dict):
+        raise QboUnexpectedError(
+            "QBO Bill query returned a non-dict body",
+            detail=where,
+        )
+    if "Fault" in data:
+        raise QboUnexpectedError(
+            "QBO Bill query returned a Fault",
+            detail=where,
+        )
+    if "QueryResponse" not in data:
+        raise QboUnexpectedError(
+            "QBO Bill query returned no QueryResponse",
+            detail=where,
+        )
+    query_response = data.get("QueryResponse")
+    if not isinstance(query_response, dict):
+        raise QboUnexpectedError(
+            "QBO Bill query returned a null or non-dict QueryResponse",
+            detail=where,
+        )
+    if "Fault" in query_response:
+        raise QboUnexpectedError(
+            "QBO Bill query returned a Fault inside QueryResponse",
+            detail=where,
+        )
+    if "Bill" not in query_response:
+        rows: List[Any] = []
+    else:
+        rows = query_response.get("Bill")
+    if isinstance(rows, dict):
+        rows = [rows]
+    if not isinstance(rows, list):
+        raise QboUnexpectedError(
+            "QBO Bill query returned a non-list Bill payload",
+            detail=where,
+        )
+    return [QboBill(**bill) for bill in rows]
 
 
 class QboBillClient:
@@ -204,3 +250,32 @@ class QboBillClient:
             entity="Bill",
             operation_name="qbo.bill.query_ids",
         )
+
+    def query_bills_by_ids(self, ids: List[str]) -> List[QboBill]:
+        """Fetch full Bill records by QBO Id (batched, strict QueryResponse guards)."""
+        if not ids:
+            return []
+        all_bills: List[QboBill] = []
+        for offset in range(0, len(ids), _BY_IDS_BATCH_SIZE):
+            batch = ids[offset : offset + _BY_IDS_BATCH_SIZE]
+            numeric_ids: List[str] = []
+            for raw_id in batch:
+                norm = normalize_qbo_id(raw_id)
+                if not norm or not norm.isdigit():
+                    logger.warning(
+                        "Skipping non-numeric QBO Bill id for by-ids query: %r", raw_id
+                    )
+                    continue
+                numeric_ids.append(norm)
+            if not numeric_ids:
+                continue
+            in_clause = ",".join(f"'{i}'" for i in numeric_ids)
+            query_string = f"SELECT * FROM Bill WHERE Id IN ({in_clause}) MAXRESULTS 1000"
+            where = f"entity=Bill ids={len(numeric_ids)}"
+            data = self._http_client.get(
+                "query",
+                params={"query": query_string},
+                operation_name="qbo.bill.query_by_ids",
+            )
+            all_bills.extend(_strict_parse_bill_query_response(data, where=where))
+        return all_bills

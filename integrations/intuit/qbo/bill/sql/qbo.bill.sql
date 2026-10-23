@@ -857,3 +857,50 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+
+CREATE OR ALTER PROCEDURE ReadQboBillLinesByBillableStatusAndRealmId
+(
+    @RealmId NVARCHAR(50),
+    @BillableStatus NVARCHAR(50) = 'Billable'
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        bl.[Id],
+        bl.[QboLineId],
+        bl.[Amount],
+        bl.[BillableStatus],
+        b.[QboId] AS [HeaderQboId],
+        b.[RealmId]
+    FROM [qbo].[BillLine] bl
+    INNER JOIN [qbo].[Bill] b ON bl.[QboBillId] = b.[Id]
+    WHERE b.[RealmId] = @RealmId
+      AND bl.[BillableStatus] = @BillableStatus;
+END;
+GO
+
+
+CREATE OR ALTER PROCEDURE UpdateQboBillLineBillableStatusById
+(
+    @Id BIGINT,
+    @ExpectedBillableStatus NVARCHAR(50),
+    @BillableStatus NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+
+    UPDATE [qbo].[BillLine]
+    SET
+        [BillableStatus] = @BillableStatus,
+        [ModifiedDatetime] = @Now
+    OUTPUT INSERTED.[Id]
+    WHERE [Id] = @Id
+      AND [BillableStatus] = @ExpectedBillableStatus;
+END;
+GO

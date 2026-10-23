@@ -982,3 +982,58 @@ def test_completed_bill_update_via_pipeline_preserves_bill_number():
         )
     sent2 = svc.repo.update_by_id.call_args[0][0]
     assert sent2.bill_number == "INV-1 "
+
+
+def test_list_drop_record_mode_surfaces_possible_duplicates(monkeypatch):
+    """U-723: list-drop uses record-path duplicate gate after create."""
+    from decimal import Decimal
+
+    from entities.bill.business.duplicate_check import DuplicateCheckResult, DuplicateMatch
+
+    monkeypatch.setenv("BILL_DUPLICATE_WARN", "record")
+    att_svc, blia_svc, bill_svc, read_fn = _service_mocks()
+    bill_svc.create.return_value = SimpleNamespace(public_id=EXISTING_BILL, id=77)
+    bill_svc.read_by_public_id.return_value = SimpleNamespace(
+        id=77,
+        public_id=EXISTING_BILL,
+        vendor_id=1,
+        bill_date="2026-05-01",
+        bill_number="INV-9",
+        total_amount=Decimal("250.00"),
+    )
+    match_row = SimpleNamespace(
+        PublicId="dup-match",
+        BillNumber="INV-9",
+        BillDate="2026-05-01",
+        TotalAmount=Decimal("250.00"),
+        Status="draft",
+        VendorName="Acme",
+        ProjectNamesCsv=None,
+        CreatedDatetime=None,
+        ReasonsCsv="vendor_date_amount",
+        CallerCanAccess=True,
+    )
+    repo = MagicMock()
+    repo.read_possible_duplicate_bills.return_value = [match_row]
+    repo.read_by_public_id.return_value = SimpleNamespace(id=99)
+
+    with _patch_gate(), patch.object(
+        dfs, "_resolve_sub_cost_code_id", return_value=501
+    ), patch(
+        "entities.bill.business.duplicate_check.BillRepository", return_value=repo
+    ), patch(
+        "entities.bill.business.duplicate_gate.BillLineItemService"
+    ) as bli:
+        bli.return_value.read_by_bill_id.return_value = []
+        out = _run(
+            draft_bill_from_attachment(
+                attachment_public_id=ATT_UUID,
+                attachment_service=att_svc,
+                blia_service=blia_svc,
+                bill_service=bill_svc,
+                read_fn=read_fn,
+                user_id=17,
+            )
+        )
+    assert out.get("possible_duplicates")
+    assert out["possible_duplicates"][0]["public_id"] == "dup-match"

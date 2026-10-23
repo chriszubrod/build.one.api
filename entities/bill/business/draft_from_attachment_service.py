@@ -250,9 +250,53 @@ async def draft_bill_from_attachment(
             **line_kwargs,
         )
 
-        return await _create_with_duplicate_handling(
+        created = await _create_with_duplicate_handling(
             bill_svc,
             create_kwargs=create_kwargs,
             read_status=read_status,
             read_produced_bill_date=predicted_bill_date is not None,
         )
+        bill_public_id = created.get("bill_public_id")
+        if bill_public_id and not created.get("existing"):
+            try:
+                from entities.bill.business.duplicate_check import effective_mode_for_path
+                from entities.bill.business.duplicate_gate import (
+                    apply_post_create_duplicate_audit,
+                    run_bill_possible_duplicate_gate_for_bill,
+                )
+
+                # U-723: record-only advisory; BILL_DUPLICATE_WARN=off skips every read.
+                list_drop_dup_mode = effective_mode_for_path(
+                    path="record_path", explicit="record"
+                )
+                if list_drop_dup_mode != "off":
+
+                    def _record_possible_duplicates():
+                        bill = bill_svc.read_by_public_id(bill_public_id)
+                        if not bill:
+                            return None
+                        dup_result, dup_mode = run_bill_possible_duplicate_gate_for_bill(
+                            bill=bill,
+                            stage="create",
+                            mode=list_drop_dup_mode,
+                            confirm_not_duplicate=False,
+                            confirmed_duplicate_public_ids=[],
+                            username=None,
+                        )
+                        return apply_post_create_duplicate_audit(
+                            bill_id=int(bill.id),
+                            result=dup_result,
+                            mode=dup_mode,
+                            confirm_not_duplicate=False,
+                            actor_user_id=user_id,
+                        )
+
+                    possible = await asyncio.to_thread(_record_possible_duplicates)
+                    if possible:
+                        created["possible_duplicates"] = possible
+            except Exception as error:
+                logger.warning(
+                    "bill_duplicate.record_after_list_drop_failed err=%s",
+                    type(error).__name__,
+                )
+        return created

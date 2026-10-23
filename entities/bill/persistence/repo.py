@@ -773,6 +773,76 @@ class BillRepository:
             raise map_database_error(error)
 
 
+    def read_possible_duplicate_bills(
+        self,
+        *,
+        vendor_id: Optional[int] = None,
+        bill_date: Optional[str] = None,
+        total_amount: Optional[Decimal] = None,
+        bill_number: Optional[str] = None,
+        text_fingerprints: Optional[list[str]] = None,
+        fingerprint_version: Optional[str] = None,
+        exclude_bill_id: Optional[int] = None,
+        project_ids: Optional[list[int]] = None,
+        actor_user_id: Optional[int] = None,
+        actor_is_system_admin: Optional[bool] = None,
+    ) -> list:
+        fp_csv = ",".join(text_fingerprints) if text_fingerprints else None
+        proj_csv = ",".join(str(p) for p in project_ids) if project_ids else None
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadPossibleDuplicateBills",
+                    params={
+                        "VendorId": vendor_id,
+                        "BillDate": bill_date,
+                        "TotalAmount": Decimal(str(total_amount)) if total_amount is not None else None,
+                        "BillNumber": bill_number,
+                        "TextFingerprints": fp_csv,
+                        "FingerprintVersion": fingerprint_version,
+                        "ExcludeBillId": exclude_bill_id,
+                        "ProjectIds": proj_csv,
+                        "ActorUserId": actor_user_id,
+                        "ActorIsSystemAdmin": _bit(actor_is_system_admin),
+                    },
+                )
+                return cursor.fetchall()
+        except Exception as error:
+            logger.error("ReadPossibleDuplicateBills failed: %s", error)
+            raise map_database_error(error)
+
+    def create_bill_duplicate_override(
+        self,
+        *,
+        bill_id: int,
+        matched_bill_id: Optional[int],
+        match_reason: str,
+        stage: str,
+        disposition: str,
+        actor_user_id: int,
+    ) -> None:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="CreateBillDuplicateOverride",
+                    params={
+                        "BillId": bill_id,
+                        "MatchedBillId": matched_bill_id,
+                        "MatchReason": match_reason,
+                        "Stage": stage,
+                        "Disposition": disposition,
+                        "ActorUserId": actor_user_id,
+                    },
+                )
+                cursor.fetchone()
+        except Exception as error:
+            logger.error("CreateBillDuplicateOverride failed: %s", error)
+            raise map_database_error(error)
+
 def _bit(flag):
     """SQL Server BIT params take 0/1, not Python bool."""
     if flag is None:

@@ -1,3 +1,4 @@
+import os
 import pathlib
 import sys
 import types
@@ -16,6 +17,9 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from shared.authz import current_is_system_admin, current_user_id  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# U-723: default duplicate checks off in the unit harness (no live SQL).
+os.environ.setdefault("BILL_DUPLICATE_WARN", "off")
 
 
 def _blocked_live_pyodbc_connect(*args, **kwargs):

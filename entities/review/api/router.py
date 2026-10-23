@@ -120,6 +120,27 @@ def _do_action(
     except HoldingCodeRefused:
         raise
 
+    if action == "submit" and parent_type == ParentType.BILL:
+        from entities.bill.business.duplicate_check import effective_mode_for_path
+        from entities.bill.business.duplicate_gate import gate_existing_bill_fail_open
+
+        # U-723: no bill read at all while BILL_DUPLICATE_WARN=off.
+        submit_dup_mode = effective_mode_for_path(path="human_submit")
+        if submit_dup_mode != "off":
+            from entities.bill.business.service import BillService
+
+            bill = BillService().read_by_public_id(public_id=parent_public_id)
+            if bill:
+                gate_existing_bill_fail_open(
+                    bill=bill,
+                    stage="submit",
+                    mode=submit_dup_mode,
+                    confirm_not_duplicate=body.confirm_not_duplicate,
+                    confirmed_duplicate_public_ids=body.confirmed_duplicate_public_ids,
+                    username=current_user.get("username") or "",
+                    actor_user_id_resolver=lambda: user_id,
+                )
+
     return _execute_create(payload, current_user, f"Failed to {action} review")
 
 

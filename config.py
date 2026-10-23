@@ -254,6 +254,9 @@ class Settings(BaseSettings):
     bill_drop_prefill_enabled: bool = False
     bill_drop_prefill_timeout_seconds: int = 25
 
+    # U-723 possible-duplicate warning: off | record (default) | warn.
+    bill_duplicate_warn: str = "record"
+
     # Intelligence Layer — internal API base URL
     # Agents call their own API surface as HTTP clients so they go through
     # the same RBAC, ProcessEngine routing, and audit logs as human users.

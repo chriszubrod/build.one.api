@@ -68,6 +68,8 @@ class ErrorCode:
     HOLDING_CODE = "holding_code"
     # U-674. A line's cost code is still an untouched pre-fill — submit/complete refused.
     UNREVIEWED_PREFILL = "unreviewed_prefill"
+    # U-723. Possible duplicate bill — warn-mode Create/Submit/Complete.
+    POSSIBLE_DUPLICATE = "possible_duplicate"
 
 
 class ApiError(HTTPException):
@@ -79,9 +81,11 @@ class ApiError(HTTPException):
         detail: object = None,
         error_code: str | None = None,
         headers: dict[str, str] | None = None,
+        extra: dict | None = None,
     ) -> None:
         super().__init__(status_code=status_code, detail=detail, headers=headers)
         self.error_code = error_code
+        self.extra = extra
 
 
 def error_response(
@@ -89,12 +93,16 @@ def error_response(
     detail: object,
     error_code: str | None = None,
     headers: dict[str, str] | None = None,
+    extra: dict | None = None,
 ) -> JSONResponse:
     """The single builder of the error body shape — every error body goes through here."""
+    content: dict = {"detail": detail, "error_code": error_code}
+    if extra:
+        content.update(extra)
     return JSONResponse(
         status_code=status_code,
         headers=headers,
-        content={"detail": detail, "error_code": error_code},
+        content=content,
     )
 
 
@@ -112,6 +120,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         exc.detail,
         error_code,
         getattr(exc, "headers", None),
+        getattr(exc, "extra", None),
     )
 
 

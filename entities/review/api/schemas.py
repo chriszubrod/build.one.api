@@ -12,6 +12,14 @@ class ReviewSubmitRequest(BaseModel):
         default=None,
         description="Optional comments to record on the submission entry.",
     )
+    confirm_not_duplicate: bool = Field(
+        default=False,
+        description="U-723: acknowledge visible possible-duplicate matches on bill submit.",
+    )
+    confirmed_duplicate_public_ids: list[str] = Field(
+        default_factory=list,
+        description="U-723: public ids of possible duplicates the caller reviewed.",
+    )
 
 
 class ReviewAdvanceRequest(BaseModel):

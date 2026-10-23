@@ -11,7 +11,18 @@ from entities.bill_line_item.api.schemas import CodingPrefillStateLiteral
 BillCreateIntakeSource = Literal["pdf_drop", "pdf_upload"]
 
 
-class BillCreate(BaseModel):
+class BillDuplicateConfirmMixin(BaseModel):
+    confirm_not_duplicate: bool = Field(
+        default=False,
+        description="When true, asserts the visible duplicate matches are acknowledged.",
+    )
+    confirmed_duplicate_public_ids: list[str] = Field(
+        default_factory=list,
+        description="Public ids of possible duplicates the caller reviewed (superset required).",
+    )
+
+
+class BillCreate(BillDuplicateConfirmMixin):
     vendor_public_id: str = Field(
         description="The vendor public ID of the bill."
     )
@@ -128,6 +139,10 @@ class BillCreate(BaseModel):
             "When omitted the router derives manual/agent from the JWT username."
         ),
     )
+
+
+class BillCompleteRequest(BillDuplicateConfirmMixin):
+    pass
 
 
 class BillUpdate(BaseModel):

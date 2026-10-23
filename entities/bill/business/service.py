@@ -9,6 +9,7 @@ Invariants
   Concurrency: UpdateBillById takes @RowVersion; finalize uses draft guard instead of rowversion.
   Cascade: delete_by_public_id uses DeleteBillCascadeById for dependent rows.
   Review: a line whose CodingPrefillState is still 'prefilled' (an untouched suggestion) blocks Submit for Review, the create-time auto-submit and Complete with 422 unreviewed_prefill (U-674); suspense-coded lines block Complete (U-632).
+  Duplicates: vendor+number+date hard duplicate (DuplicateBillError) runs before U-723 possible-duplicate gates; possible duplicates (Rules A/B/C) are gated at the HTTP layer and audited in dbo.BillDuplicateOverride.
 External writes
   sync_bill_to_qbo via qbo outbox (ALLOW_QBO_WRITES).
   MS sharepoint_upload / excel insert|append via ms outbox (ALLOW_MS_WRITES).
@@ -36,6 +37,8 @@ Sprocs
   SetBillQboIdentity
   UpdateBillById
   UpsertBillCompletionResult
+  CreateBillDuplicateOverride
+  ReadPossibleDuplicateBills
 """
 # Python Standard Library Imports
 import logging
@@ -270,6 +273,96 @@ class BillService:
             self._attachable_attachment_connector = AttachableAttachmentConnector()
         return self._attachable_attachment_connector
 
+    def assert_no_hard_duplicate_on_create(
+        self,
+        *,
+        vendor_id: Optional[int] = None,
+        vendor_public_id: Optional[str] = None,
+        bill_number: Optional[str] = None,
+        bill_date: str,
+        source_email_message_id: Optional[int] = None,
+        source_email_message_public_id: Optional[str] = None,
+    ) -> None:
+        """Vendor + bill number + bill date hard duplicate (UQ path). Runs before U-723."""
+        if vendor_id is None and vendor_public_id:
+            vendor = VendorService().read_by_public_id(public_id=vendor_public_id)
+            vendor_id = vendor.id if vendor else None
+        if source_email_message_id is None and source_email_message_public_id:
+            from entities.email_message.business.service import EmailMessageService
+
+            source_email = EmailMessageService().read_by_public_id(
+                public_id=source_email_message_public_id
+            )
+            source_email_message_id = source_email.id if source_email else None
+        if not vendor_id or not bill_number:
+            return
+        existing = self.repo.read_by_bill_number_and_vendor_id(
+            bill_number=bill_number,
+            vendor_id=vendor_id,
+            bill_date=bill_date,
+        )
+        if not existing:
+            return
+        caller_can_access = can_access_bill(existing.id)
+        link_msg = ""
+        from shared.lifecycle.terminal_lock import is_terminal
+
+        existing_is_locked = is_terminal(
+            getattr(existing, "status", None),
+            is_draft=getattr(existing, "is_draft", None),
+        )
+        if (
+            caller_can_access
+            and source_email_message_id is not None
+            and existing_is_locked
+        ):
+            link_msg = (
+                " Existing Bill is completed, so its source-email link "
+                "was left unchanged."
+            )
+        elif caller_can_access and source_email_message_id is not None:
+            try:
+                linked = self.repo.link_source_email_message(
+                    bill_id=existing.id,
+                    source_email_message_id=source_email_message_id,
+                )
+                if linked:
+                    link_msg = (
+                        f" Linked this email source to existing "
+                        f"Bill (Bill.PublicId={existing.public_id}) "
+                        f"so the dedup trail is preserved."
+                    )
+                else:
+                    link_msg = (
+                        f" Existing Bill already has a source email "
+                        f"linked — no change to that field."
+                    )
+            except Exception as link_error:
+                logger.warning(
+                    "Failed to backfill source email on existing Bill %s: %s",
+                    existing.public_id,
+                    type(link_error).__name__,
+                )
+                link_msg = (
+                    " (also tried to link source email to the existing "
+                    "bill but that step failed.)"
+                )
+        if caller_can_access:
+            dup_msg = (
+                f"A bill with BillNumber '{bill_number}' and this date "
+                f"already exists for this vendor "
+                f"(Bill.PublicId={existing.public_id}, IsDraft={existing.is_draft}). "
+                f"Please update the existing bill instead of creating a new one.{link_msg}"
+            )
+        else:
+            dup_msg = (
+                "A bill with this number already exists for this vendor and date."
+            )
+        raise DuplicateBillError(
+            dup_msg,
+            existing_bill_public_id=str(existing.public_id),
+        )
+
     def create(self, *, tenant_id: int = 1, user_id: Optional[int] = None, vendor_public_id: Optional[str] = None, payment_term_public_id: Optional[str] = None, bill_date: str, due_date: str, bill_number: Optional[str] = None, total_amount: Optional[Decimal] = None, memo: Optional[str] = None, is_draft: bool = True, intake_source: Optional[str] = None, intake_source_detail: Optional[str] = None, source_email_message_public_id: Optional[str] = None, attachment_public_id: Optional[str] = None,
                require_attachment: bool = True,
                line_description: Optional[str] = None, line_quantity: Optional[Decimal] = None,
@@ -394,96 +487,12 @@ class BillService:
                 raise ValueError(f"EmailMessage with public_id '{source_email_message_public_id}' not found.")
             source_email_message_id = source_email.id
 
-        # Duplicate check — only when both vendor and bill number are present
-        if vendor_id and bill_number:
-            existing = self.repo.read_by_bill_number_and_vendor_id(bill_number=bill_number, vendor_id=vendor_id, bill_date=bill_date)
-            if existing:
-                caller_can_access = can_access_bill(existing.id)
-
-                # Opportunistic source-email backfill: if this create_bill
-                # call carries an email source AND the existing Bill row
-                # has no source linked yet, stamp the link so the email
-                # dedup trail is preserved. The underlying sproc filters
-                # on SourceEmailMessageId IS NULL — won't overwrite a
-                # link to a different email.
-                link_msg = ""
-                # U-446b (Codex round 2, P1). This backfill WRITES to the
-                # existing Bill — `SourceEmailMessageId` plus `ModifiedDatetime`
-                # — and `source_email_message_public_id` is client-supplied on
-                # `POST /create/bill`. Posting a duplicate of a completed Bill
-                # that has no source linked yet therefore edited a locked
-                # document and still returned the ordinary duplicate error.
-                #
-                # The side effect is SKIPPED rather than raised: the request
-                # fails as a duplicate either way, and that message tells the
-                # caller far more than a `status_locked` would.
-                #
-                # NO system-caller exemption (Codex round 5, P3). An earlier cut
-                # had one, but `LinkBillSourceEmailMessage` carries
-                # `AND [Status] <> 'completed'` — the only place the check
-                # cannot be raced — and that predicate applies to everyone. The
-                # exemption here therefore did nothing except send system
-                # callers down a path that silently wrote nothing and then
-                # reported "already has a source email linked", which is not
-                # what happened. A completed Bill has already shipped its AP;
-                # there is nothing a late dedup stamp can still protect.
-                from shared.lifecycle.terminal_lock import is_terminal
-                existing_is_locked = is_terminal(
-                    getattr(existing, "status", None),
-                    is_draft=getattr(existing, "is_draft", None),
-                )
-                if (
-                    caller_can_access
-                    and source_email_message_id is not None
-                    and existing_is_locked
-                ):
-                    link_msg = (
-                        " Existing Bill is completed, so its source-email link "
-                        "was left unchanged."
-                    )
-                elif caller_can_access and source_email_message_id is not None:
-                    try:
-                        linked = self.repo.link_source_email_message(
-                            bill_id=existing.id,
-                            source_email_message_id=source_email_message_id,
-                        )
-                        if linked:
-                            link_msg = (
-                                f" Linked this email source to existing "
-                                f"Bill (Bill.PublicId={existing.public_id}) "
-                                f"so the dedup trail is preserved."
-                            )
-                        else:
-                            link_msg = (
-                                f" Existing Bill already has a source email "
-                                f"linked — no change to that field."
-                            )
-                    except Exception as link_error:
-                        logger.warning(
-                            "Failed to backfill source email on existing Bill %s: %s",
-                            existing.public_id,
-                            type(link_error).__name__,
-                        )
-                        link_msg = (
-                            " (also tried to link source email to the existing "
-                            "bill but that step failed.)"
-                        )
-
-                if caller_can_access:
-                    dup_msg = (
-                        f"A bill with BillNumber '{bill_number}' and this date "
-                        f"already exists for this vendor "
-                        f"(Bill.PublicId={existing.public_id}, IsDraft={existing.is_draft}). "
-                        f"Please update the existing bill instead of creating a new one.{link_msg}"
-                    )
-                else:
-                    dup_msg = (
-                        "A bill with this number already exists for this vendor and date."
-                    )
-                raise DuplicateBillError(
-                    dup_msg,
-                    existing_bill_public_id=str(existing.public_id),
-                )
+        self.assert_no_hard_duplicate_on_create(
+            vendor_id=vendor_id,
+            bill_number=bill_number,
+            bill_date=bill_date,
+            source_email_message_id=source_email_message_id,
+        )
 
         bill = self.repo.create(
             tenant_id=tenant_id,

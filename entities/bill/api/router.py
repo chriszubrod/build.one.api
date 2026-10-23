@@ -12,7 +12,14 @@ from fastapi import status as http_status
 from fastapi.responses import JSONResponse
 
 # Local Imports
-from entities.bill.api.schemas import BillCreate, BillUpdate
+from entities.bill.api.schemas import BillCompleteRequest, BillCreate, BillUpdate
+from entities.bill.business.duplicate_check import effective_mode_for_path, is_agent_username
+from entities.bill.business.duplicate_gate import (
+    apply_post_create_duplicate_audit_fail_open,
+    assert_hard_duplicate_before_create,
+    gate_existing_bill_fail_open,
+    run_create_possible_duplicate_gate_advisory,
+)
 from entities.bill.business.service import BillService
 from entities.bill.persistence.repo import BillRepository
 from entities.vendor.persistence.repo import VendorRepository
@@ -137,6 +144,8 @@ async def create_bill_router(
         submit_for_review=body.submit_for_review,
     )
 
+    bill_service = BillService()
+
     # Derive intake source from the caller's username. Agent users are
     # provisioned with usernames ending in "_agent" (per the agent-as-user
     # convention); everyone else is treated as a manual UI/API caller.
@@ -146,7 +155,37 @@ async def create_bill_router(
     if body.intake_source is not None:
         intake_source = body.intake_source
     else:
-        intake_source = "agent" if username.endswith("_agent") else "manual"
+        intake_source = "agent" if is_agent_username(username) else "manual"
+
+    is_agent = is_agent_username(username)
+    dup_explicit: str = "record" if is_agent else "off"
+    dup_path = "record_path" if is_agent else "human_create"
+    effective_dup_mode = effective_mode_for_path(
+        path=dup_path, explicit=dup_explicit
+    )
+    if effective_dup_mode != "off":
+        await asyncio.to_thread(
+            assert_hard_duplicate_before_create,
+            bill_service,
+            vendor_public_id=body.vendor_public_id,
+            bill_number=body.bill_number,
+            bill_date=body.bill_date,
+            source_email_message_public_id=body.source_email_message_public_id,
+        )
+    dup_result, dup_mode = await asyncio.to_thread(
+        run_create_possible_duplicate_gate_advisory,
+        vendor_public_id=body.vendor_public_id,
+        bill_date=body.bill_date,
+        total_amount=to_decimal_or_none(body.total_amount),
+        line_amount=to_decimal_or_none(body.line_amount),
+        bill_number=body.bill_number,
+        attachment_public_id=body.attachment_public_id,
+        line_project_public_id=body.line_project_public_id,
+        confirm_not_duplicate=body.confirm_not_duplicate,
+        confirmed_duplicate_public_ids=body.confirmed_duplicate_public_ids,
+        username=username,
+        mode=effective_dup_mode,
+    )
 
     context = TriggerContext(
         trigger_type=EventType.API_CALL,
@@ -191,14 +230,28 @@ async def create_bill_router(
         raise_workflow_error(result.get("error", ""), "Failed to create bill")
 
     data = result.get("data")
-
+    envelope = await asyncio.to_thread(_with_vendor_public_id, data)
+    bill_id = envelope.get("id") if isinstance(envelope, dict) else None
+    possible = None
+    if bill_id is not None:
+        possible = await asyncio.to_thread(
+            apply_post_create_duplicate_audit_fail_open,
+            bill_id=int(bill_id),
+            result=dup_result,
+            mode=dup_mode,
+            confirm_not_duplicate=body.confirm_not_duplicate,
+            actor_user_id=user_id,
+        )
+    response = item_response(envelope)
+    if possible:
+        response["possible_duplicates"] = possible
     # A non-draft create commits IsDraft=False but does NOT run completion.
     # External sync (SharePoint/Excel/QBO) happens ONLY via POST
     # /complete/bill/{public_id} (durable, CompletionJob-covered). 'Not a
     # draft' is not the same as 'completed'. (U-080 — removed a dead trigger
     # whose scheduled _run_complete_bill always self-skipped on the already
     # non-draft row.)
-    return item_response(await asyncio.to_thread(_with_vendor_public_id, data))
+    return response
 
 
 @router.get("/get/bills")
@@ -661,12 +714,14 @@ def _run_complete_bill(public_id: str, job_public_id: str | None = None, force: 
 def complete_bill_router(
     public_id: str,
     background_tasks: BackgroundTasks,
+    body: Optional[BillCompleteRequest] = None,
     current_user: dict = Depends(require_module_api(Modules.BILLS, "can_complete")),
 ):
     """
     Queue bill completion (finalize, SharePoint, Excel). Returns 202 immediately;
     work runs in background. Client can poll GET /api/v1/get/bill/{public_id} (is_draft) or use list page banner.
     """
+    confirm_body = body or BillCompleteRequest()
     logger.info("Complete bill API called: public_id=%s (queuing background task)", public_id)
     bill_service = BillService()
     bill = bill_service.read_by_public_id(public_id=public_id)
@@ -678,6 +733,17 @@ def complete_bill_router(
     # Line checks first (U-632 suspense code, U-674 untouched pre-fill): the gate's
     # approver fast-path RECORDS an approval, which must not land on a refused bill.
     bill_service._assert_completable_lines(bill.id)
+
+    complete_dup_mode = effective_mode_for_path(path="human_complete")
+    gate_existing_bill_fail_open(
+        bill=bill,
+        stage="complete",
+        mode=complete_dup_mode,
+        confirm_not_duplicate=confirm_body.confirm_not_duplicate,
+        confirmed_duplicate_public_ids=confirm_body.confirmed_duplicate_public_ids,
+        username=current_user.get("username") or "",
+        actor_user_id_resolver=lambda: resolve_user_id(current_user),
+    )
 
     # U-458 completion gate. No-op while LIFECYCLE_COMPLETION_GATE_BILL is unset
     # or `off` (the shipped default) — it returns before resolving the review.

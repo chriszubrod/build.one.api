@@ -2,6 +2,17 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-723 follow-ups - bill possible-duplicate warning (booked 2026-10-23, shipped api `c52a0769`, web `7e31e16`)
+
+- [ ] **Flip BILL_DUPLICATE_WARN to warn** (App Service setting) once `record` rows in dbo.BillDuplicateOverride look right - Chris approval. iOS cannot send confirm_not_duplicate yet (U-723e) - in warn mode an iOS user cannot create/submit/complete a bill with a visible match.
+- [ ] **Fingerprint backfill** `scripts/backfill_attachment_text_fingerprint.py --apply` (dry-run first) so Rule B sees existing bills - prod write, Chris approval.
+- [ ] **Reason-aware confirmations** - a pair confirmed "not a duplicate" for one reason (e.g. vendor_date_amount) also suppresses a later different reason (same_document_text). Require o.MatchReason = the current reason.
+- [ ] **Durable signal when warn mode fails open** - today only a WARNING log (`bill_duplicate.*_gate_failed`); add a ReconciliationIssue-style row or an alert on that key.
+- [ ] **Per-line fingerprint N+1** in fingerprints_for_bill_id (link read + fingerprint read per line) - one join sproc.
+- [ ] **Hidden-only matches are re-asked at each stage** (confirming with no visible ids persists nothing).
+- [ ] **Hard-duplicate pre-flight runs twice on create** when the flag is on (router + BillService.create); vendor resolved 3x.
+
+
 ## U-721a follow-ups - shared DETAILS insert + 00.02 rule (booked 2026-10-23)
 
 - [ ] **23 DETAILS rows already on 00.02** in 7 SharePoint workbooks (census copies 2026-10-23: HP2 12, OL 3, HA 3, SHT 2, OHR2/HE12/TB3 1 each; $19,788.07 in col N; HE12 $5,921.45 = QBO-76865). The new rule stops NEW ones only; rewriting/removing existing rows is U-692b/c territory (content-keyed rewrite, never col H).

@@ -2,6 +2,12 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-719 follow-ups — expense budget chip (booked 2026-10-23, shipped `9b143d07`)
+
+- [ ] **Budget figures need only project access, not the Budgets module** (Pass 3 note; existing policy) — the bill chip (`POST /bill/coding/suggest`, BILLS can_read) and the expense chip (EXPENSES can_update) both show remaining/over amounts to anyone with project access. If budget numbers should require Budgets can_read, change both paths together.
+- [ ] **Lines on the target project but a different SCC count $0** toward the amount (U-655 rule, inherited) — the chip can say "Within budget" for an expense whose lines are coded elsewhere on that project.
+
+
 ## U-716a follow-ups — expense receipt drop/match (booked 2026-10-23, shipped `cf439563`)
 
 - [ ] **Auto-attach a unique strong match** — v1 always asks for a click (Chris, Gate 1). Revisit once we see how often the top candidate is right (the prod proof: 24/25 self-ranked first).

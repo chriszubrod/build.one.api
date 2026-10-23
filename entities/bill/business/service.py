@@ -206,6 +206,51 @@ def find_insertion_row_for_subcostcode(worksheet_values: List[List[Any]], target
     return first_match_row + 2
 
 
+def find_first_row_for_subcostcode(
+    worksheet_values: List[List[Any]], target_subcostcode: str
+) -> Optional[int]:
+    """1-based row of the first worksheet row whose column C matches target SubCostCode."""
+    if not worksheet_values:
+        return None
+
+    target_str = str(target_subcostcode).strip()
+
+    for row_index, row in enumerate(worksheet_values):
+        if row_index == 0:
+            continue
+
+        col_c_value = row[2] if len(row) > 2 else None
+        if col_c_value is None:
+            continue
+        col_c_str = str(col_c_value).strip()
+        if not col_c_str:
+            continue
+
+        subcostcode_match = col_c_str == target_str
+        if not subcostcode_match:
+            try:
+                subcostcode_match = float(col_c_str) == float(target_str)
+            except (ValueError, TypeError):
+                pass
+
+        if subcostcode_match:
+            return row_index + 1
+
+    return None
+
+
+def sort_insert_groups_for_excel_enqueue(
+    worksheet_values: List[List[Any]], insert_groups: list
+) -> None:
+    """Bottom-up enqueue order: highest insertion_row first; ties by section start ASC."""
+    insert_groups.sort(
+        key=lambda g: (
+            -g[0],
+            find_first_row_for_subcostcode(worksheet_values, g[2]) or 0,
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # QBO deep-link URL builder.
 # ---------------------------------------------------------------------------
@@ -2864,11 +2909,10 @@ class BillService:
                     rows_to_append.extend(group_rows)
 
             # Enqueue each insert as a separate outbox row so retries + dead-
-            # letter isolation happen per group. No need for the bottom-to-top
-            # ordering now — the worker drains rows one at a time, so each
-            # `insert_excel_rows` call sees the state resulting from all prior
-            # completed rows. Sort ascending for deterministic dispatch order.
-            insert_groups.sort(key=lambda g: g[0])
+            # letter isolation happen per group. Worker drains in outbox Id
+            # order; each insert at row_index shifts lower rows down without
+            # updating later payloads, so process highest insertion_row first.
+            sort_insert_groups_for_excel_enqueue(worksheet_values, insert_groups)
 
             from integrations.ms.outbox.business.service import MsOutboxService
             ms_outbox = MsOutboxService()
@@ -3099,7 +3143,8 @@ class BillService:
                 else:
                     rows_to_append.extend(group_rows)
 
-            insert_groups.sort(key=lambda g: g[0])
+            # Worker drains in outbox Id order; row_index is fixed at enqueue time.
+            sort_insert_groups_for_excel_enqueue(worksheet_values, insert_groups)
 
             from integrations.ms.outbox.business.service import MsOutboxService
             ms_outbox = MsOutboxService()

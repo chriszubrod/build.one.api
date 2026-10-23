@@ -1399,7 +1399,10 @@ class ExpenseService:
             line_items, deferred_holding_count = self._split_off_holding_lines(line_items)
             if not line_items:
                 return _holding_deferred_excel_result(deferred_holding_count)
-            from entities.bill.business.service import find_insertion_row_for_subcostcode
+            from entities.bill.business.service import (
+                find_insertion_row_for_subcostcode,
+                sort_insert_groups_for_excel_enqueue,
+            )
 
             # --- resolve workbook location ---
             excel_mapping = self.project_excel_connector.get_excel_for_project(project_id=project_id)
@@ -1556,7 +1559,7 @@ class ExpenseService:
             # Enqueue each insert/append as a distinct outbox row. Worker drains
             # in outbox Id order; each insert at row_index shifts lower rows down,
             # so process highest insertion_row first (bottom-up).
-            insert_groups.sort(key=lambda g: g[0], reverse=True)
+            sort_insert_groups_for_excel_enqueue(worksheet_values, insert_groups)
 
             from integrations.ms.outbox.business.service import MsOutboxService
             ms_outbox = MsOutboxService()
@@ -1646,7 +1649,10 @@ class ExpenseService:
         """
         session_id = None
         try:
-            from entities.bill.business.service import find_insertion_row_for_subcostcode
+            from entities.bill.business.service import (
+                find_insertion_row_for_subcostcode,
+                sort_insert_groups_for_excel_enqueue,
+            )
 
             if not expense_line_pairs:
                 return {
@@ -1799,7 +1805,7 @@ class ExpenseService:
 
             # Enqueue each insert/append as distinct outbox rows (bottom-up — see
             # sync_to_excel_workbook insert_groups sort above).
-            insert_groups.sort(key=lambda g: g[0], reverse=True)
+            sort_insert_groups_for_excel_enqueue(worksheet_values, insert_groups)
 
             from integrations.ms.outbox.business.service import MsOutboxService
             ms_outbox = MsOutboxService()

@@ -31,7 +31,10 @@ from integrations.ms.sharepoint.external.client import (
     create_workbook_session,
     close_workbook_session,
 )
-from entities.bill.business.service import find_insertion_row_for_subcostcode
+from entities.bill.business.service import (
+    find_insertion_row_for_subcostcode,
+    sort_insert_groups_for_excel_enqueue,
+)
 from shared.api.money import to_decimal_or_none
 
 logger = logging.getLogger(__name__)
@@ -1100,7 +1103,8 @@ class BillCreditCompleteService:
                 else:
                     rows_to_append.extend(group_rows)
 
-            insert_groups.sort(key=lambda g: g[0])
+            # Worker drains in outbox Id order; row_index is fixed at enqueue time.
+            sort_insert_groups_for_excel_enqueue(worksheet_values, insert_groups)
 
             from integrations.ms.outbox.business.service import MsOutboxService
             ms_outbox = MsOutboxService()

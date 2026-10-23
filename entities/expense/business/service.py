@@ -1399,11 +1399,6 @@ class ExpenseService:
             line_items, deferred_holding_count = self._split_off_holding_lines(line_items)
             if not line_items:
                 return _holding_deferred_excel_result(deferred_holding_count)
-            from entities.bill.business.service import (
-                find_insertion_row_for_subcostcode,
-                sort_insert_groups_for_excel_enqueue,
-            )
-
             # --- resolve workbook location ---
             excel_mapping = self.project_excel_connector.get_excel_for_project(project_id=project_id)
             if not excel_mapping:
@@ -1502,8 +1497,13 @@ class ExpenseService:
 
             errors = []
             synced_count = 0
-            rows_to_append = []
-            insert_groups = []  # (insertion_row, group_rows, sub_cost_code_number)
+
+            from integrations.ms.sharepoint.excel.workbook_sections import (
+                SectionGroup,
+                enqueue_section_inserts,
+            )
+
+            section_groups: list[SectionGroup] = []
 
             # Columns M and N are two expressions of one fact. Resolve it once:
             # `is_credit` reached the type label and not the amount's sign for
@@ -1543,68 +1543,23 @@ class ExpenseService:
                 if not group_rows:
                     continue
 
-                insertion_row = None
-                if sub_cost_code_number and worksheet_values:
-                    insertion_row = find_insertion_row_for_subcostcode(
-                        worksheet_values=worksheet_values,
-                        target_subcostcode=sub_cost_code_number,
-                    )
-
-                if insertion_row:
-                    insert_groups.append((insertion_row, group_rows, sub_cost_code_number))
-                else:
-                    logger.info(f"SubCostCode {sub_cost_code_number or 'None'}: no match found, will append at end")
-                    rows_to_append.extend(group_rows)
-
-            # Enqueue each insert/append as a distinct outbox row. Worker drains
-            # in outbox Id order; each insert at row_index shifts lower rows down,
-            # so process highest insertion_row first (bottom-up).
-            sort_insert_groups_for_excel_enqueue(worksheet_values, insert_groups)
-
-            from integrations.ms.outbox.business.service import MsOutboxService
-            ms_outbox = MsOutboxService()
-
-            for insertion_row, group_rows, sub_cost_code_number in insert_groups:
-                queued = ms_outbox.enqueue_excel_insert(
-                    entity_type="Expense",
-                    entity_public_id=str(expense.public_id),
-                    drive_id=drive.drive_id,
-                    item_id=driveitem.item_id,
-                    worksheet_name=worksheet_name,
-                    row_index=insertion_row,
-                    values=group_rows,
-                    session_id=None,
+                section_groups.append(
+                    SectionGroup(sub_cost_code=sub_cost_code_number, rows=group_rows)
                 )
-                if queued is not None:
-                    synced_count += len(group_rows)
-                    logger.info(
-                        f"Queued Excel insert of {len(group_rows)} row(s) at row "
-                        f"{insertion_row} for SubCostCode {sub_cost_code_number} "
-                        f"(outbox {queued.public_id})"
-                    )
-                else:
-                    errors.append({
-                        "sub_cost_code": sub_cost_code_number,
-                        "error": "Excel insert enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
-                    })
 
-            # --- append remainder ---
-            if rows_to_append:
-                logger.info(f"Queuing append of {len(rows_to_append)} row(s) to end of worksheet")
-                queued = ms_outbox.enqueue_excel_append(
-                    entity_type="Expense",
-                    entity_public_id=str(expense.public_id),
-                    drive_id=drive.drive_id,
-                    item_id=driveitem.item_id,
-                    worksheet_name=worksheet_name,
-                    values=rows_to_append,
-                    session_id=None,
-                )
-                if queued is not None:
-                    synced_count += len(rows_to_append)
-                    logger.info(f"Queued Excel append of {len(rows_to_append)} row(s) (outbox {queued.public_id})")
-                else:
-                    errors.append({"error": "Excel append enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"})
+            enqueue_res = enqueue_section_inserts(
+                worksheet_values=worksheet_values,
+                groups=section_groups,
+                entity_type="Expense",
+                entity_public_id=str(expense.public_id),
+                drive_id=drive.drive_id,
+                item_id=driveitem.item_id,
+                worksheet_name=worksheet_name,
+                batch=False,
+                log_no_match=True,
+            )
+            errors.extend(enqueue_res.errors)
+            synced_count = enqueue_res.synced_count
 
             if synced_count == 0 and not errors:
                 return {
@@ -1649,11 +1604,6 @@ class ExpenseService:
         """
         session_id = None
         try:
-            from entities.bill.business.service import (
-                find_insertion_row_for_subcostcode,
-                sort_insert_groups_for_excel_enqueue,
-            )
-
             if not expense_line_pairs:
                 return {
                     "success": True,
@@ -1781,85 +1731,26 @@ class ExpenseService:
 
             logger.info(f"Project {project_id}: {len(all_new_rows)} new row(s) to sync")
 
-            # --- group by subcostcode, find insertion points ---
-            from collections import defaultdict as _defaultdict
-            groups_by_scc = _defaultdict(list)
-            for sub_cost_code_id, scc_number, cc_number, row in all_new_rows:
-                groups_by_scc[scc_number].append(row)
+            from integrations.ms.sharepoint.excel.workbook_sections import (
+                batch_entity_public_id,
+                enqueue_section_inserts,
+                group_rows_by_subcostcode,
+            )
 
-            synced_count = 0
-            rows_to_append = []
-            insert_groups = []
-
-            for scc_number, group_rows in groups_by_scc.items():
-                insertion_row = None
-                if scc_number and worksheet_values:
-                    insertion_row = find_insertion_row_for_subcostcode(
-                        worksheet_values=worksheet_values,
-                        target_subcostcode=scc_number,
-                    )
-                if insertion_row:
-                    insert_groups.append((insertion_row, group_rows, scc_number))
-                else:
-                    rows_to_append.extend(group_rows)
-
-            # Enqueue each insert/append as distinct outbox rows (bottom-up — see
-            # sync_to_excel_workbook insert_groups sort above).
-            sort_insert_groups_for_excel_enqueue(worksheet_values, insert_groups)
-
-            from integrations.ms.outbox.business.service import MsOutboxService
-            ms_outbox = MsOutboxService()
-
-            # Batch context: the entity_public_id column on the outbox row
-            # represents a bundle of expenses; we record the project_id for
-            # downstream traceability since a single batch-entity isn't
-            # meaningful here.
-            # EntityPublicId is a UNIQUEIDENTIFIER; a batch row spans many entities, so
-            # derive a deterministic GUID from the project. (Plain str(project_id) fails
-            # the nvarchar->uniqueidentifier cast in the outbox sproc.)
-            import uuid as _uuid
-            batch_entity_public_id = str(_uuid.uuid5(_uuid.NAMESPACE_URL, f"ms-excel-batch:{project_id}"))
-
-            for insertion_row, group_rows, scc_number in insert_groups:
-                queued = ms_outbox.enqueue_excel_insert(
-                    entity_type="ExpenseBatch",
-                    entity_public_id=batch_entity_public_id,
-                    drive_id=drive.drive_id,
-                    item_id=driveitem.item_id,
-                    worksheet_name=worksheet_name,
-                    row_index=insertion_row,
-                    values=group_rows,
-                    session_id=None,
-                )
-                if queued is not None:
-                    synced_count += len(group_rows)
-                    logger.info(
-                        f"Queued batch Excel insert of {len(group_rows)} row(s) at row "
-                        f"{insertion_row} for SubCostCode {scc_number} (outbox {queued.public_id})"
-                    )
-                else:
-                    errors.append({
-                        "sub_cost_code": scc_number,
-                        "error": "Excel insert enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
-                    })
-
-            # --- append remainder ---
-            if rows_to_append:
-                logger.info(f"Queuing batch append of {len(rows_to_append)} row(s) to end of worksheet")
-                queued = ms_outbox.enqueue_excel_append(
-                    entity_type="ExpenseBatch",
-                    entity_public_id=batch_entity_public_id,
-                    drive_id=drive.drive_id,
-                    item_id=driveitem.item_id,
-                    worksheet_name=worksheet_name,
-                    values=rows_to_append,
-                    session_id=None,
-                )
-                if queued is not None:
-                    synced_count += len(rows_to_append)
-                    logger.info(f"Queued batch Excel append of {len(rows_to_append)} row(s) (outbox {queued.public_id})")
-                else:
-                    errors.append({"error": "Excel append enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"})
+            keyed_rows = [(scc_number, row) for _scc_id, scc_number, _cc, row in all_new_rows]
+            section_groups = group_rows_by_subcostcode(keyed_rows)
+            enqueue_res = enqueue_section_inserts(
+                worksheet_values=worksheet_values,
+                groups=section_groups,
+                entity_type="ExpenseBatch",
+                entity_public_id=batch_entity_public_id(project_id),
+                drive_id=drive.drive_id,
+                item_id=driveitem.item_id,
+                worksheet_name=worksheet_name,
+                batch=True,
+            )
+            errors.extend(enqueue_res.errors)
+            synced_count = enqueue_res.synced_count
 
             logger.info(f"Project {project_id}: synced {synced_count} row(s) to Excel workbook")
             has_errors = len(errors) > 0

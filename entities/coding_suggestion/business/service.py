@@ -56,6 +56,42 @@ def _apply_post_redaction_contract(contract: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _expense_suggest_contract_needs_budget(contract: dict[str, Any]) -> bool:
+    status = contract.get("status")
+    if status == "suggested":
+        return True
+    return status == "flagged" and contract.get("sub_cost_code") is not None
+
+
+def _attach_expense_budget_to_contract(
+    contract: dict[str, Any],
+    expense: Any,
+) -> dict[str, Any]:
+    if not _expense_suggest_contract_needs_budget(contract):
+        return contract
+    from entities.coding_suggestion.business.budget_check import evaluate_budget_for_expense
+
+    out = dict(contract)
+    expense_id = getattr(expense, "id", None)
+    try:
+        if expense_id is not None:
+            from entities.expense_line_item.business.service import ExpenseLineItemService
+
+            lines = ExpenseLineItemService().read_by_expense_id(expense_id=int(expense_id))
+        else:
+            lines = []
+    except Exception as error:
+        logger.warning(
+            "Expense coding suggest budget failed for expense_id=%s: %s",
+            expense_id,
+            type(error).__name__,
+        )
+        out["budget"] = None
+        return out
+    out["budget"] = evaluate_budget_for_expense(expense, contract, lines)
+    return out
+
+
 def _redact_inaccessible_project_from_contract(contract: dict[str, Any]) -> dict[str, Any]:
     project = contract.get("project")
     if not project or project.get("id") is None:
@@ -379,9 +415,10 @@ class CodingSuggestionService:
                 coding_row = self.read_by_public_id(str(public_id))
 
         if coding_row is not None and self._expense_suggestion_is_materialized(coding_row):
-            return _redact_inaccessible_project_from_contract(
+            contract = _redact_inaccessible_project_from_contract(
                 _map_stored_item_to_contract(coding_row)
             )
+            return _attach_expense_budget_to_contract(contract, expense)
 
         suggestion_engine = engine or self._default_suggestion_engine()
         item_shape, realm_id = self._engine_item_for_expense(
@@ -403,13 +440,15 @@ class CodingSuggestionService:
             if stored is None:
                 stored = self.read_by_public_id(coding_row.public_id)
             if stored is not None:
-                return _redact_inaccessible_project_from_contract(
+                contract = _redact_inaccessible_project_from_contract(
                     _map_stored_item_to_contract(stored)
                 )
+                return _attach_expense_budget_to_contract(contract, expense)
 
-        return _redact_inaccessible_project_from_contract(
+        contract = _redact_inaccessible_project_from_contract(
             _map_engine_result_to_contract(engine_result)
         )
+        return _attach_expense_budget_to_contract(contract, expense)
 
     @staticmethod
     def _default_suggestion_engine():

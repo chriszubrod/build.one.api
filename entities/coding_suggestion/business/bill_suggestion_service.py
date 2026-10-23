@@ -12,6 +12,7 @@ import config
 from entities.bill.business.model import Bill
 from entities.bill_line_item.business.model import BillLineItem
 from entities.coding_suggestion.business.budget_check import (
+    chosen_project_id_from_lines,
     evaluate_budget_for_suggestion,
     project_confident_for_suggestion,
 )
@@ -441,13 +442,6 @@ def apply_budget_check_to_suggestion(
     suggestion.budget_remaining = result.remaining
     suggestion.budget_evidence = dict(result.evidence) if result.evidence else None
     return suggestion
-
-
-def chosen_project_id_from_lines(lines: Sequence[BillLineItem]) -> Optional[int]:
-    project_ids = {line.project_id for line in lines if line.project_id is not None}
-    if len(project_ids) == 1:
-        return next(iter(project_ids))
-    return None
 
 
 class BillCodingSuggester:

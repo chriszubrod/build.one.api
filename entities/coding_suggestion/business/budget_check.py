@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Literal, Optional, Sequence
 
 from entities.budget.persistence.repo import BudgetRepository
-from entities.bill_line_item.business.model import BillLineItem
 from shared.access import assert_can_access_project
 from shared.authz import current_is_system_admin, current_user_id
+
+logger = logging.getLogger(__name__)
 
 LOW_PROJECT_CONFIDENCE = Decimal("0.60")
 FITS_HEADROOM = Decimal("0.9")
@@ -31,6 +33,12 @@ def _decimal_amount(value: Any) -> Decimal:
         return Decimal("0")
     if isinstance(value, Decimal):
         return value
+    return Decimal(str(value))
+
+
+def _opt_decimal(value: Any) -> Optional[Decimal]:
+    if value is None:
+        return None
     return Decimal(str(value))
 
 
@@ -179,11 +187,109 @@ def compute_budget_check(
     )
 
 
+def budget_check_result_to_api_payload(
+    result: BudgetCheckResult,
+    *,
+    project_id: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    if result.check is None:
+        return None
+    remaining_str: Optional[str] = None
+    if result.remaining is not None:
+        remaining_str = f"{result.remaining:.2f}"
+    # project_id (internal, as U-715's `project.id`) lets the web match a line's
+    # selected project against the project this check was evaluated for.
+    pid: Optional[int] = None
+    if result.check != "no_project" and project_id is not None:
+        pid = project_id
+    return {
+        "check": result.check,
+        "remaining": remaining_str,
+        "project_id": pid,
+    }
+
+
+def chosen_project_id_from_lines(lines: Sequence[Any]) -> Optional[int]:
+    project_ids = {
+        int(getattr(line, "project_id"))
+        for line in lines
+        if getattr(line, "project_id", None) is not None
+    }
+    if len(project_ids) == 1:
+        return next(iter(project_ids))
+    return None
+
+
+def _resolve_expense_budget_project(
+    contract: dict[str, Any],
+    lines: Sequence[Any],
+) -> tuple[Optional[int], bool]:
+    project_field = contract.get("project")
+    common = chosen_project_id_from_lines(lines)
+
+    if project_field is not None and project_field.get("id") is not None:
+        project_id = int(project_field["id"])
+        confident = project_confident_for_suggestion(
+            project_id,
+            chosen_project_id=common,
+            confidence=_opt_decimal(contract.get("confidence")),
+            project_confidence=_opt_decimal(project_field.get("confidence")),
+        )
+        return project_id, confident
+
+    if common is not None:
+        return common, True
+
+    return None, False
+
+
+def evaluate_budget_for_expense(
+    expense: Any,
+    contract: dict[str, Any],
+    lines: Sequence[Any],
+    *,
+    budget_repo: Optional[BudgetRepository] = None,
+) -> Optional[dict[str, Any]]:
+    """Live budget chip payload for expense coding suggest (U-719); failure-isolated."""
+    if bool(getattr(expense, "is_credit", False)):
+        return None
+
+    status = contract.get("status")
+    if status not in ("suggested", "flagged"):
+        return None
+
+    scc_field = contract.get("sub_cost_code")
+    if not scc_field or scc_field.get("id") is None:
+        return None
+
+    expense_id = getattr(expense, "id", None)
+    try:
+        sub_cost_code_id = int(scc_field["id"])
+        project_id, project_confident = _resolve_expense_budget_project(
+            contract, lines
+        )
+        result = evaluate_budget_for_suggestion(
+            project_id,
+            sub_cost_code_id,
+            lines=lines,
+            project_confident=project_confident,
+            budget_repo=budget_repo,
+        )
+        return budget_check_result_to_api_payload(result, project_id=project_id)
+    except Exception as error:
+        logger.warning(
+            "Expense coding suggest budget failed for expense_id=%s: %s",
+            expense_id,
+            type(error).__name__,
+        )
+        return None
+
+
 def evaluate_budget_for_suggestion(
     project_id: Optional[int],
     sub_cost_code_id: Optional[int],
     *,
-    lines: Sequence[BillLineItem],
+    lines: Sequence[Any],
     project_confident: bool,
     amount_override: Optional[Decimal] = None,
     budget_repo: Optional[BudgetRepository] = None,

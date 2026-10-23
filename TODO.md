@@ -2,6 +2,14 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-721a follow-ups - shared DETAILS insert + 00.02 rule (booked 2026-10-23)
+
+- [ ] **23 DETAILS rows already on 00.02** in 7 SharePoint workbooks (census copies 2026-10-23: HP2 12, OL 3, HA 3, SHT 2, OHR2/HE12/TB3 1 each; $19,788.07 in col N; HE12 $5,921.45 = QBO-76865). The new rule stops NEW ones only; rewriting/removing existing rows is U-692b/c territory (content-keyed rewrite, never col H).
+- [ ] **No test on the inline BillCredit writer's holding skip** (`bill_credit/business/complete_service.py` ~813) - the writer is disabled at ~278-281; add a test if it is ever re-enabled (or move it onto the outbox, U-721c).
+- [ ] **Holding ids/numbers cached per service instance** - a long-lived entity service misses a newly flagged code until restart (00.02 is always held regardless).
+- [ ] **Credit-batch col N sign** (P1, booked earlier) still positive by design in U-721a - fix in its own unit via details_ledger_amount(is_credit=True).
+
+
 ## U-712 follow-ups - workbook insert order (booked 2026-10-23, shipped `53118e58`)
 
 - [ ] **ms.Outbox row 9685 stuck `in_progress` since 2026-10-16 18:37 UTC** (insert_excel_row, EntityType Bill, Attempts 0) - the worker likely died mid-claim and nothing reclaims it. Decide: requeue or cancel, after checking whether its rows are already in the workbook (U-440a Z-key dedup makes a requeue safe). Also check whether in-progress rows are ever reclaimed after a crash (stale-claim timeout).

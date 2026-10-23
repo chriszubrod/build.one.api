@@ -1,7 +1,8 @@
 # Python Standard Library Imports
 import logging
 from decimal import Decimal
-from typing import Optional
+from types import SimpleNamespace
+from typing import Any, Optional
 
 # Third-party Imports
 
@@ -17,9 +18,153 @@ from shared.access import (
     EntityNotAccessibleError,
     assert_can_access_bill,
     assert_can_access_project,
+    can_access_project,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _confidence_to_float(value: Optional[Decimal]) -> Optional[float]:
+    if value is None:
+        return None
+    return float(value)
+
+
+def _contract_empty(status: str) -> dict[str, Any]:
+    return {
+        "status": status,
+        "sub_cost_code": None,
+        "project": None,
+        "confidence": None,
+    }
+
+
+def _apply_post_redaction_contract(contract: dict[str, Any]) -> dict[str, Any]:
+    project = contract.get("project")
+    sub_cost_code = contract.get("sub_cost_code")
+    if project is None and sub_cost_code is None:
+        return _contract_empty("none")
+    confidences = [
+        field["confidence"]
+        for field in (project, sub_cost_code)
+        if field is not None and field.get("confidence") is not None
+    ]
+    if not confidences:
+        return contract
+    out = dict(contract)
+    out["confidence"] = min(confidences)
+    return out
+
+
+def _redact_inaccessible_project_from_contract(contract: dict[str, Any]) -> dict[str, Any]:
+    project = contract.get("project")
+    if not project or project.get("id") is None:
+        return contract
+    if not can_access_project(int(project["id"])):
+        redacted = dict(contract)
+        redacted["project"] = None
+        return _apply_post_redaction_contract(redacted)
+    return contract
+
+
+def _map_engine_result_to_contract(result: dict) -> dict[str, Any]:
+    engine_status = result.get("status")
+    if engine_status == "flagged":
+        return _contract_empty("flagged")
+
+    project = None
+    project_source = result.get("project_source")
+    if project_source in ("code", "address") and result.get("project_id") is not None:
+        project = {
+            "id": int(result["project_id"]),
+            "source": "memo_code" if project_source == "code" else "memo_address",
+            "confidence": _confidence_to_float(result.get("project_confidence")),
+            "reason": result.get("project_reason") or "",
+        }
+
+    sub_cost_code = None
+    scc_source = result.get("scc_source")
+    if result.get("sub_cost_code_id") is not None and scc_source in (
+        "scc_shorthand",
+        "vendor_history",
+    ):
+        sub_cost_code = {
+            "id": int(result["sub_cost_code_id"]),
+            "source": "memo_shorthand" if scc_source == "scc_shorthand" else "vendor_history",
+            "confidence": _confidence_to_float(result.get("scc_confidence")),
+            "reason": result.get("scc_reason") or "",
+        }
+
+    if project is None and sub_cost_code is None:
+        return _contract_empty("flagged")
+
+    return {
+        "status": "suggested",
+        "sub_cost_code": sub_cost_code,
+        "project": project,
+        "confidence": _confidence_to_float(result.get("confidence")),
+    }
+
+
+def _map_stored_item_to_contract(item: "CodingSuggestion") -> dict[str, Any]:
+    from entities.coding_suggestion.business.suggestion_service import (
+        SOURCE_PROJECT_ADDRESS,
+        SOURCE_PROJECT_CODE,
+        SOURCE_SCC_SHORTHAND,
+        SOURCE_VENDOR_HISTORY,
+        split_suggestion_reason,
+    )
+
+    if item.status == "flagged":
+        return _contract_empty("flagged")
+
+    if item.status not in ("pending", "suggested"):
+        return _contract_empty("none")
+
+    if item.status == "pending" and not item.suggestion_source:
+        return _contract_empty("none")
+
+    tokens = set(filter(None, (item.suggestion_source or "").split("+")))
+    overall = _confidence_to_float(item.suggestion_confidence)
+    project_reason, scc_reason = split_suggestion_reason(item.suggestion_reason)
+
+    project = None
+    if item.suggested_project_id is not None and tokens.intersection(
+        {SOURCE_PROJECT_CODE, SOURCE_PROJECT_ADDRESS}
+    ):
+        if SOURCE_PROJECT_CODE in tokens:
+            src = "memo_code"
+        else:
+            src = "memo_address"
+        project = {
+            "id": int(item.suggested_project_id),
+            "source": src,
+            "confidence": overall,
+            "reason": project_reason or "",
+        }
+
+    sub_cost_code = None
+    if item.suggested_sub_cost_code_id is not None:
+        if SOURCE_SCC_SHORTHAND in tokens:
+            scc_api_source = "memo_shorthand"
+        elif SOURCE_VENDOR_HISTORY in tokens:
+            scc_api_source = "vendor_history"
+        else:
+            scc_api_source = None
+        if scc_api_source:
+            sub_cost_code = {
+                "id": int(item.suggested_sub_cost_code_id),
+                "source": scc_api_source,
+                "confidence": overall,
+                "reason": scc_reason or "",
+            }
+
+    return {
+        "status": "suggested",
+        "sub_cost_code": sub_cost_code,
+        "project": project,
+        "confidence": overall,
+    }
 
 
 class CodingSuggestionService:
@@ -139,15 +284,17 @@ class CodingSuggestionService:
         qbo_id: str,
         realm_id: str,
         created_by_user_id: Optional[int] = None,
+        qbo_purchase: Optional[Any] = None,
     ) -> bool:
         """Seed this Expense's suggestion when its QBO Purchase still has an uncategorized line.
 
         Returns True when the upsert ran. It is a MERGE on (RealmId, QboPurchaseQboId), so a
         repeated or concurrent call never duplicates a row or resets its status (U-652a).
         """
-        from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
+        if qbo_purchase is None:
+            from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
 
-        qbo_purchase = QboPurchaseRepository().read_by_qbo_id_and_realm_id(qbo_id, realm_id)
+            qbo_purchase = QboPurchaseRepository().read_by_qbo_id_and_realm_id(qbo_id, realm_id)
         if qbo_purchase is None or qbo_purchase.id is None:
             return False
         if self._count_uncategorized_purchase_lines(realm_id=realm_id, qbo_purchase_qbo_id=qbo_id) < 1:
@@ -161,6 +308,155 @@ class CodingSuggestionService:
             created_by_user_id=created_by_user_id,
         )
         return True
+
+    def suggest_for_expense(
+        self,
+        *,
+        expense_public_id: str,
+        user_id: int,
+        engine: Optional[Any] = None,
+    ) -> Optional[dict[str, Any]]:
+        """On-demand coding suggestion for one draft expense (U-715).
+
+        Returns None when the expense does not exist (caller maps to 404).
+        Never writes dbo.Expense / dbo.ExpenseLineItem.
+        """
+        from entities.expense.business.service import ExpenseService
+
+        expense = ExpenseService().read_by_public_id(public_id=expense_public_id)
+        if expense is None:
+            return None
+
+        if not expense.is_draft:
+            return _contract_empty("not_draft")
+
+        items: list = []
+        if expense.id is not None:
+            states = self.repo.read_state_by_expense_ids([int(expense.id)])
+            items = states.get(int(expense.id)) or []
+
+        qbo_purchase = None
+        if expense.qbo_id and expense.realm_id:
+            from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
+
+            qbo_purchase = QboPurchaseRepository().read_by_qbo_id_and_realm_id(
+                expense.qbo_id,
+                expense.realm_id,
+            )
+
+        if (
+            not items
+            and expense.qbo_id
+            and expense.realm_id
+            and expense.id is not None
+            and self.repo.read_exists_for_purchase(
+                realm_id=expense.realm_id,
+                qbo_purchase_qbo_id=expense.qbo_id,
+            )
+            is None
+        ):
+            try:
+                self.ensure_for_expense(
+                    expense_id=int(expense.id),
+                    qbo_id=expense.qbo_id,
+                    realm_id=expense.realm_id,
+                    created_by_user_id=user_id,
+                    qbo_purchase=qbo_purchase,
+                )
+            except Exception as error:
+                logger.warning(
+                    "Expense coding suggest seed failed for expense_id=%s: %s",
+                    expense.id,
+                    type(error).__name__,
+                )
+            states = self.repo.read_state_by_expense_ids([int(expense.id)])
+            items = states.get(int(expense.id)) or []
+
+        coding_row: Optional[CodingSuggestion] = None
+        if items:
+            public_id = items[0].get("public_id")
+            if public_id:
+                coding_row = self.read_by_public_id(str(public_id))
+
+        if coding_row is not None and self._expense_suggestion_is_materialized(coding_row):
+            return _redact_inaccessible_project_from_contract(
+                _map_stored_item_to_contract(coding_row)
+            )
+
+        suggestion_engine = engine or self._default_suggestion_engine()
+        item_shape, realm_id = self._engine_item_for_expense(
+            expense, coding_row, qbo_purchase=qbo_purchase
+        )
+        engine_result = suggestion_engine.suggest_for_item(item_shape, realm_id=realm_id)
+
+        if (
+            coding_row is not None
+            and coding_row.public_id
+            and coding_row.status == "pending"
+        ):
+            stored = suggestion_engine.persist_result(
+                public_id=coding_row.public_id,
+                result=engine_result,
+                sync_token=getattr(item_shape, "sync_token", None),
+                only_from_pending_like=True,
+            )
+            if stored is None:
+                stored = self.read_by_public_id(coding_row.public_id)
+            if stored is not None:
+                return _redact_inaccessible_project_from_contract(
+                    _map_stored_item_to_contract(stored)
+                )
+
+        return _redact_inaccessible_project_from_contract(
+            _map_engine_result_to_contract(engine_result)
+        )
+
+    @staticmethod
+    def _default_suggestion_engine():
+        from entities.coding_suggestion.business.suggestion_service import CodingSuggestionEngine
+
+        return CodingSuggestionEngine(coding_item_service=CodingSuggestionService())
+
+    @staticmethod
+    def _expense_suggestion_is_materialized(item: CodingSuggestion) -> bool:
+        if item.status in ("suggested", "flagged"):
+            return True
+        return bool(item.suggestion_source)
+
+    def _engine_item_for_expense(
+        self,
+        expense: Any,
+        coding_row: Optional[CodingSuggestion],
+        *,
+        qbo_purchase: Optional[Any] = None,
+    ) -> tuple[Any, Optional[str]]:
+        private_note: Optional[str] = None
+        sync_token: Optional[str] = None
+        vendor_id = coding_row.vendor_id if coding_row and coding_row.vendor_id else expense.vendor_id
+        realm_id = expense.realm_id
+
+        if qbo_purchase is None and expense.qbo_id and expense.realm_id:
+            from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
+
+            qbo_purchase = QboPurchaseRepository().read_by_qbo_id_and_realm_id(
+                expense.qbo_id,
+                expense.realm_id,
+            )
+        if qbo_purchase is not None:
+            private_note = qbo_purchase.private_note
+            sync_token = qbo_purchase.sync_token
+
+        item = SimpleNamespace(
+            public_id=coding_row.public_id if coding_row else None,
+            vendor_id=vendor_id,
+            sync_token=sync_token,
+        )
+        if private_note:
+            item.private_note = private_note
+        else:
+            item.memo_text = expense.memo
+
+        return item, realm_id
 
     @staticmethod
     def _resolve_expense_id_for_purchase(

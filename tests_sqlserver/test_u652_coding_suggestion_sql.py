@@ -63,6 +63,7 @@ def _drop_coding_artifacts(cur) -> None:
     for obj in (
         "dbo.MarkCodingSuggestionResolvedExternally",
         "dbo.ReadExternallyResolvedCodingSuggestionCandidates",
+        "dbo.ReadCodingSuggestionExistsForPurchase",
         "dbo.ReadCodingSuggestionStateByExpenseIds",
         "dbo.MarkCodingSuggestionError",
         "dbo.MarkCodingSuggestionChangedInQbo",

@@ -18,6 +18,7 @@ from entities.expense.api.schemas import (
     ExpenseUpdate,
 )
 from entities.expense.business.service import ExpenseService
+from shared.access import EntityNotAccessibleError
 from shared.api.errors import ApiError, ErrorCode
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
 from shared.lifecycle.completion_gate import HoldingCodeRefused
@@ -287,6 +288,49 @@ async def get_expense_public_id_coding_router(
     if block is None:
         raise_not_found("Expense")
     return item_response(block)
+
+
+@router.post("/expense/{public_id}/coding/suggest")
+async def suggest_expense_coding_for_expense_router(
+    public_id: str,
+    current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_update")),
+):
+    """On-demand memo/vendor-history coding suggestion for one draft expense (U-715).
+
+    Permission mirrors PUT /update/expense/{public_id} (can_update on Modules.EXPENSES).
+    """
+    user_id = current_user.get("id")
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="Authenticated user required.")
+
+    def _run():
+        from entities.coding_suggestion.business.service import CodingSuggestionService
+
+        return CodingSuggestionService().suggest_for_expense(
+            expense_public_id=public_id,
+            user_id=int(user_id),
+        )
+
+    try:
+        payload = await asyncio.to_thread(_run)
+    except HTTPException:
+        raise
+    except EntityNotAccessibleError:
+        raise
+    except Exception as error:
+        logger.error(
+            "Expense coding suggest failed for public_id=%s: %s",
+            public_id,
+            type(error).__name__,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to run expense coding suggestion.",
+        ) from error
+
+    if payload is None:
+        raise_not_found("Expense")
+    return item_response(payload)
 
 
 @router.get("/get/expense/by-reference-number-and-vendor")

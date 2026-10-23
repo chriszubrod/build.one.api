@@ -862,6 +862,14 @@ same date. Everything below was confirmed against source and is open. Severity i
   raise the timeout.
 - [ ] 🟠 **P2 (web) — `usePaginatedList.load` has no request-sequence guard** (~165-184); fast tab/search
   changes can let an older response overwrite a newer one. Shared with BillList.
+## U-715 residuals — expense on-demand coding suggest (booked 2026-10-22)
+
+- [ ] **Structured per-field provenance** — replace parsing `SuggestionSource` / `SuggestionReason` with dedicated columns or `FeaturesJson` for project vs SCC source, confidence, and reason.
+- [ ] **`read_by_expense_id` sproc** — replace the `read_state_by_expense_ids` + `read_by_public_id` pair with one expense-scoped read.
+- [ ] **Materialized suggestions never refresh** when memo or vendor context changes (and QBO vendor is preferred over app vendor on re-suggest).
+- [ ] **Per-field stored confidence** — persist project and SCC confidence separately instead of overall min on the row.
+- [ ] **UpsertCodingSuggestionForPurchase bumps RowVersion on a no-op match** — make WHEN MATCHED conditional so repeated existence checks do not touch ModifiedDatetime/RowVersion.
+
 ### U-621 (api) residuals
 - 🟠 **Fan-out rows are unchunked (one per project per tick) on purpose.** A large backfill can make one row run past the drain time budget. Chunking (tried in U-621a round 2) made every chunk after the first read the used range before the earlier chunk's insert children applied — the wrong-section bug again — so it was reverted. Chunk only after a fan-out row defers (retryable, ReadyAfter) while undrained insert/append children exist for the same workbook item_id; that same defer also closes the cross-tick window (R2).
 - 🟢 **A retried insert child can land out of order** (pre-existing, also bill/bill credit): `ClaimNextPendingMsOutbox` has no head-of-line blocking, so if a lower insert fails and retries after an upper one succeeds, it lands too high. Rides with the defer above / U-712.

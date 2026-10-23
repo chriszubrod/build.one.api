@@ -31,6 +31,7 @@ PRE_U490_EXPENSE_CODING_SPROC_NAMES = frozenset(
         "MarkCodingSuggestionChangedInQbo",
         "MarkCodingSuggestionError",
         "ReadCodingSuggestionStateByExpenseIds",
+        "ReadCodingSuggestionExistsForPurchase",
         "ReadExternallyResolvedCodingSuggestionCandidates",
         "MarkCodingSuggestionResolvedExternally",
     }

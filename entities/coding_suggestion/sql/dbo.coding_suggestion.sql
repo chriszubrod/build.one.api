@@ -1093,6 +1093,30 @@ END;
 GO
 
 
+-- ReadCodingSuggestionExistsForPurchase — unscoped purchase-grain existence (U-715 C2).
+-- Returns Id/PublicId when a row exists for (RealmId, QboPurchaseQboId); no actor filter.
+-- Used only to decide whether to seed via UpsertCodingSuggestionForPurchase; never expose
+-- the row to API callers (scoped reads remain ReadCodingSuggestionStateByExpenseIds).
+CREATE OR ALTER PROCEDURE ReadCodingSuggestionExistsForPurchase
+(
+    @RealmId NVARCHAR(50),
+    @QboPurchaseQboId NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT TOP (1)
+        cs.[Id],
+        cs.[PublicId]
+    FROM dbo.[CodingSuggestion] cs
+    WHERE cs.[TargetKind] = N'expense'
+      AND cs.[RealmId] = @RealmId
+      AND cs.[QboPurchaseQboId] = @QboPurchaseQboId;
+END;
+GO
+
+
 CREATE OR ALTER PROCEDURE ReadExternallyResolvedCodingSuggestionCandidates
 AS
 BEGIN

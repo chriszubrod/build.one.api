@@ -168,6 +168,10 @@ def assert_can_access_expense(expense_id: Optional[int]) -> None:
         raise EntityNotAccessibleError("Expense", expense_id)
 
 
+def can_access_project(project_id: Optional[int]) -> bool:
+    return _can_access("UserCanAccessProject", "project", project_id)
+
+
 def assert_can_access_project(project_id: Optional[int]) -> None:
     """Used directly for Project/Invoice/ContractLabor (which carry ProjectId)."""
     if project_id is None or _should_bypass():

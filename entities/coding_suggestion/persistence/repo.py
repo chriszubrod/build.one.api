@@ -143,6 +143,39 @@ class CodingSuggestionRepository:
             logger.error(f"Error reading coding suggestion {public_id}: {error}")
             raise map_database_error(error)
 
+    def read_exists_for_purchase(
+        self, *, realm_id: str, qbo_purchase_qbo_id: str
+    ) -> Optional[tuple[int, str]]:
+        """Unscoped existence for (realm, purchase QBO id). Identity only — not for API output."""
+        if not realm_id or not qbo_purchase_qbo_id:
+            return None
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadCodingSuggestionExistsForPurchase",
+                    params={
+                        "RealmId": realm_id,
+                        "QboPurchaseQboId": qbo_purchase_qbo_id,
+                    },
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                row_id = getattr(row, "Id", None)
+                public_id = getattr(row, "PublicId", None)
+                if row_id is None or public_id is None:
+                    return None
+                return int(row_id), str(public_id)
+        except Exception as error:
+            logger.error(
+                "Error reading coding suggestion existence for purchase %s: %s",
+                qbo_purchase_qbo_id,
+                type(error).__name__,
+            )
+            raise map_database_error(error)
+
     def record_suggestion(
         self,
         *,

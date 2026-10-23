@@ -4,6 +4,7 @@ from decimal import Decimal
 
 # Third-party Imports
 from pydantic import BaseModel, Field
+from uuid import UUID
 
 # Local Imports
 
@@ -128,6 +129,14 @@ class ExpenseUpdate(BaseModel):
         default=None,
         description="Whether the expense is a credit card credit (refund)."
     )
+
+
+class ExpenseReadReceiptRequest(BaseModel):
+    attachment_public_id: UUID
+
+
+class ExpenseAttachReceiptRequest(BaseModel):
+    attachment_public_id: UUID
 
 
 class ExpenseApplyReviewerDecisionRequest(BaseModel):

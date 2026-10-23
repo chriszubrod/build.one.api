@@ -25,7 +25,9 @@ Sprocs
   ReadExpenseQboIdsByRealmId
   ReadExpenses
   ReadExpensesPaginated
+  ReadExpenseReceiptCandidates
   ReadUncodedCompletedExpenseCandidates
+  AttachFirstReceiptToExpense
   SetExpenseQboIdentity
   UpdateExpenseById
 """

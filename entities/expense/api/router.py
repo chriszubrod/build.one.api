@@ -14,9 +14,18 @@ from decimal import Decimal
 # Local Imports
 from entities.expense.api.schemas import (
     ExpenseApplyReviewerDecisionRequest,
+    ExpenseAttachReceiptRequest,
     ExpenseCreate,
+    ExpenseReadReceiptRequest,
     ExpenseUpdate,
 )
+from entities.expense.business.receipt_match_service import (
+    ExpenseReceiptConflictError,
+    ExpenseReceiptNotFoundError,
+    attach_receipt_to_expense,
+    run_expense_read_receipt_with_timeout,
+)
+from entities.bill.business.read_attachment_service import AttachmentNotReadable
 from entities.expense.business.service import ExpenseService
 from shared.access import EntityNotAccessibleError
 from shared.api.errors import ApiError, ErrorCode
@@ -263,6 +272,66 @@ router.add_api_route(
     methods=["GET"],
     tags=router.tags,
 )
+
+
+@router.post("/expense/read-receipt")
+async def expense_read_receipt_router(
+    body: ExpenseReadReceiptRequest,
+    _: dict = Depends(require_module_api(Modules.EXPENSES, "can_update")),
+):
+    try:
+        result = await run_expense_read_receipt_with_timeout(
+            attachment_public_id=str(body.attachment_public_id),
+        )
+    except AttachmentNotReadable:
+        raise_not_found("Attachment")
+    except ExpenseReceiptConflictError as error:
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail=error.detail,
+        )
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.warning(
+            "expense_read_receipt.unexpected err=%s",
+            type(error).__name__,
+        )
+        raise HTTPException(status_code=500, detail="read_receipt_failed") from error
+
+    return item_response(result)
+
+
+@router.post("/expense/{public_id}/attach-receipt")
+async def expense_attach_receipt_router(
+    public_id: str,
+    body: ExpenseAttachReceiptRequest,
+    _: dict = Depends(require_module_api(Modules.EXPENSES, "can_update")),
+):
+    try:
+        data = await attach_receipt_to_expense(
+            expense_public_id=public_id,
+            attachment_public_id=str(body.attachment_public_id),
+        )
+    except ExpenseReceiptNotFoundError as error:
+        raise_not_found(error.entity)
+    except ExpenseReceiptConflictError as error:
+        raise HTTPException(
+            status_code=http_status.HTTP_409_CONFLICT,
+            detail=error.detail,
+        )
+    except HTTPException:
+        raise
+    except EntityNotAccessibleError:
+        raise_not_found("Expense")
+    except Exception as error:
+        logger.warning(
+            "expense_attach_receipt.unexpected err=%s",
+            type(error).__name__,
+        )
+        raise HTTPException(status_code=500, detail="attach_receipt_failed") from error
+
+    return item_response(data)
 
 
 @router.get("/get/expense/{public_id}/coding")

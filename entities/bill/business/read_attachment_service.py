@@ -885,3 +885,9 @@ async def run_bill_read_attachment_with_timeout(
         )
     except asyncio.TimeoutError:
         return _result_shell("timeout", message=MSG_COULDNT_READ_IN_TIME)
+
+
+# U-716a: shared with expense receipt read (aliases keep bill call sites unchanged).
+# Bound at import time — expense-path tests must patch receipt_match_service names, not these.
+extract_with_inflight_wait = _extract_with_inflight_wait
+header_fields_from_cascade = _header_from_cascade

@@ -866,7 +866,9 @@ GO
 --   BillLineItem            -> Bill           NO_ACTION
 --   Review                  -> Bill           NO_ACTION
 --   ReviewEntry             -> Bill           NO_ACTION  (see note below)
+--   BillTextCodingSuggestion -> Bill          NO_ACTION  (U-654 text-tier queue)
 --   MsMessageBill           -> Bill           CASCADE    (automatic — no step)
+--   (nothing FKs to BillTextCodingSuggestion — verified in repo SQL)
 --
 -- ReviewEntry is deleted here because DeleteReviewsByBillId — the sproc the
 -- Python cascade called, and which this replaces — does exactly that behind its
@@ -951,6 +953,8 @@ BEGIN
         DELETE FROM dbo.[ReviewEntry] WHERE [BillId] = @Id;
 
     DELETE FROM dbo.[Review] WHERE [BillId] = @Id;
+
+    DELETE FROM dbo.[BillTextCodingSuggestion] WHERE [BillId] = @Id;
 
     DELETE FROM dbo.[Bill]
     OUTPUT

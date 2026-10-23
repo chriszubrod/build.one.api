@@ -1822,7 +1822,8 @@ class BillService:
         Cascades (all inside `DeleteBillCascadeById`, header locked throughout):
           BillLineItemAttachment links -> InvoiceLineItem rows ->
           ContractLabor.BillLineItemId cleared -> legacy qbo mapping ->
-          BillLineItem rows -> ReviewEntry -> Review -> the Bill itself.
+          BillLineItem rows -> ReviewEntry -> Review ->
+          BillTextCodingSuggestion -> the Bill itself.
           MsMessageBill goes automatically (its FK is CASCADE);
           ContractLaborLineItem likewise (SET_NULL).
 

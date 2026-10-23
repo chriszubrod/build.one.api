@@ -207,7 +207,8 @@ def test_the_bill_cascade_clears_every_fk_that_points_at_it():
     MsMessageBill step the Python cascade ran was redundant twice over."""
     body = _body(BILL_SQL, "DeleteBillCascadeById")
     for table in ("dbo.[BillLineItemAttachment]", "dbo.[InvoiceLineItem]",
-                  "dbo.[BillLineItem]", "dbo.[ReviewEntry]", "dbo.[Review]", "dbo.[Bill]"):
+                  "dbo.[BillLineItem]", "dbo.[ReviewEntry]", "dbo.[Review]",
+                  "dbo.[BillTextCodingSuggestion]", "dbo.[Bill]"):
         assert f"DELETE FROM {table}" in body, f"{table} is never cleared"
     assert "UPDATE dbo.[ContractLabor]" in body, "ContractLabor.BillLineItemId must be NULLed"
     assert "MsMessageBill" not in body, (
@@ -217,6 +218,9 @@ def test_the_bill_cascade_clears_every_fk_that_points_at_it():
     assert body.index("DELETE FROM dbo.[BillLineItemAttachment]") < body.index("DELETE FROM dbo.[BillLineItem]")
     assert body.index("DELETE FROM dbo.[InvoiceLineItem]") < body.index("DELETE FROM dbo.[BillLineItem]")
     assert body.index("DELETE FROM dbo.[BillLineItem]") < body.index("DELETE FROM dbo.[Bill]")
+    assert body.index("DELETE FROM dbo.[BillTextCodingSuggestion]") < body.index(
+        "DELETE FROM dbo.[Bill]"
+    )
 
 
 def test_the_line_cascade_clears_the_attachment_link_that_used_to_547():
@@ -276,6 +280,7 @@ def test_the_closure_of_tables_the_bill_cascade_clears_is_complete():
         "dbo.[BillLineItem]",
         "dbo.[ReviewEntry]",
         "dbo.[Review]",
+        "dbo.[BillTextCodingSuggestion]",
         "dbo.[Bill]",
     ]
     for t in must_clear:

@@ -790,12 +790,12 @@ class MsOutboxWorker:
         from integrations.ms.sharepoint.external.client import _format_drive_item
         return _format_drive_item(last_json)
 
-    def _filter_rows_already_in_worksheet(
+    def _read_worksheet_and_dedup_rows(
         self,
         row: MsOutbox,
         payload: Dict[str, Any],
         kind: str,
-    ) -> list:
+    ) -> tuple[list, list]:
         """
         Drain-time column-Z idempotency guard for the two row-WRITING kinds (U-440a).
 
@@ -823,7 +823,10 @@ class MsOutboxWorker:
             a duplicate, and silently dropping it would lose real ledger data —
             strictly worse than the duplicate it might create.
 
-        Returns the rows that still need writing (possibly empty).
+        Returns (rows_to_write, worksheet_values): the rows that still need
+        writing (possibly empty) and the snapshot they were deduped against,
+        which also places inserts — one read for dedup and placement (U-721b).
+        The section-missing append path's client re-reads under its own lock.
         """
         from integrations.ms.sharepoint.external.client import (
             get_excel_used_range_values,
@@ -857,9 +860,10 @@ class MsOutboxWorker:
         # Both sides of the comparison MUST normalize identically — a sheet-side
         # and candidate-side extraction that drift apart stop matching and the
         # dedup silently stops working. One helper, used for both (Pass 2).
+        worksheet_values = worksheet.get("values") or []
         existing = {
             key
-            for key in (_reconciliation_key(r) for r in (worksheet.get("values") or []))
+            for key in (_reconciliation_key(r) for r in worksheet_values)
             if key
         }
 
@@ -888,7 +892,44 @@ class MsOutboxWorker:
                     "remaining": len(keep),
                 },
             )
+        return keep, worksheet_values
+
+    def _filter_rows_already_in_worksheet(
+        self,
+        row: MsOutbox,
+        payload: Dict[str, Any],
+        kind: str,
+    ) -> list:
+        """Append-path view of `_read_worksheet_and_dedup_rows` (rows only)."""
+        keep, _worksheet_values = self._read_worksheet_and_dedup_rows(
+            row, payload, kind
+        )
         return keep
+
+    @staticmethod
+    def _unified_sub_cost_code_from_kept_rows(
+        keep: list,
+    ) -> tuple[Optional[str], Optional[str]]:
+        """
+        Derive one SubCostCode (column C) from kept rows, or a reason to keep
+        the enqueued row_index unchanged.
+        """
+        from integrations.ms.sharepoint.excel.workbook_sections import (
+            sub_cost_code_number_matches_holding,
+        )
+
+        target: Optional[str] = None
+        for candidate_row in keep:
+            col_c = candidate_row[2] if len(candidate_row) > 2 else None
+            if col_c is None or not str(col_c).strip():
+                return None, "blank_sub_cost_code"
+            if target is None:
+                target = str(col_c).strip()
+            elif not sub_cost_code_number_matches_holding(
+                col_c, frozenset({target})
+            ):
+                return None, "mixed_sub_cost_code"
+        return target, None
 
     def _handle_append_excel_row(
         self,
@@ -942,28 +983,96 @@ class MsOutboxWorker:
             "values": [[...]],
             "session_id": null
           }
+
+        U-721b: after column-Z dedup, row_index is recomputed from the same
+        used-range snapshot (SubCostCode section end). The enqueued row_index
+        is kept only when kept rows disagree on column C or any column C is blank.
+        If the live sheet has no matching section, rows append instead.
         """
-        from integrations.ms.sharepoint.external.client import insert_excel_rows
+        from integrations.ms.sharepoint.external.client import (
+            append_excel_rows,
+            insert_excel_rows,
+        )
+        from integrations.ms.sharepoint.excel.workbook_sections import (
+            find_insertion_row_for_subcostcode,
+        )
 
         required = ("drive_id", "item_id", "worksheet_name", "row_index", "values")
         missing = [k for k in required if payload.get(k) is None]
         if missing:
             raise ValueError(f"insert_excel_row payload missing fields: {missing}")
 
-        # U-440a: drop rows already carrying their column-Z key in the sheet.
-        # `row_index` stays as enqueued — it is the SubCostCode-section insertion
-        # point, and writing fewer rows at that same point is still correct.
-        values = self._filter_rows_already_in_worksheet(
+        stored_row_index = int(payload["row_index"])
+        values, worksheet_values = self._read_worksheet_and_dedup_rows(
             row, payload, KIND_INSERT_EXCEL_ROW
         )
         if not values:
             return
+        if not worksheet_values:
+            # A range with no cell values would read as "section missing" and
+            # append at the bottom; a DETAILS sheet always has rows, so treat it
+            # like the rangeless read above - retryable, never a blind write.
+            raise MsServerError(
+                f"{KIND_INSERT_EXCEL_ROW}: used-range read returned no values for "
+                f"worksheet {payload['worksheet_name']!r}; refusing to place blind"
+            )
+
+        sub_cost_code, keep_stored_reason = self._unified_sub_cost_code_from_kept_rows(
+            values
+        )
+        if sub_cost_code is None:
+            logger.warning(
+                "ms.outbox.excel.insert_row_kept_stored",
+                extra={
+                    "event_name": "ms.outbox.excel.insert_row_kept_stored",
+                    "outbox_id": row.id,
+                    "stored_row_index": stored_row_index,
+                    "reason": keep_stored_reason,
+                },
+            )
+            row_index = stored_row_index
+        else:
+            live_row = find_insertion_row_for_subcostcode(
+                worksheet_values, sub_cost_code
+            )
+            if live_row is None:
+                logger.warning(
+                    "ms.outbox.excel.insert_section_missing_appended",
+                    extra={
+                        "event_name": "ms.outbox.excel.insert_section_missing_appended",
+                        "outbox_id": row.id,
+                        "stored_row_index": stored_row_index,
+                        "sub_cost_code": sub_cost_code,
+                    },
+                )
+                result = append_excel_rows(
+                    drive_id=payload["drive_id"],
+                    item_id=payload["item_id"],
+                    worksheet_name=payload["worksheet_name"],
+                    values=values,
+                    session_id=payload.get("session_id"),
+                )
+                self._raise_if_external_error(row, result)
+                return
+
+            row_index = live_row
+            if live_row != stored_row_index:
+                logger.warning(
+                    "ms.outbox.excel.insert_row_recomputed",
+                    extra={
+                        "event_name": "ms.outbox.excel.insert_row_recomputed",
+                        "outbox_id": row.id,
+                        "stored_row_index": stored_row_index,
+                        "live_row_index": live_row,
+                        "sub_cost_code": sub_cost_code,
+                    },
+                )
 
         result = insert_excel_rows(
             drive_id=payload["drive_id"],
             item_id=payload["item_id"],
             worksheet_name=payload["worksheet_name"],
-            row_index=int(payload["row_index"]),
+            row_index=row_index,
             values=values,
             session_id=payload.get("session_id"),
         )

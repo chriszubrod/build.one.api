@@ -2,6 +2,13 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-712 follow-ups - workbook insert order (booked 2026-10-23, shipped `53118e58`)
+
+- [ ] **ms.Outbox row 9685 stuck `in_progress` since 2026-10-16 18:37 UTC** (insert_excel_row, EntityType Bill, Attempts 0) - the worker likely died mid-claim and nothing reclaims it. Decide: requeue or cancel, after checking whether its rows are already in the workbook (U-440a Z-key dedup makes a requeue safe). Also check whether in-progress rows are ever reclaimed after a crash (stale-claim timeout).
+- [ ] **Repair of the 448 misplaced DETAILS rows** (census `~/Downloads/U-712 workbook census 2026-10-23.csv`; numeric impact only in positional-SUM workbooks HP2, OL, MR2-MAIN, HE12, HP, KA, EVR) - method + per-workbook dry run + Chris approval before any write.
+- [ ] Residuals carried by U-721: retry-after-later-drain misplacement; non-contiguous-section tie.
+
+
 ## U-719 follow-ups — expense budget chip (booked 2026-10-23, shipped `9b143d07`)
 
 - [ ] **Budget figures need only project access, not the Budgets module** (Pass 3 note; existing policy) — the bill chip (`POST /bill/coding/suggest`, BILLS can_read) and the expense chip (EXPENSES can_update) both show remaining/over amounts to anyone with project access. If budget numbers should require Budgets can_read, change both paths together.

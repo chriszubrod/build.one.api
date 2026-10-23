@@ -720,16 +720,17 @@ class ReconciliationService:
             },
         )
 
-        counts = dict.fromkeys(RECONCILE_COUNT_KEYS, 0)
-        auto_resolved = 0
-        auto_resolve_errors = 0
+        _billable_agg_keys = (
+            *RECONCILE_COUNT_KEYS,
+            "auto_resolved",
+            "auto_resolve_errors",
+        )
+        counts = dict.fromkeys(_billable_agg_keys, 0)
 
         try:
             d1 = self._reconcile_bill_billable_status_drift(realm_id=realm_id, run_id=run_id)
-            for key in RECONCILE_COUNT_KEYS:
+            for key in _billable_agg_keys:
                 counts[key] += d1.get(key, 0)
-            auto_resolved += d1.get("auto_resolved", 0)
-            auto_resolve_errors += d1.get("auto_resolve_errors", 0)
         except Exception:
             logger.exception("qbo.reconcile.detector.failed",
                              extra={"detector": "bill_billable_status_drift",
@@ -738,10 +739,8 @@ class ReconciliationService:
 
         try:
             d2 = self._reconcile_purchase_billable_status_drift(realm_id=realm_id, run_id=run_id)
-            for key in RECONCILE_COUNT_KEYS:
+            for key in _billable_agg_keys:
                 counts[key] += d2.get(key, 0)
-            auto_resolved += d2.get("auto_resolved", 0)
-            auto_resolve_errors += d2.get("auto_resolve_errors", 0)
         except Exception:
             logger.exception("qbo.reconcile.detector.failed",
                              extra={"detector": "purchase_billable_status_drift",
@@ -756,16 +755,14 @@ class ReconciliationService:
                 "entity_type": "BillLineItem/ExpenseLineItem",
                 "realm_id": realm_id,
                 "reconcile_run_id": run_id,
-                "auto_resolved": auto_resolved,
-                "auto_resolve_errors": auto_resolve_errors,
-                **counts,
+                "auto_resolved": counts["auto_resolved"],
+                "auto_resolve_errors": counts["auto_resolve_errors"],
+                **{k: counts[k] for k in RECONCILE_COUNT_KEYS},
             },
         )
         return {
             "run_id": run_id,
             **counts,
-            "auto_resolved": auto_resolved,
-            "auto_resolve_errors": auto_resolve_errors,
         }
 
     # ------------------------------------------------------------------ #
@@ -1681,52 +1678,67 @@ class ReconciliationService:
         """Resolve open/ack billable_status_drift issues whose parent is not drifting."""
         from integrations.intuit.qbo.base.ids import normalize_qbo_id
 
-        unresolved = self.repo.read_unresolved_issues_by_drift_type(
-            DRIFT_BILLABLE_STATUS_DRIFT,
-            realm_id=realm_id,
-            entity_type=entity_type,
-        )
-        eligible = []
-        for issue in unresolved:
-            norm_qbo_id = normalize_qbo_id(issue.get("qbo_id"))
-            if not norm_qbo_id:
-                continue
-            if norm_qbo_id not in drifting_parent_qbo_ids:
-                eligible.append(issue)
-
-        cap = self._drift_autoresolve_max()
-        if len(eligible) > cap:
-            logger.error(
-                "qbo.reconcile.billable_status_drift.autoresolve.cap_exceeded: "
-                "eligible=%s exceeds QBO_DRIFT_AUTORESOLVE_MAX=%s — resolving none",
-                len(eligible),
-                cap,
-                extra={
-                    "realm_id": realm_id,
-                    "entity_type": entity_type,
-                    "eligible_count": len(eligible),
-                    "QBO_DRIFT_AUTORESOLVE_MAX": cap,
-                },
+        try:
+            unresolved = self.repo.read_unresolved_issues_by_drift_type(
+                DRIFT_BILLABLE_STATUS_DRIFT,
+                realm_id=realm_id,
+                entity_type=entity_type,
             )
-            return 0, 0
+        except Exception:
+            logger.exception(
+                "qbo.reconcile.billable_status_drift.autoresolve.read_failed",
+                extra={"realm_id": realm_id, "entity_type": entity_type},
+            )
+            return 0, 1
 
-        auto_resolved = 0
-        auto_resolve_errors = 0
-        for issue in eligible:
-            try:
-                self.repo.resolve(issue["id"])
-                auto_resolved += 1
-            except Exception:
-                auto_resolve_errors += 1
-                logger.exception(
-                    "qbo.reconcile.billable_status_drift.autoresolve.failed",
+        try:
+            eligible = []
+            for issue in unresolved:
+                norm_qbo_id = normalize_qbo_id(issue.get("qbo_id"))
+                if not norm_qbo_id:
+                    continue
+                if norm_qbo_id not in drifting_parent_qbo_ids:
+                    eligible.append(issue)
+
+            cap = self._drift_autoresolve_max()
+            if len(eligible) > cap:
+                logger.error(
+                    "qbo.reconcile.billable_status_drift.autoresolve.cap_exceeded: "
+                    "eligible=%s exceeds QBO_DRIFT_AUTORESOLVE_MAX=%s — resolving none",
+                    len(eligible),
+                    cap,
                     extra={
-                        "issue_id": issue.get("id"),
                         "realm_id": realm_id,
                         "entity_type": entity_type,
+                        "eligible_count": len(eligible),
+                        "QBO_DRIFT_AUTORESOLVE_MAX": cap,
                     },
                 )
-        return auto_resolved, auto_resolve_errors
+                return 0, 0
+
+            auto_resolved = 0
+            auto_resolve_errors = 0
+            for issue in eligible:
+                try:
+                    self.repo.resolve(issue["id"])
+                    auto_resolved += 1
+                except Exception:
+                    auto_resolve_errors += 1
+                    logger.exception(
+                        "qbo.reconcile.billable_status_drift.autoresolve.failed",
+                        extra={
+                            "issue_id": issue.get("id"),
+                            "realm_id": realm_id,
+                            "entity_type": entity_type,
+                        },
+                    )
+            return auto_resolved, auto_resolve_errors
+        except Exception:
+            logger.exception(
+                "qbo.reconcile.billable_status_drift.autoresolve.read_failed",
+                extra={"realm_id": realm_id, "entity_type": entity_type},
+            )
+            return 0, 1
 
     def _reconcile_bill_billable_status_drift(self, realm_id: str, run_id: str) -> dict:
         """
@@ -1745,8 +1757,7 @@ class ReconciliationService:
 
         flagged = 0
         flagged_deduped = 0
-        auto_resolved = 0
-        auto_resolve_errors = 0
+        drifting_parent_qbo_ids: set = set()
 
         with get_connection() as conn:
             cursor = conn.cursor()
@@ -1776,6 +1787,7 @@ class ReconciliationService:
                 qbo_id = normalize_qbo_id(g["qbo_id"])
                 if not qbo_id:
                     continue
+                drifting_parent_qbo_ids.add(qbo_id)
                 # flagged_deduped is a SUBSET of flagged (matches RECONCILE_COUNT_KEYS'
                 # documented invariant above) — a re-seen drifting parent still counts
                 # as flagged (it was really detected); only its duplicate issue-write
@@ -1809,22 +1821,11 @@ class ReconciliationService:
                 ):
                     dedup_keys.add(key)
 
-        drifting_parent_qbo_ids = {
-            normalize_qbo_id(g["qbo_id"]) for g in groups.values()
-        }
-        drifting_parent_qbo_ids.discard(None)
-        try:
-            auto_resolved, auto_resolve_errors = self._autoresolve_cleared_billable_status_drift(
-                realm_id=realm_id,
-                entity_type="Bill",
-                drifting_parent_qbo_ids=drifting_parent_qbo_ids,
-            )
-        except Exception:
-            auto_resolve_errors += 1
-            logger.exception(
-                "qbo.reconcile.billable_status_drift.autoresolve.read_failed",
-                extra={"realm_id": realm_id, "entity_type": "Bill"},
-            )
+        auto_resolved, auto_resolve_errors = self._autoresolve_cleared_billable_status_drift(
+            realm_id=realm_id,
+            entity_type="Bill",
+            drifting_parent_qbo_ids=drifting_parent_qbo_ids,
+        )
 
         return {
             "auto_fixed": 0,
@@ -1850,8 +1851,7 @@ class ReconciliationService:
 
         flagged = 0
         flagged_deduped = 0
-        auto_resolved = 0
-        auto_resolve_errors = 0
+        drifting_parent_qbo_ids: set = set()
 
         with get_connection() as conn:
             cursor = conn.cursor()
@@ -1876,6 +1876,7 @@ class ReconciliationService:
                 qbo_id = normalize_qbo_id(g["qbo_id"])
                 if not qbo_id:
                     continue
+                drifting_parent_qbo_ids.add(qbo_id)
                 # flagged_deduped is a SUBSET of flagged — see the matching comment
                 # in _reconcile_bill_billable_status_drift above.
                 flagged += 1
@@ -1905,22 +1906,11 @@ class ReconciliationService:
                 ):
                     dedup_keys.add(key)
 
-        drifting_parent_qbo_ids = {
-            normalize_qbo_id(g["qbo_id"]) for g in groups.values()
-        }
-        drifting_parent_qbo_ids.discard(None)
-        try:
-            auto_resolved, auto_resolve_errors = self._autoresolve_cleared_billable_status_drift(
-                realm_id=realm_id,
-                entity_type="Expense",
-                drifting_parent_qbo_ids=drifting_parent_qbo_ids,
-            )
-        except Exception:
-            auto_resolve_errors += 1
-            logger.exception(
-                "qbo.reconcile.billable_status_drift.autoresolve.read_failed",
-                extra={"realm_id": realm_id, "entity_type": "Expense"},
-            )
+        auto_resolved, auto_resolve_errors = self._autoresolve_cleared_billable_status_drift(
+            realm_id=realm_id,
+            entity_type="Expense",
+            drifting_parent_qbo_ids=drifting_parent_qbo_ids,
+        )
 
         return {
             "auto_fixed": 0,

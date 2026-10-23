@@ -137,27 +137,38 @@ class QboBillableStatusRefreshService:
         self._purchase_client = purchase_client
         self._vendor_credit_client = vendor_credit_client
 
-        self._bill_service_factory = bill_service_factory or (
-            lambda: __import__(
-                "entities.bill.business.service", fromlist=["BillService"]
-            ).BillService()
+        self._bill_service_factory = bill_service_factory or self._bill_service
+        self._bill_line_item_service_factory = (
+            bill_line_item_service_factory or self._bill_line_item_service
         )
-        self._bill_line_item_service_factory = bill_line_item_service_factory or (
-            lambda: __import__(
-                "entities.bill_line_item.business.service", fromlist=["BillLineItemService"]
-            ).BillLineItemService()
+        self._expense_service_factory = expense_service_factory or self._expense_service
+        self._expense_line_item_service_factory = (
+            expense_line_item_service_factory or self._expense_line_item_service
         )
-        self._expense_service_factory = expense_service_factory or (
-            lambda: __import__(
-                "entities.expense.business.service", fromlist=["ExpenseService"]
-            ).ExpenseService()
-        )
-        self._expense_line_item_service_factory = expense_line_item_service_factory or (
-            lambda: __import__(
-                "entities.expense_line_item.business.service",
-                fromlist=["ExpenseLineItemService"],
-            ).ExpenseLineItemService()
-        )
+
+    @staticmethod
+    def _bill_service():
+        from entities.bill.business.service import BillService
+
+        return BillService()
+
+    @staticmethod
+    def _bill_line_item_service():
+        from entities.bill_line_item.business.service import BillLineItemService
+
+        return BillLineItemService()
+
+    @staticmethod
+    def _expense_service():
+        from entities.expense.business.service import ExpenseService
+
+        return ExpenseService()
+
+    @staticmethod
+    def _expense_line_item_service():
+        from entities.expense_line_item.business.service import ExpenseLineItemService
+
+        return ExpenseLineItemService()
 
     def run(self, realm_id: str, *, dry_run: bool = False) -> dict:
         result: Dict[str, Any] = {"dry_run": dry_run, "aborted": None}
@@ -196,20 +207,34 @@ class QboBillableStatusRefreshService:
             ),
         ]
 
+    def _query_by_ids(self, ids: List[str], *, entity: str, client: Any, method_name: str) -> List[Any]:
+        if client is None:
+            raise RuntimeError(f"{entity}_client required")
+        return getattr(client, method_name)(ids)
+
     def _query_bills_by_ids(self, ids: List[str]) -> List[Any]:
-        if self._bill_client is None:
-            raise RuntimeError("bill_client required")
-        return self._bill_client.query_bills_by_ids(ids)
+        return self._query_by_ids(
+            ids,
+            entity="bill",
+            client=self._bill_client,
+            method_name="query_bills_by_ids",
+        )
 
     def _query_purchases_by_ids(self, ids: List[str]) -> List[Any]:
-        if self._purchase_client is None:
-            raise RuntimeError("purchase_client required")
-        return self._purchase_client.query_purchases_by_ids(ids)
+        return self._query_by_ids(
+            ids,
+            entity="purchase",
+            client=self._purchase_client,
+            method_name="query_purchases_by_ids",
+        )
 
     def _query_vendor_credits_by_ids(self, ids: List[str]) -> List[Any]:
-        if self._vendor_credit_client is None:
-            raise RuntimeError("vendor_credit_client required")
-        return self._vendor_credit_client.query_vendor_credits_by_ids(ids)
+        return self._query_by_ids(
+            ids,
+            entity="vendor_credit",
+            client=self._vendor_credit_client,
+            method_name="query_vendor_credits_by_ids",
+        )
 
     def _run_entity(
         self,
@@ -259,7 +284,7 @@ class QboBillableStatusRefreshService:
                     batch[:3],
                     reason,
                 )
-                return counts, reason
+                return counts, type(error).__name__
             except Exception:
                 logger.exception(
                     "billable_refresh.%s.batch_fetch_failed batch_size=%s",
@@ -314,45 +339,41 @@ class QboBillableStatusRefreshService:
                 else:
                     counts.flipped_to_not_billable += 1
 
-                if dry_run:
-                    if live_status == _LIVE_HAS_BEEN_BILLED and cfg.heal_dbo is not None:
-                        # Same per-line isolation as the live heal: one failed dbo read
-                        # must not abort the rest of the dry run.
-                        try:
-                            if cfg.heal_dbo(
-                                realm_id=realm_id,
-                                header_qbo_id=header_id,
-                                qbo_line_id=qbo_line_id,
-                                dry_run=True,
-                            ):
-                                counts.dbo_would_heal += 1
-                        except Exception:
+                if live_status == _LIVE_HAS_BEEN_BILLED and cfg.heal_dbo is not None:
+                    try:
+                        healed = cfg.heal_dbo(
+                            realm_id=realm_id,
+                            header_qbo_id=header_id,
+                            qbo_line_id=qbo_line_id,
+                            dry_run=dry_run,
+                        )
+                    except Exception:
+                        if dry_run:
                             logger.exception(
                                 "billable_refresh.%s.dbo_heal_dry_run_failed header=%s line=%s",
                                 cfg.name,
                                 header_id,
                                 qbo_line_id,
                             )
-                            counts.dbo_heal_errors += 1
-                    continue
-
-                if live_status == _LIVE_HAS_BEEN_BILLED and cfg.heal_dbo is not None:
-                    try:
-                        if cfg.heal_dbo(
-                            realm_id=realm_id,
-                            header_qbo_id=header_id,
-                            qbo_line_id=qbo_line_id,
-                        ):
-                            counts.dbo_healed += 1
-                    except Exception:
-                        logger.exception(
-                            "billable_refresh.%s.dbo_heal_failed header=%s line=%s",
-                            cfg.name,
-                            header_id,
-                            qbo_line_id,
-                        )
+                        else:
+                            logger.exception(
+                                "billable_refresh.%s.dbo_heal_failed header=%s line=%s",
+                                cfg.name,
+                                header_id,
+                                qbo_line_id,
+                            )
                         counts.dbo_heal_errors += 1
-                        continue
+                        if not dry_run:
+                            continue
+                    else:
+                        if healed:
+                            if dry_run:
+                                counts.dbo_would_heal += 1
+                            else:
+                                counts.dbo_healed += 1
+
+                if dry_run:
+                    continue
 
                 try:
                     updated = cfg.line_repo.update_billable_status_by_id(
@@ -373,6 +394,50 @@ class QboBillableStatusRefreshService:
 
         return counts, None
 
+    def _try_dbo_heal_parent_line(
+        self,
+        *,
+        realm_id: str,
+        header_qbo_id: str,
+        qbo_line_id: str,
+        dry_run: bool,
+        entity: str,
+        header_service_factory: Callable[[], Any],
+        line_item_service_factory: Callable[[], Any],
+        parent_public_id_kw: str,
+    ) -> bool:
+        header_svc = header_service_factory()
+        parent = header_svc.read_by_qbo_identity(header_qbo_id, realm_id)
+        if not parent:
+            return False
+        line_svc = line_item_service_factory()
+        source = line_svc.read_by_qbo_identity(parent.id, qbo_line_id)
+        if not source or source.is_billed:
+            return False
+        if dry_run:
+            return True
+        line_svc.update_by_public_id(
+            public_id=source.public_id,
+            row_version=source.row_version,
+            **{
+                parent_public_id_kw: parent.public_id,
+                "is_billed": True,
+                "_via_internal_pipeline": True,
+            },
+        )
+        logger.info(
+            "billable_refresh.dbo_healed",
+            extra={
+                "entity": entity,
+                "parent_public_id": str(parent.public_id),
+                "line_public_id": str(source.public_id),
+                "header_qbo_id": header_qbo_id,
+                "line_qbo_id": qbo_line_id,
+                "realm_id": realm_id,
+            },
+        )
+        return True
+
     def _try_dbo_heal_bill(
         self,
         *,
@@ -381,24 +446,16 @@ class QboBillableStatusRefreshService:
         qbo_line_id: str,
         dry_run: bool = False,
     ) -> bool:
-        bill_svc = self._bill_service_factory()
-        bill = bill_svc.read_by_qbo_identity(header_qbo_id, realm_id)
-        if not bill:
-            return False
-        bli_svc = self._bill_line_item_service_factory()
-        source = bli_svc.read_by_qbo_identity(bill.id, qbo_line_id)
-        if not source or source.is_billed:
-            return False
-        if dry_run:
-            return True
-        bli_svc.update_by_public_id(
-            public_id=source.public_id,
-            row_version=source.row_version,
-            bill_public_id=bill.public_id,
-            is_billed=True,
-            _via_internal_pipeline=True,
+        return self._try_dbo_heal_parent_line(
+            realm_id=realm_id,
+            header_qbo_id=header_qbo_id,
+            qbo_line_id=qbo_line_id,
+            dry_run=dry_run,
+            entity="bill",
+            header_service_factory=self._bill_service_factory,
+            line_item_service_factory=self._bill_line_item_service_factory,
+            parent_public_id_kw="bill_public_id",
         )
-        return True
 
     def _try_dbo_heal_purchase(
         self,
@@ -408,21 +465,13 @@ class QboBillableStatusRefreshService:
         qbo_line_id: str,
         dry_run: bool = False,
     ) -> bool:
-        expense_svc = self._expense_service_factory()
-        expense = expense_svc.read_by_qbo_identity(header_qbo_id, realm_id)
-        if not expense:
-            return False
-        eli_svc = self._expense_line_item_service_factory()
-        source = eli_svc.read_by_qbo_identity(expense.id, qbo_line_id)
-        if not source or source.is_billed:
-            return False
-        if dry_run:
-            return True
-        eli_svc.update_by_public_id(
-            public_id=source.public_id,
-            row_version=source.row_version,
-            expense_public_id=expense.public_id,
-            is_billed=True,
-            _via_internal_pipeline=True,
+        return self._try_dbo_heal_parent_line(
+            realm_id=realm_id,
+            header_qbo_id=header_qbo_id,
+            qbo_line_id=qbo_line_id,
+            dry_run=dry_run,
+            entity="purchase",
+            header_service_factory=self._expense_service_factory,
+            line_item_service_factory=self._expense_line_item_service_factory,
+            parent_public_id_kw="expense_public_id",
         )
-        return True

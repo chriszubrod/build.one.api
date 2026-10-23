@@ -21,6 +21,7 @@ DRIFT_QBO_VOIDED = "qbo_voided"
 DRIFT_INVOICE_DRAW_MISMATCH = "invoice_draw_mismatch"
 DRIFT_BILLABLE_STATUS_DRIFT = "billable_status_drift"
 DRIFT_QBO_LINKED_NOT_COMPLETED = "qbo_linked_not_completed"
+DRIFT_QBO_DELETED = "qbo_deleted"
 
 # U-632: QBO pull left a completed document with a suspense/holding SCC line — status unchanged.
 DRIFT_HOLDING_CODE_ON_COMPLETED = "holding_code_on_completed"
@@ -161,4 +162,5 @@ KNOWN_DRIFT_TYPES: FrozenSet[str] = frozenset({
     DRIFT_ORPHAN_ELI_LINE_ITEM, DRIFT_ELI_LINE_READOPT_FAILED, DRIFT_ELI_LINE_CREATE_FAILED,
     DRIFT_HOLDING_CODE_ON_COMPLETED,
     DRIFT_HOLDING_CODE_ON_APPROVED,
+    DRIFT_QBO_DELETED,
 })

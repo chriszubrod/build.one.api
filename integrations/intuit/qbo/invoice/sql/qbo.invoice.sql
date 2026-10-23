@@ -739,9 +739,6 @@ BEGIN
 END;
 GO
 
-
-GO
-
 CREATE OR ALTER PROCEDURE DeleteQboInvoiceByQboIdAndRealmId
 (
     @QboId NVARCHAR(50),

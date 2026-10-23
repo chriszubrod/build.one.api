@@ -574,9 +574,6 @@ BEGIN
 END;
 GO
 
-
-GO
-
 CREATE OR ALTER PROCEDURE DeleteQboBillByQboIdAndRealmId
 (
     @QboId NVARCHAR(50),

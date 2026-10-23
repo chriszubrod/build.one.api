@@ -11,6 +11,11 @@ from integrations.intuit.qbo.base.ids import normalize_qbo_id
 logger = logging.getLogger(__name__)
 
 _CDC_MAX_LOOKBACK = timedelta(days=30)
+# Staging-delete CDC clamp: QBO's 30-day window minus one day margin (696 h).
+_CDC_STAGING_DELETE_LOOKBACK_MARGIN = timedelta(days=1)
+STAGING_DELETE_CDC_MAX_LOOKBACK_HOURS = int(
+    (_CDC_MAX_LOOKBACK - _CDC_STAGING_DELETE_LOOKBACK_MARGIN).total_seconds() // 3600
+)
 
 
 def _raise_if_fault(payload: Any, *, detail: str) -> None:

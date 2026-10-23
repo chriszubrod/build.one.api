@@ -17,7 +17,7 @@ External writes:
 
 Sprocs used:
   - DeleteQbo{Bill,Purchase,VendorCredit,Invoice}ByQboIdAndRealmId (U-718 staging delete)
-  - DeleteQboReimburseChargeByQboId (U-718)
+  - DeleteQboReimburseChargeByQboIdAndRealmId (U-718)
   - CreateQboReconciliationIssue / ReadQboUnresolvedIssueKeysByDriftType
 """
 # Python Standard Library Imports
@@ -27,7 +27,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Set
 
 # Local Imports
-from integrations.intuit.qbo.base.cdc import fetch_cdc_deleted_ids
+from integrations.intuit.qbo.base.cdc import (
+    STAGING_DELETE_CDC_MAX_LOOKBACK_HOURS,
+    fetch_cdc_deleted_ids,
+)
 from integrations.intuit.qbo.base.delete_reconcile import (
     _delete_max_candidates,
     confirm_deleted_ids,
@@ -67,7 +70,7 @@ def _clamp_lookback_hours(hours: Optional[int]) -> int:
         )
     else:
         raw = int(hours)
-    return max(1, min(696, raw))
+    return max(1, min(STAGING_DELETE_CDC_MAX_LOOKBACK_HOURS, raw))
 
 
 @dataclass
@@ -76,7 +79,6 @@ class _EntityRuntime:
     staging_repo: Any
     confirm_get: Callable[[str], object]
     fetch_live_ids: Callable[[], List[str]]
-    delete_staging: Callable[[str, str], None]
     dbo_still_bound: Optional[Callable[[str, str], bool]] = None
 
 
@@ -135,18 +137,14 @@ class QboStagingDeleteReconcileService:
         self._purchase_client = purchase_client
         self._vendor_credit_client = vendor_credit_client
         self._invoice_client = invoice_client
-        self._bill_service_factory = bill_service_factory or (lambda: self._bill_service())
-        self._expense_service_factory = expense_service_factory or (
-            lambda: self._expense_service()
-        )
+        self._bill_service_factory = bill_service_factory or self._bill_service
+        self._expense_service_factory = expense_service_factory or self._expense_service
         self._bill_credit_service_factory = bill_credit_service_factory or (
-            lambda: self._bill_credit_service()
+            self._bill_credit_service
         )
-        self._invoice_service_factory = invoice_service_factory or (
-            lambda: self._invoice_service()
-        )
+        self._invoice_service_factory = invoice_service_factory or self._invoice_service
         self._reconciliation_repo_factory = reconciliation_repo_factory or (
-            lambda: self._reconciliation_repo()
+            self._reconciliation_repo
         )
 
     @staticmethod
@@ -181,9 +179,6 @@ class QboStagingDeleteReconcileService:
 
         return ReconciliationIssueRepository()
 
-    def _empty_entity_counts(self) -> Dict[str, Any]:
-        return _empty_entity_counts()
-
     def _ensure_clients(self, realm_id: str) -> None:
         if self._bill_client is None:
             from integrations.intuit.qbo.bill.external.client import QboBillClient
@@ -211,9 +206,6 @@ class QboStagingDeleteReconcileService:
                 staging_repo=self._bill_repo,
                 confirm_get=self._bill_client.get_bill,
                 fetch_live_ids=self._bill_client.query_all_bill_ids,
-                delete_staging=lambda qid, rid: self._bill_repo.delete_by_qbo_id_and_realm_id(
-                    qid, rid
-                ),
                 dbo_still_bound=lambda qid, rid: self._bill_service_factory().read_by_qbo_identity(
                     qid, rid
                 )
@@ -224,9 +216,6 @@ class QboStagingDeleteReconcileService:
                 staging_repo=self._purchase_repo,
                 confirm_get=self._purchase_client.get_purchase,
                 fetch_live_ids=self._purchase_client.query_all_purchase_ids,
-                delete_staging=lambda qid, rid: self._purchase_repo.delete_by_qbo_id_and_realm_id(
-                    qid, rid
-                ),
                 dbo_still_bound=lambda qid, rid: self._expense_service_factory().read_by_qbo_identity(
                     qid, rid
                 )
@@ -237,9 +226,6 @@ class QboStagingDeleteReconcileService:
                 staging_repo=self._vendor_credit_repo,
                 confirm_get=self._vendor_credit_client.get_vendor_credit,
                 fetch_live_ids=self._vendor_credit_client.query_all_vendor_credit_ids,
-                delete_staging=lambda qid, rid: self._vendor_credit_repo.delete_by_qbo_id_and_realm_id(
-                    qid, rid
-                ),
                 dbo_still_bound=lambda qid, rid: self._bill_credit_service_factory().read_by_qbo_identity(
                     qid, rid
                 )
@@ -250,25 +236,14 @@ class QboStagingDeleteReconcileService:
                 staging_repo=self._invoice_repo,
                 confirm_get=self._invoice_client.get_invoice,
                 fetch_live_ids=self._invoice_client.query_all_invoice_ids,
-                delete_staging=lambda qid, rid: self._invoice_repo.delete_by_qbo_id_and_realm_id(
-                    qid, rid
-                ),
             ),
             "ReimburseCharge": _EntityRuntime(
                 name="ReimburseCharge",
                 staging_repo=self._reimburse_charge_repo,
                 confirm_get=self._invoice_client.get_reimburse_charge,
                 fetch_live_ids=self._invoice_client.query_all_reimburse_charge_ids,
-                delete_staging=lambda qid, rid: self._reimburse_charge_repo.delete_by_qbo_id(
-                    qid, rid
-                ),
             ),
         }
-
-    def _delete_ceiling(self, max_candidates: Optional[int]) -> int:
-        if max_candidates is not None:
-            return max_candidates
-        return _delete_max_candidates()
 
     def _act_on_confirmed(
         self,
@@ -281,7 +256,7 @@ class QboStagingDeleteReconcileService:
         runtime: Optional[_EntityRuntime] = None,
     ) -> None:
         if counts is None:
-            counts = self._empty_entity_counts()
+            counts = _empty_entity_counts()
         if runtime is None:
             runtime = self._entity_runtimes()[entity_name]
 
@@ -321,13 +296,13 @@ class QboStagingDeleteReconcileService:
             if still_bound:
                 counts["dbo_still_bound"] += 1
 
-        counts["staging_deleted"] += 1
         if dry_run:
+            counts["staging_deleted"] += 1
             return
         try:
-            runtime.delete_staging(qbo_id, realm_id)
+            runtime.staging_repo.delete_by_qbo_id_and_realm_id(qbo_id, realm_id)
+            counts["staging_deleted"] += 1
         except Exception:
-            counts["staging_deleted"] -= 1
             counts["staging_delete_errors"] += 1
             logger.exception(
                 "qbo.staging_delete.staging_delete_failed",
@@ -348,11 +323,13 @@ class QboStagingDeleteReconcileService:
         dry_run: bool,
     ) -> bool:
         """Return False when staging delete must be skipped (issue write failed)."""
-        recon = self._reconciliation_repo_factory()
+        reconciliation_repo = self._reconciliation_repo_factory()
         try:
             existing = {
                 (r, e, normalize_qbo_id(q))
-                for r, e, q in recon.read_unresolved_issue_keys_by_drift_type("qbo_deleted")
+                for r, e, q in reconciliation_repo.read_unresolved_issue_keys_by_drift_type(
+                    "qbo_deleted"
+                )
                 if normalize_qbo_id(q)
             }
         except Exception:
@@ -373,7 +350,7 @@ class QboStagingDeleteReconcileService:
                 "deleted in QBO; dbo invoice untouched — decide whether to delete it"
             )
             try:
-                recon.create(
+                reconciliation_repo.create(
                     drift_type="qbo_deleted",
                     severity="high",
                     action="flagged",
@@ -421,7 +398,7 @@ class QboStagingDeleteReconcileService:
         self._ensure_clients(realm_id)
         runtimes = self._entity_runtimes()
         entities_out: Dict[str, Dict[str, Any]] = {
-            name: self._empty_entity_counts() for name in _ALL_ENTITIES
+            name: _empty_entity_counts() for name in _ALL_ENTITIES
         }
 
         hours = _clamp_lookback_hours(lookback_hours)
@@ -443,7 +420,7 @@ class QboStagingDeleteReconcileService:
                 "entities": entities_out,
             }
 
-        ceiling = self._delete_ceiling(None)
+        ceiling = _delete_max_candidates()
 
         for name in _ALL_ENTITIES:
             counts = entities_out[name]
@@ -518,7 +495,7 @@ class QboStagingDeleteReconcileService:
         runtimes = self._entity_runtimes()
         target = tuple(entities) if entities else _ALL_ENTITIES
         entities_out: Dict[str, Dict[str, Any]] = {
-            name: self._empty_entity_counts() for name in _ALL_ENTITIES
+            name: _empty_entity_counts() for name in _ALL_ENTITIES
         }
 
         for name in target:
@@ -572,17 +549,6 @@ class QboStagingDeleteReconcileService:
                 if confirmed is None:
                     counts["aborted"] = "reconcile_aborted"
                     continue
-
-                if name == "Invoice":
-                    persisted_norm = {
-                        normalize_qbo_id(getattr(r, "qbo_id", None)) for r in rows
-                    }
-                    persisted_norm.discard(None)
-                    confirmed = {
-                        c
-                        for c in confirmed
-                        if normalize_qbo_id(c) in persisted_norm
-                    }
 
                 try:
                     live_raw = fetch_live_ids_cached()

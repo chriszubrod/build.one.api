@@ -468,9 +468,6 @@ BEGIN
 END;
 GO
 
-
-GO
-
 CREATE OR ALTER PROCEDURE DeleteQboVendorCreditByQboIdAndRealmId
 (
     @QboId NVARCHAR(50),

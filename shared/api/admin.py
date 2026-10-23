@@ -4,6 +4,7 @@ import hmac
 import logging
 import os
 import time
+from contextlib import ExitStack
 from datetime import datetime
 from typing import Any, Literal, Optional
 
@@ -641,8 +642,6 @@ async def reconcile_qbo_billable_status_router(
 
             realm_id = auth.realm_id
             with system_authz():
-                from contextlib import ExitStack
-
                 with ExitStack() as stack:
                     bill_client = stack.enter_context(QboBillClient(realm_id=realm_id))
                     purchase_client = stack.enter_context(
@@ -680,8 +679,6 @@ async def reconcile_qbo_staging_deletes_router(
         )
 
     def _run() -> dict[str, Any]:
-        from contextlib import ExitStack
-
         from integrations.intuit.qbo.auth.business.service import QboAuthService
         from integrations.intuit.qbo.bill.external.client import QboBillClient
         from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient

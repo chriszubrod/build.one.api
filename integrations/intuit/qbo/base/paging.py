@@ -1,6 +1,6 @@
 # Python Standard Library Imports
 import logging
-from typing import Any, List
+from typing import Any, Callable, List
 
 # Local Imports
 from integrations.intuit.qbo.base.errors import QboUnexpectedError
@@ -13,6 +13,123 @@ logger = logging.getLogger(__name__)
 # backstop only — at 1000 rows/page it allows a million records per entity.
 DEFAULT_ID_PAGE_SIZE = 1000
 DEFAULT_ID_MAX_PAGES = 1000
+
+_BY_IDS_DEFAULT_BATCH_SIZE = 100
+
+
+def _empty_page_refusal(refuse_empty_page: bool) -> str:
+    return " - refusing to treat as an empty page" if refuse_empty_page else ""
+
+
+def _strict_query_rows(
+    data: Any,
+    *,
+    entity: str,
+    where: str,
+    label: str,
+    refuse_empty_page: bool = False,
+) -> List[Any]:
+    """
+    Strict QueryResponse shape checks shared by id paging and by-ids fetches.
+
+    Returns the entity's row list (empty when the key is absent). Coerces a
+    lone dict row to a one-element list. Raises on malformed bodies.
+    """
+    refusal = _empty_page_refusal(refuse_empty_page)
+    prefix = f"QBO {label}"
+
+    if not isinstance(data, dict):
+        raise QboUnexpectedError(
+            f"{prefix} returned a non-dict body{refusal}",
+            detail=where,
+        )
+
+    if "Fault" in data:
+        raise QboUnexpectedError(
+            f"{prefix} returned a Fault{refusal}",
+            detail=where,
+        )
+
+    if "QueryResponse" not in data:
+        raise QboUnexpectedError(
+            f"{prefix} returned no QueryResponse{refusal}",
+            detail=where,
+        )
+
+    query_response = data.get("QueryResponse")
+    if not isinstance(query_response, dict):
+        raise QboUnexpectedError(
+            f"{prefix} returned a null or non-dict QueryResponse",
+            detail=where,
+        )
+
+    if "Fault" in query_response:
+        raise QboUnexpectedError(
+            f"{prefix} returned a Fault inside QueryResponse{refusal}",
+            detail=where,
+        )
+
+    if entity not in query_response:
+        rows: List[Any] = []
+    else:
+        rows = query_response.get(entity)
+    if isinstance(rows, dict):
+        rows = [rows]
+    if not isinstance(rows, list):
+        raise QboUnexpectedError(
+            f"{prefix} returned a non-list {entity} payload",
+            detail=where,
+        )
+    return rows
+
+
+def query_records_by_ids(
+    http_client: Any,
+    *,
+    entity: str,
+    ids: List[str],
+    operation_name: str,
+    batch_size: int = _BY_IDS_DEFAULT_BATCH_SIZE,
+    parse: Callable[[Any], Any],
+) -> List[Any]:
+    """Fetch full QBO entity rows by Id (batched IN queries, strict parsing)."""
+    query_label = f"{entity} query"
+    if not ids:
+        return []
+    parsed: List[Any] = []
+    for offset in range(0, len(ids), batch_size):
+        batch = ids[offset : offset + batch_size]
+        numeric_ids: List[str] = []
+        for raw_id in batch:
+            norm = normalize_qbo_id(raw_id)
+            if not norm or not norm.isdigit():
+                logger.warning(
+                    "Skipping non-numeric QBO %s id for by-ids query: %r",
+                    entity,
+                    raw_id,
+                )
+                continue
+            numeric_ids.append(norm)
+        if not numeric_ids:
+            continue
+        in_clause = ",".join(f"'{i}'" for i in numeric_ids)
+        query_string = (
+            f"SELECT * FROM {entity} WHERE Id IN ({in_clause}) MAXRESULTS 1000"
+        )
+        where = f"entity={entity} ids={len(numeric_ids)}"
+        data = http_client.get(
+            "query",
+            params={"query": query_string},
+            operation_name=operation_name,
+        )
+        rows = _strict_query_rows(
+            data,
+            entity=entity,
+            where=where,
+            label=query_label,
+        )
+        parsed.extend(parse(row) for row in rows)
+    return parsed
 
 
 def page_all_record_ids(
@@ -70,64 +187,13 @@ def page_all_record_ids(
         )
         where = f"entity={entity} start_position={start_position}"
 
-        if not isinstance(data, dict):
-            raise QboUnexpectedError(
-                "QBO id query returned a non-dict body - refusing to treat as an empty page",
-                detail=where,
-            )
-
-        # ONE rule governs every check below, and it is deliberately not truthiness:
-        #   • an anomaly signal is detected by key PRESENCE  (a Fault key at all)
-        #   • the sole legitimate empty-page signal is key ABSENCE, or an explicit []
-        #   • everything else raises
-        # Truthiness would reopen the exact hole this helper exists to close: {} , ""
-        # , 0 and None are all falsy, so `if data.get("Fault")` misses an empty Fault
-        # and `... or []` turns a malformed payload into an innocent-looking empty
-        # page that silently truncates the id set.
-        #
-        # A body carrying a Fault is not a successful page whatever its status code.
-        # Checked at both levels because QBO reports query faults in both positions.
-        if "Fault" in data:
-            raise QboUnexpectedError(
-                "QBO id query returned a Fault - refusing to treat as an empty page",
-                detail=where,
-            )
-
-        if "QueryResponse" not in data:
-            raise QboUnexpectedError(
-                "QBO id query returned no QueryResponse - refusing to treat as an empty page",
-                detail=where,
-            )
-
-        # The key is present (absence raised above), so an explicit null here is a
-        # malformed body, not an empty page — QBO signals empty with {}.
-        query_response = data.get("QueryResponse")
-        if not isinstance(query_response, dict):
-            raise QboUnexpectedError(
-                "QBO id query returned a null or non-dict QueryResponse",
-                detail=where,
-            )
-
-        if "Fault" in query_response:
-            raise QboUnexpectedError(
-                "QBO id query returned a Fault inside QueryResponse - refusing to treat as an empty page",
-                detail=where,
-            )
-
-        # Same rule one level down. An ABSENT entity key means "no rows on this
-        # page" and legitimately ends pagination; an explicit [] does too. An
-        # explicit null, or any other non-list, is malformed and raises.
-        if entity not in query_response:
-            rows = []
-        else:
-            rows = query_response.get(entity)
-        if isinstance(rows, dict):
-            rows = [rows]
-        if not isinstance(rows, list):
-            raise QboUnexpectedError(
-                f"QBO id query returned a non-list {entity} payload",
-                detail=where,
-            )
+        rows = _strict_query_rows(
+            data,
+            entity=entity,
+            where=where,
+            label="id query",
+            refuse_empty_page=True,
+        )
 
         # An empty page legitimately ends pagination: QBO returns one for a truly
         # empty result and for the page after an exact multiple of the page size.

@@ -203,7 +203,9 @@ class QboReimburseChargeRepository:
             logger.error(f"Error during update qbo reimburse charge by QBO ID: {error}")
             raise map_database_error(error)
 
-    def delete_by_qbo_id(self, qbo_id: str, realm_id: str) -> Optional[QboReimburseCharge]:
+    def delete_by_qbo_id_and_realm_id(
+        self, qbo_id: str, realm_id: str
+    ) -> Optional[QboReimburseCharge]:
         """
         Delete a QboReimburseCharge by QBO ID and realm ID.
         """
@@ -213,7 +215,7 @@ class QboReimburseChargeRepository:
                 try:
                     call_procedure(
                         cursor=cursor,
-                        name="DeleteQboReimburseChargeByQboId",
+                        name="DeleteQboReimburseChargeByQboIdAndRealmId",
                         params={"QboId": qbo_id, "RealmId": realm_id},
                     )
                     row = cursor.fetchone()

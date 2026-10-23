@@ -1,5 +1,6 @@
 """Pure-logic tests for U-718 QBO billable-status refresh sweep (staging CAS + dbo heal)."""
 import asyncio
+import logging
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -252,6 +253,80 @@ def test_has_been_billed_live_updates_cas_sibling_unchanged():
     ]
     assert result["bill"]["flipped_to_has_been_billed"] == 1
     assert result["bill"]["dbo_healed"] == 1
+
+
+def test_dbo_heal_audit_log_one_record_per_line_not_in_dry_run(caplog):
+    caplog.set_level(logging.INFO)
+    staged = [
+        _StagedLine(id=1, qbo_line_id="10", header_qbo_id="100"),
+        _StagedLine(id=2, qbo_line_id="11", header_qbo_id="100"),
+    ]
+    live = _live_bill(
+        "100",
+        [_bill_line("10", "HasBeenBilled"), _bill_line("11", "HasBeenBilled")],
+    )
+    bill = SimpleNamespace(id=5, public_id="bill-pub", qbo_id="100")
+    bli_by_line = {
+        "10": SimpleNamespace(
+            public_id="bli-a",
+            row_version="rv1",
+            bill_id=5,
+            qbo_line_id="10",
+            is_billed=False,
+        ),
+        "11": SimpleNamespace(
+            public_id="bli-b",
+            row_version="rv2",
+            bill_id=5,
+            qbo_line_id="11",
+            is_billed=False,
+        ),
+    }
+
+    class _MultiBliSvc:
+        update_calls = []
+
+        def read_by_qbo_identity(self, bill_id, qbo_line_id):
+            return bli_by_line.get(qbo_line_id)
+
+        def update_by_public_id(self, **kwargs):
+            self.update_calls.append(kwargs)
+
+    bli_svc = _MultiBliSvc()
+    bill_svc = SimpleNamespace(
+        read_by_qbo_identity=lambda qbo_id, realm_id: bill if qbo_id == "100" else None
+    )
+    bill_repo = _FakeBillLineRepo(staged)
+    svc = QboBillableStatusRefreshService(
+        bill_line_repo=bill_repo,
+        purchase_line_repo=_FakePurchaseLineRepo([]),
+        vendor_credit_line_repo=_FakeVendorCreditLineRepo([]),
+        bill_client=_RecordingBillClient({"100": live}),
+        purchase_client=_EmptyEntityClient(),
+        vendor_credit_client=_EmptyEntityClient(),
+        bill_service_factory=lambda: bill_svc,
+        bill_line_item_service_factory=lambda: bli_svc,
+    )
+    svc.run("realm-1", dry_run=False)
+    heal_logs = [
+        r
+        for r in caplog.records
+        if r.getMessage() == "billable_refresh.dbo_healed"
+    ]
+    assert len(heal_logs) == 2
+    for record in heal_logs:
+        assert record.entity == "bill"
+        assert record.realm_id == "realm-1"
+        assert record.header_qbo_id == "100"
+        assert record.line_qbo_id in ("10", "11")
+        assert record.parent_public_id == "bill-pub"
+        assert record.line_public_id in ("bli-a", "bli-b")
+
+    caplog.clear()
+    svc.run("realm-1", dry_run=True)
+    assert not [
+        r for r in caplog.records if r.getMessage() == "billable_refresh.dbo_healed"
+    ]
 
 
 def test_not_billable_live_updates_staging_no_dbo_heal():
@@ -550,8 +625,7 @@ def test_systemic_error_on_second_batch_aborts_run():
     )
     result = svc.run("realm-1", dry_run=False)
     assert len(client.query_calls) == 2
-    assert result["aborted"] is not None
-    assert "budget" in result["aborted"].lower() or "Budget" in result["aborted"]
+    assert result["aborted"] == "QboBudgetExceededError"
     assert result["bill"]["batch_errors"] >= 0
 
 
@@ -624,6 +698,57 @@ def test_query_bills_by_ids_batches_and_strict(monkeypatch):
     assert "'123'" in http_skip.queries[0]
     assert "'456'" in http_skip.queries[0]
     assert "abc" not in http_skip.queries[0]
+
+
+@pytest.mark.parametrize(
+    "client_module,client_name,entity,method_name",
+    [
+        (
+            "integrations.intuit.qbo.bill.external.client",
+            "QboBillClient",
+            "Bill",
+            "query_bills_by_ids",
+        ),
+        (
+            "integrations.intuit.qbo.purchase.external.client",
+            "QboPurchaseClient",
+            "Purchase",
+            "query_purchases_by_ids",
+        ),
+        (
+            "integrations.intuit.qbo.vendorcredit.external.client",
+            "QboVendorCreditClient",
+            "VendorCredit",
+            "query_vendor_credits_by_ids",
+        ),
+    ],
+)
+def test_query_by_ids_parses_each_batch_before_next(
+    client_module, client_name, entity, method_name
+):
+    """Malformed row in batch 1 must fail before batch 2 is requested (HEAD semantics)."""
+    import importlib
+
+    mod = importlib.import_module(client_module)
+    client_cls = getattr(mod, client_name)
+
+    get_calls = {"n": 0}
+
+    class _Http:
+        def get(self, path, *, params=None, operation_name=None):
+            get_calls["n"] += 1
+            if get_calls["n"] == 1:
+                return {"QueryResponse": {entity: [None]}}
+            return {"Fault": {"Error": [{"Message": "batch 2 fault"}]}}
+
+        def close(self):
+            pass
+
+    client = client_cls(realm_id="r1", http_client=_Http())
+    ids = [str(i) for i in range(1, 102)]
+    with pytest.raises(TypeError):
+        getattr(client, method_name)(ids)
+    assert get_calls["n"] == 1
 
 
 def test_heal_raises_run1_no_cas_run2_retries_heal_and_cas():
@@ -839,7 +964,7 @@ def test_systemic_abort_on_first_bill_batch_skips_later_entities():
     result = svc.run("realm-1", dry_run=False)
 
     assert len(bill_client.query_calls) == 1
-    assert result["aborted"] is not None
+    assert result["aborted"] == "QboBudgetExceededError"
     assert purchase_reads == []
     assert _PurchaseClient.query_calls == []
     assert _VCClient.query_calls == []

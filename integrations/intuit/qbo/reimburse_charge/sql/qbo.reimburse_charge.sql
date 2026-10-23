@@ -258,10 +258,7 @@ BEGIN
 END;
 GO
 
-
-GO
-
-CREATE OR ALTER PROCEDURE DeleteQboReimburseChargeByQboId
+CREATE OR ALTER PROCEDURE DeleteQboReimburseChargeByQboIdAndRealmId
 (
     @QboId NVARCHAR(50),
     @RealmId NVARCHAR(50)

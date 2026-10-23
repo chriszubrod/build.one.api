@@ -11,6 +11,7 @@ from integrations.intuit.qbo.base.errors import (
     QboUnexpectedError,
 )
 from integrations.intuit.qbo.base.delete_reconcile import strict_confirmed_deleted_ids
+from integrations.intuit.qbo.staging_delete.business.service import _empty_entity_counts
 
 
 def _confirm_deleted_ids():
@@ -419,7 +420,6 @@ def test_invoice_bound_creates_issue_then_deletes_staging():
         staging_repo=invoice_repo,
         confirm_get=MagicMock(),
         fetch_live_ids=MagicMock(),
-        delete_staging=lambda qid, rid: invoice_repo.delete_by_qbo_id_and_realm_id(qid, rid),
     )
 
     svc = QboStagingDeleteReconcileService(
@@ -451,7 +451,6 @@ def test_invoice_issue_already_open_skips_create_still_deletes():
         staging_repo=invoice_repo,
         confirm_get=MagicMock(),
         fetch_live_ids=MagicMock(),
-        delete_staging=lambda qid, rid: invoice_repo.delete_by_qbo_id_and_realm_id(qid, rid),
     )
 
     svc = QboStagingDeleteReconcileService(
@@ -483,7 +482,6 @@ def test_invoice_issue_write_fails_no_staging_delete():
         staging_repo=invoice_repo,
         confirm_get=MagicMock(),
         fetch_live_ids=MagicMock(),
-        delete_staging=lambda qid, rid: invoice_repo.delete_by_qbo_id_and_realm_id(qid, rid),
     )
 
     svc = QboStagingDeleteReconcileService(
@@ -491,7 +489,7 @@ def test_invoice_issue_write_fails_no_staging_delete():
         reconciliation_repo_factory=lambda: recon,
         invoice_service_factory=lambda: invoice_svc,
     )
-    counts = svc._empty_entity_counts()
+    counts = _empty_entity_counts()
     svc._act_on_confirmed(
         "Invoice", REALM, "55", dry_run=False, counts=counts, runtime=runtime
     )
@@ -514,7 +512,6 @@ def test_bill_bound_dbo_still_bound_no_issue_staging_deleted():
         staging_repo=bill_repo,
         confirm_get=MagicMock(),
         fetch_live_ids=MagicMock(),
-        delete_staging=lambda qid, rid: bill_repo.delete_by_qbo_id_and_realm_id(qid, rid),
         dbo_still_bound=lambda qid, rid: bill_svc.read_by_qbo_identity(qid, rid) is not None,
     )
 
@@ -523,7 +520,7 @@ def test_bill_bound_dbo_still_bound_no_issue_staging_deleted():
         bill_service_factory=lambda: bill_svc,
         reconciliation_repo_factory=lambda: recon,
     )
-    counts = svc._empty_entity_counts()
+    counts = _empty_entity_counts()
     svc._act_on_confirmed(
         "Bill", REALM, "7", dry_run=False, counts=counts, runtime=runtime
     )
@@ -544,10 +541,9 @@ def test_dry_run_no_writes():
         staging_repo=bill_repo,
         confirm_get=MagicMock(),
         fetch_live_ids=MagicMock(),
-        delete_staging=lambda qid, rid: bill_repo.delete_by_qbo_id_and_realm_id(qid, rid),
     )
     svc = QboStagingDeleteReconcileService(bill_repo=bill_repo)
-    counts = svc._empty_entity_counts()
+    counts = _empty_entity_counts()
     svc._act_on_confirmed(
         "Bill", REALM, "1", dry_run=True, counts=counts, runtime=runtime
     )
@@ -893,11 +889,10 @@ def test_binding_read_error_skips_delete_increments_counter():
         staging_repo=bill_repo,
         confirm_get=MagicMock(),
         fetch_live_ids=MagicMock(),
-        delete_staging=lambda qid, rid: bill_repo.delete_by_qbo_id_and_realm_id(qid, rid),
         dbo_still_bound=lambda qid, rid: bill_svc.read_by_qbo_identity(qid, rid) is not None,
     )
     svc = QboStagingDeleteReconcileService(bill_repo=bill_repo)
-    counts = svc._empty_entity_counts()
+    counts = _empty_entity_counts()
     svc._act_on_confirmed(
         "Bill", REALM, "9", dry_run=False, counts=counts, runtime=runtime
     )
@@ -978,14 +973,13 @@ def test_invoice_issue_dedup_normalizes_persisted_qbo_id():
         staging_repo=invoice_repo,
         confirm_get=MagicMock(),
         fetch_live_ids=MagicMock(),
-        delete_staging=lambda qid, rid: invoice_repo.delete_by_qbo_id_and_realm_id(qid, rid),
     )
     svc = QboStagingDeleteReconcileService(
         invoice_repo=invoice_repo,
         reconciliation_repo_factory=lambda: recon,
         invoice_service_factory=lambda: MagicMock(read_by_qbo_identity=MagicMock(return_value=None)),
     )
-    counts = svc._empty_entity_counts()
+    counts = _empty_entity_counts()
     svc._act_on_confirmed(
         "Invoice", REALM, "55", dry_run=False, counts=counts, runtime=runtime
     )

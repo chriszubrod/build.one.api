@@ -556,9 +556,6 @@ BEGIN
 END;
 GO
 
-
-GO
-
 CREATE OR ALTER PROCEDURE DeleteQboPurchaseByQboIdAndRealmId
 (
     @QboId NVARCHAR(50),

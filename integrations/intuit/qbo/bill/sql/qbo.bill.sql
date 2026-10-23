@@ -575,6 +575,54 @@ END;
 GO
 
 
+GO
+
+CREATE OR ALTER PROCEDURE DeleteQboBillByQboIdAndRealmId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    DELETE FROM [qbo].[Bill]
+    OUTPUT
+        DELETED.[Id],
+        DELETED.[PublicId],
+        DELETED.[RowVersion],
+        CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        DELETED.[QboId],
+        DELETED.[SyncToken],
+        DELETED.[RealmId],
+        DELETED.[VendorRefValue],
+        DELETED.[VendorRefName],
+        DELETED.[TxnDate],
+        DELETED.[DueDate],
+        DELETED.[DocNumber],
+        DELETED.[PrivateNote],
+        DELETED.[TotalAmt],
+        DELETED.[Balance],
+        DELETED.[ApAccountRefValue],
+        DELETED.[ApAccountRefName],
+        DELETED.[SalesTermRefValue],
+        DELETED.[SalesTermRefName],
+        DELETED.[CurrencyRefValue],
+        DELETED.[CurrencyRefName],
+        DELETED.[ExchangeRate],
+        DELETED.[DepartmentRefValue],
+        DELETED.[DepartmentRefName],
+        DELETED.[GlobalTaxCalculation]
+    WHERE [QboId] = @QboId AND [RealmId] = @RealmId;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
 -- BillLine Stored Procedures
 
 GO

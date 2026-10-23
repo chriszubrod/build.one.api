@@ -231,6 +231,60 @@ def _delete_max_candidates() -> int:
     )
 
 
+def confirm_deleted_ids(
+    *,
+    entity_type: str,
+    realm_id: str,
+    candidates: Iterable[str],
+    confirm_get: Callable[[str], object],
+) -> Optional[Set[str]]:
+    """
+    GET-confirm each candidate id. QboNotFoundError confirms deletion;
+    SYSTEMIC_QBO_ERRORS aborts (returns None); alive records are skipped.
+    """
+    candidate_list = list(candidates)
+    confirmed: Set[str] = set()
+    for qbo_id in candidate_list:
+        try:
+            confirm_get(qbo_id)
+        except QboNotFoundError:
+            confirmed.add(qbo_id)
+        except SYSTEMIC_QBO_ERRORS:
+            logger.warning(
+                "qbo.pull.delete_reconcile.confirm_aborted_systemic",
+                extra={
+                    "event_name": "qbo.pull.delete_reconcile.confirm_aborted_systemic",
+                    "entity_type": entity_type,
+                    "realm_id": realm_id,
+                    "confirmed_so_far": len(confirmed),
+                    "remaining": len(candidate_list) - len(confirmed),
+                },
+            )
+            return None
+        except Exception as e:
+            logger.warning(
+                "qbo.pull.delete_reconcile.confirm_failed",
+                extra={
+                    "event_name": "qbo.pull.delete_reconcile.confirm_failed",
+                    "entity_type": entity_type,
+                    "realm_id": realm_id,
+                    "qbo_id": qbo_id,
+                    "error": str(e),
+                },
+            )
+        else:
+            logger.warning(
+                "qbo.pull.delete_reconcile.candidate_alive",
+                extra={
+                    "event_name": "qbo.pull.delete_reconcile.candidate_alive",
+                    "entity_type": entity_type,
+                    "realm_id": realm_id,
+                    "qbo_id": qbo_id,
+                },
+            )
+    return confirmed
+
+
 def strict_confirmed_deleted_ids(
     *,
     entity_type: str,
@@ -238,6 +292,8 @@ def strict_confirmed_deleted_ids(
     fetch_live_ids: Callable[[], List[str]],
     confirm_get: Callable[[str], object],
     local_qbo_ids: Iterable[str],
+    max_candidates: Optional[int] = None,
+    record_issue: bool = True,
 ) -> Optional[Set[str]]:
     """
     Return the set of local qbo_ids (normalized) CONFIRMED deleted in QBO,
@@ -247,6 +303,9 @@ def strict_confirmed_deleted_ids(
     `confirm_get` must raise QboNotFoundError for a deleted record. Callers
     must key their membership test through `normalize_qbo_id` as well.
     """
+    if max_candidates is not None and max_candidates < 1:
+        raise ValueError("max_candidates must be >= 1 when provided")
+
     candidates = [n for n in (normalize_qbo_id(i) for i in local_qbo_ids) if n]
     if not candidates:
         return set()
@@ -268,7 +327,9 @@ def strict_confirmed_deleted_ids(
     if not absent:
         return set()
 
-    ceiling = _delete_max_candidates()
+    ceiling = (
+        max_candidates if max_candidates is not None else _delete_max_candidates()
+    )
     if len(absent) > ceiling:
         logger.error(
             "qbo.pull.delete_reconcile.candidate_ceiling_exceeded",
@@ -282,66 +343,27 @@ def strict_confirmed_deleted_ids(
                 "live_count": len(live_ids),
             },
         )
-        record_delete_reconcile_issue(
-            entity_type=entity_type,
-            realm_id=realm_id,
-            qbo_id=None,
-            details=(
-                f"Pull delete-reconcile aborted: {len(absent)} locally-staged {entity_type}(s) "
-                f"absent from the live QBO id set, above the {ceiling} candidate ceiling "
-                f"({len(candidates)} local, {len(live_ids)} live). Nothing was deleted — this is "
-                f"far more likely an incomplete id fetch or environment mixup than a mass "
-                f"deletion. Raise QBO_PULL_DELETE_MAX_CANDIDATES only after confirming in QBO."
-            ),
-        )
+        if record_issue:
+            record_delete_reconcile_issue(
+                entity_type=entity_type,
+                realm_id=realm_id,
+                qbo_id=None,
+                details=(
+                    f"Pull delete-reconcile aborted: {len(absent)} locally-staged {entity_type}(s) "
+                    f"absent from the live QBO id set, above the {ceiling} candidate ceiling "
+                    f"({len(candidates)} local, {len(live_ids)} live). Nothing was deleted — this is "
+                    f"far more likely an incomplete id fetch or environment mixup than a mass "
+                    f"deletion. Raise QBO_PULL_DELETE_MAX_CANDIDATES only after confirming in QBO."
+                ),
+            )
         return None
 
-    confirmed: Set[str] = set()
-    for qbo_id in absent:
-        try:
-            confirm_get(qbo_id)
-        except QboNotFoundError:
-            confirmed.add(qbo_id)
-        except SYSTEMIC_QBO_ERRORS:
-            # Systemic: no later candidate can succeed either. Abort the whole
-            # reconcile (delete nothing) instead of burning one metered call +
-            # a warning line per remaining candidate against a tripped breaker
-            # or a rate-limit window.
-            logger.warning(
-                "qbo.pull.delete_reconcile.confirm_aborted_systemic",
-                extra={
-                    "event_name": "qbo.pull.delete_reconcile.confirm_aborted_systemic",
-                    "entity_type": entity_type,
-                    "realm_id": realm_id,
-                    "confirmed_so_far": len(confirmed),
-                    "remaining": len(absent) - len(confirmed),
-                },
-            )
-            return None
-        except Exception as e:
-            logger.warning(
-                "qbo.pull.delete_reconcile.confirm_failed",
-                extra={
-                    "event_name": "qbo.pull.delete_reconcile.confirm_failed",
-                    "entity_type": entity_type,
-                    "realm_id": realm_id,
-                    "qbo_id": qbo_id,
-                    "error": str(e),
-                },
-            )
-        else:
-            # The GET succeeded: the record is alive despite missing from the
-            # id query — an id-set artifact, exactly what confirm exists for.
-            logger.warning(
-                "qbo.pull.delete_reconcile.candidate_alive",
-                extra={
-                    "event_name": "qbo.pull.delete_reconcile.candidate_alive",
-                    "entity_type": entity_type,
-                    "realm_id": realm_id,
-                    "qbo_id": qbo_id,
-                },
-            )
-    return confirmed
+    return confirm_deleted_ids(
+        entity_type=entity_type,
+        realm_id=realm_id,
+        candidates=absent,
+        confirm_get=confirm_get,
+    )
 
 
 def record_delete_reconcile_issue(

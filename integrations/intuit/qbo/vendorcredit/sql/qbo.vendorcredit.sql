@@ -468,6 +468,22 @@ BEGIN
 END;
 GO
 
+
+GO
+
+CREATE OR ALTER PROCEDURE DeleteQboVendorCreditByQboIdAndRealmId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DELETE FROM [qbo].[VendorCredit]
+    WHERE [QboId] = @QboId AND [RealmId] = @RealmId;
+END;
+GO
+
 -- U-353: the qbo.VendorCreditBillCredit mapping table (CREATE TABLE +
 -- CreateVendorCreditBillCredit / ReadVendorCreditBillCreditByBillCreditId /
 -- ReadVendorCreditBillCreditByQboVendorCreditId) was retired here. dbo.BillCredit's

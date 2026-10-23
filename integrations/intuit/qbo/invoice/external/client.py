@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 # Local Imports
 from integrations.intuit.qbo.base.client import QboHttpClient, _format_datetime_for_qbo_query
 from integrations.intuit.qbo.base.errors import QboValidationError
+from integrations.intuit.qbo.base.paging import page_all_record_ids
 from integrations.intuit.qbo.invoice.external.schemas import (
     QboInvoice,
     QboInvoiceCreate,
@@ -337,3 +338,37 @@ class QboInvoiceClient:
 
         logger.info(f"Retrieved {len(all_records)} reimburse charges from QBO")
         return all_records
+
+    def query_all_invoice_ids(self) -> List[str]:
+        """
+        Page the complete set of live QBO Invoice ids for this realm (STRICT).
+
+        See base/paging.py — do not substitute lenient `query_all_invoices`.
+        """
+        return page_all_record_ids(
+            self._http_client,
+            entity="Invoice",
+            operation_name="qbo.invoice.query_ids",
+        )
+
+    def query_all_reimburse_charge_ids(self) -> List[str]:
+        """Page all live ReimburseCharge ids for this realm (STRICT)."""
+        return page_all_record_ids(
+            self._http_client,
+            entity="ReimburseCharge",
+            operation_name="qbo.invoice.reimburse_charge_query_ids",
+        )
+
+    def get_reimburse_charge(self, rc_id: str) -> Dict[str, Any]:
+        """GET reimbursecharge/{id}; 404/610 surfaces as QboNotFoundError."""
+        data = self._http_client.get(
+            f"reimbursecharge/{rc_id}",
+            operation_name="qbo.invoice.reimburse_charge_get",
+        )
+        if isinstance(data, dict) and "ReimburseCharge" in data:
+            rc = data["ReimburseCharge"]
+            if isinstance(rc, list) and rc:
+                return rc[0]
+            if isinstance(rc, dict):
+                return rc
+        return data if isinstance(data, dict) else {}

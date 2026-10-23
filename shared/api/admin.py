@@ -5,7 +5,7 @@ import logging
 import os
 import time
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 # Third-party Imports
 from functools import partial
@@ -659,6 +659,79 @@ async def reconcile_qbo_billable_status_router(
                     return service.run(realm_id, dry_run=dry_run)
 
     return await _timed("reconcile.qbo.billable_status", _run)
+
+
+@router.post(
+    "/reconcile/qbo/staging-deletes",
+    dependencies=[Depends(_require_drain_secret)],
+)
+async def reconcile_qbo_staging_deletes_router(
+    mode: Literal["cdc", "full"] = Query(default="cdc"),
+    dry_run: bool = Query(default=False),
+    lookback_hours: Optional[int] = Query(default=None),
+    max_candidates: Optional[int] = Query(default=None),
+):
+    """Drop ghost qbo.* staging rows for QBO-confirmed deletions (U-718)."""
+
+    if max_candidates is not None and not (1 <= max_candidates <= 1000):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="max_candidates must be between 1 and 1000",
+        )
+
+    def _run() -> dict[str, Any]:
+        from contextlib import ExitStack
+
+        from integrations.intuit.qbo.auth.business.service import QboAuthService
+        from integrations.intuit.qbo.bill.external.client import QboBillClient
+        from integrations.intuit.qbo.invoice.external.client import QboInvoiceClient
+        from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
+        from integrations.intuit.qbo.staging_delete.business.service import (
+            QboStagingDeleteReconcileService,
+        )
+        from integrations.intuit.qbo.vendorcredit.external.client import QboVendorCreditClient
+        from shared.authz.context import system_authz
+
+        auth = QboAuthService().ensure_valid_token()
+        if not auth or not auth.realm_id:
+            return {"skipped": True, "reason": "no valid QBO auth"}
+
+        with qbo_sync_lock("staging_deletes", timeout_ms=0) as got_lock:
+            if not got_lock:
+                return {"skipped": True, "reason": "lock_busy"}
+
+            realm_id = auth.realm_id
+            with system_authz():
+                with ExitStack() as stack:
+                    bill_client = stack.enter_context(QboBillClient(realm_id=realm_id))
+                    purchase_client = stack.enter_context(
+                        QboPurchaseClient(realm_id=realm_id)
+                    )
+                    vendor_credit_client = stack.enter_context(
+                        QboVendorCreditClient(realm_id=realm_id)
+                    )
+                    invoice_client = stack.enter_context(
+                        QboInvoiceClient(realm_id=realm_id)
+                    )
+                    service = QboStagingDeleteReconcileService(
+                        bill_client=bill_client,
+                        purchase_client=purchase_client,
+                        vendor_credit_client=vendor_credit_client,
+                        invoice_client=invoice_client,
+                    )
+                    if mode == "full":
+                        return service.run_full(
+                            realm_id,
+                            max_candidates=max_candidates,
+                            dry_run=dry_run,
+                        )
+                    return service.run_cdc(
+                        realm_id,
+                        lookback_hours=lookback_hours,
+                        dry_run=dry_run,
+                    )
+
+    return await _timed("reconcile.qbo.staging_deletes", _run)
 
 
 @router.post("/reconcile/ms", dependencies=[Depends(_require_drain_secret)])

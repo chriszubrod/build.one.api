@@ -316,7 +316,24 @@ class QboBillableStatusRefreshService:
 
                 if dry_run:
                     if live_status == _LIVE_HAS_BEEN_BILLED and cfg.heal_dbo is not None:
-                        counts.dbo_would_heal += 1
+                        # Same per-line isolation as the live heal: one failed dbo read
+                        # must not abort the rest of the dry run.
+                        try:
+                            if cfg.heal_dbo(
+                                realm_id=realm_id,
+                                header_qbo_id=header_id,
+                                qbo_line_id=qbo_line_id,
+                                dry_run=True,
+                            ):
+                                counts.dbo_would_heal += 1
+                        except Exception:
+                            logger.exception(
+                                "billable_refresh.%s.dbo_heal_dry_run_failed header=%s line=%s",
+                                cfg.name,
+                                header_id,
+                                qbo_line_id,
+                            )
+                            counts.dbo_heal_errors += 1
                     continue
 
                 if live_status == _LIVE_HAS_BEEN_BILLED and cfg.heal_dbo is not None:
@@ -357,7 +374,12 @@ class QboBillableStatusRefreshService:
         return counts, None
 
     def _try_dbo_heal_bill(
-        self, *, realm_id: str, header_qbo_id: str, qbo_line_id: str
+        self,
+        *,
+        realm_id: str,
+        header_qbo_id: str,
+        qbo_line_id: str,
+        dry_run: bool = False,
     ) -> bool:
         bill_svc = self._bill_service_factory()
         bill = bill_svc.read_by_qbo_identity(header_qbo_id, realm_id)
@@ -367,6 +389,8 @@ class QboBillableStatusRefreshService:
         source = bli_svc.read_by_qbo_identity(bill.id, qbo_line_id)
         if not source or source.is_billed:
             return False
+        if dry_run:
+            return True
         bli_svc.update_by_public_id(
             public_id=source.public_id,
             row_version=source.row_version,
@@ -377,7 +401,12 @@ class QboBillableStatusRefreshService:
         return True
 
     def _try_dbo_heal_purchase(
-        self, *, realm_id: str, header_qbo_id: str, qbo_line_id: str
+        self,
+        *,
+        realm_id: str,
+        header_qbo_id: str,
+        qbo_line_id: str,
+        dry_run: bool = False,
     ) -> bool:
         expense_svc = self._expense_service_factory()
         expense = expense_svc.read_by_qbo_identity(header_qbo_id, realm_id)
@@ -387,6 +416,8 @@ class QboBillableStatusRefreshService:
         source = eli_svc.read_by_qbo_identity(expense.id, qbo_line_id)
         if not source or source.is_billed:
             return False
+        if dry_run:
+            return True
         eli_svc.update_by_public_id(
             public_id=source.public_id,
             row_version=source.row_version,

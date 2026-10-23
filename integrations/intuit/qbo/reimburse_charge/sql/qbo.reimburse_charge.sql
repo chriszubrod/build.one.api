@@ -257,3 +257,37 @@ BEGIN
     COMMIT TRANSACTION;
 END;
 GO
+
+
+GO
+
+CREATE OR ALTER PROCEDURE DeleteQboReimburseChargeByQboId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    DELETE FROM [qbo].[ReimburseCharge]
+    OUTPUT
+        DELETED.[Id],
+        DELETED.[PublicId],
+        DELETED.[RowVersion],
+        CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        DELETED.[QboId],
+        DELETED.[RealmId],
+        DELETED.[CustomerRefValue],
+        DELETED.[CustomerRefName],
+        DELETED.[TxnDate],
+        DELETED.[Amount],
+        DELETED.[HasBeenInvoiced]
+    WHERE [QboId] = @QboId AND [RealmId] = @RealmId;
+
+    COMMIT TRANSACTION;
+END;
+GO

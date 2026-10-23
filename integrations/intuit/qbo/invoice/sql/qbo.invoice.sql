@@ -740,6 +740,66 @@ END;
 GO
 
 
+GO
+
+CREATE OR ALTER PROCEDURE DeleteQboInvoiceByQboIdAndRealmId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    DELETE FROM [qbo].[Invoice]
+    OUTPUT
+        DELETED.[Id],
+        DELETED.[PublicId],
+        DELETED.[RowVersion],
+        CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        DELETED.[QboId],
+        DELETED.[SyncToken],
+        DELETED.[RealmId],
+        DELETED.[CustomerRefValue],
+        DELETED.[CustomerRefName],
+        DELETED.[TxnDate],
+        DELETED.[DueDate],
+        DELETED.[ShipDate],
+        DELETED.[DocNumber],
+        DELETED.[PrivateNote],
+        DELETED.[CustomerMemo],
+        DELETED.[BillEmail],
+        DELETED.[TotalAmt],
+        DELETED.[Balance],
+        DELETED.[Deposit],
+        DELETED.[SalesTermRefValue],
+        DELETED.[SalesTermRefName],
+        DELETED.[CurrencyRefValue],
+        DELETED.[CurrencyRefName],
+        DELETED.[ExchangeRate],
+        DELETED.[DepartmentRefValue],
+        DELETED.[DepartmentRefName],
+        DELETED.[ClassRefValue],
+        DELETED.[ClassRefName],
+        DELETED.[ShipMethodRefValue],
+        DELETED.[ShipMethodRefName],
+        DELETED.[TrackingNum],
+        DELETED.[PrintStatus],
+        DELETED.[EmailStatus],
+        DELETED.[AllowOnlineACHPayment],
+        DELETED.[AllowOnlineCreditCardPayment],
+        DELETED.[ApplyTaxAfterDiscount],
+        DELETED.[GlobalTaxCalculation]
+    WHERE [QboId] = @QboId AND [RealmId] = @RealmId;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
 -- InvoiceLine Stored Procedures
 
 GO

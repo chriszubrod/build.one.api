@@ -557,6 +557,52 @@ END;
 GO
 
 
+GO
+
+CREATE OR ALTER PROCEDURE DeleteQboPurchaseByQboIdAndRealmId
+(
+    @QboId NVARCHAR(50),
+    @RealmId NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    DELETE FROM [qbo].[Purchase]
+    OUTPUT
+        DELETED.[Id],
+        DELETED.[PublicId],
+        DELETED.[RowVersion],
+        CONVERT(VARCHAR(19), DELETED.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), DELETED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        DELETED.[QboId],
+        DELETED.[SyncToken],
+        DELETED.[RealmId],
+        DELETED.[PaymentType],
+        DELETED.[AccountRefValue],
+        DELETED.[AccountRefName],
+        DELETED.[EntityRefValue],
+        DELETED.[EntityRefName],
+        DELETED.[Credit],
+        DELETED.[TxnDate],
+        DELETED.[DocNumber],
+        DELETED.[PrivateNote],
+        DELETED.[TotalAmt],
+        DELETED.[CurrencyRefValue],
+        DELETED.[CurrencyRefName],
+        DELETED.[ExchangeRate],
+        DELETED.[DepartmentRefValue],
+        DELETED.[DepartmentRefName],
+        DELETED.[GlobalTaxCalculation]
+    WHERE [QboId] = @QboId AND [RealmId] = @RealmId;
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+
 -- PurchaseLine Stored Procedures
 
 GO

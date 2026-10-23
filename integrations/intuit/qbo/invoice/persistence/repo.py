@@ -426,6 +426,32 @@ class QboInvoiceRepository:
             logger.error(f"Error during delete qbo invoice by QBO ID: {error}")
             raise map_database_error(error)
 
+    def delete_by_qbo_id_and_realm_id(
+        self, qbo_id: str, realm_id: str
+    ) -> Optional[QboInvoice]:
+        """Delete a QboInvoice by QBO ID scoped to a realm."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="DeleteQboInvoiceByQboIdAndRealmId",
+                        params={"QboId": qbo_id, "RealmId": realm_id},
+                    )
+                    row = cursor.fetchone()
+                    return self._from_db(row) if row else None
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(
+                f"Error during delete qbo invoice by QBO ID and realm ID: {error}"
+            )
+            raise map_database_error(error)
+
 
 class QboInvoiceLineRepository:
     """

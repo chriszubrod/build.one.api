@@ -366,6 +366,106 @@ def test_vendor_credit_flip_no_dbo_heal():
     assert result["vendor_credit"]["flipped_to_has_been_billed"] == 1
 
 
+def test_dry_run_dbo_would_heal_only_when_dbo_line_unbilled():
+    staged = [_StagedLine(id=6, qbo_line_id="40", header_qbo_id="400")]
+    live = _live_bill("400", [_bill_line("40", "HasBeenBilled")])
+    bill = SimpleNamespace(id=9, public_id="bill-pub", qbo_id="400")
+    bli = SimpleNamespace(
+        public_id="bli-pub",
+        row_version="rv1",
+        bill_id=9,
+        qbo_line_id="40",
+        is_billed=False,
+    )
+    svc, repo, _, bli_svc = _service_for_bill_only(
+        staged=staged,
+        live_by_header={"400": live},
+        bill=bill,
+        bill_line_item=bli,
+    )
+    result = svc.run("realm-1", dry_run=True)
+    assert repo.cas_calls == []
+    assert bli_svc.update_calls == []
+    assert result["bill"]["dbo_would_heal"] == 1
+
+
+def test_dry_run_dbo_would_heal_skips_already_billed():
+    staged = [_StagedLine(id=61, qbo_line_id="41", header_qbo_id="401")]
+    live = _live_bill("401", [_bill_line("41", "HasBeenBilled")])
+    bill = SimpleNamespace(id=91, public_id="bill-pub", qbo_id="401")
+    bli = SimpleNamespace(
+        public_id="bli-pub",
+        row_version="rv1",
+        bill_id=91,
+        qbo_line_id="41",
+        is_billed=True,
+    )
+    svc, _, _, bli_svc = _service_for_bill_only(
+        staged=staged,
+        live_by_header={"401": live},
+        bill=bill,
+        bill_line_item=bli,
+    )
+    result = svc.run("realm-1", dry_run=True)
+    assert result["bill"]["dbo_would_heal"] == 0
+    assert bli_svc.update_calls == []
+
+
+def test_dry_run_dbo_would_heal_skips_missing_dbo_line():
+    staged = [_StagedLine(id=62, qbo_line_id="42", header_qbo_id="402")]
+    live = _live_bill("402", [_bill_line("42", "HasBeenBilled")])
+    bill = SimpleNamespace(id=92, public_id="bill-pub", qbo_id="402")
+    svc, _, _, bli_svc = _service_for_bill_only(
+        staged=staged,
+        live_by_header={"402": live},
+        bill=bill,
+        bill_line_item=None,
+    )
+    result = svc.run("realm-1", dry_run=True)
+    assert result["bill"]["dbo_would_heal"] == 0
+    assert bli_svc.update_calls == []
+
+
+def test_dry_run_dbo_read_failure_counted_and_next_line_still_evaluated():
+    staged = [
+        _StagedLine(id=63, qbo_line_id="43", header_qbo_id="500"),
+        _StagedLine(id=64, qbo_line_id="44", header_qbo_id="501"),
+    ]
+    live = {
+        "500": _live_bill("500", [_bill_line("43", "HasBeenBilled")]),
+        "501": _live_bill("501", [_bill_line("44", "HasBeenBilled")]),
+    }
+    bill = SimpleNamespace(id=93, public_id="bill-pub", qbo_id="501")
+    bli = SimpleNamespace(
+        public_id="bli-pub",
+        row_version="rv1",
+        bill_id=93,
+        qbo_line_id="44",
+        is_billed=False,
+    )
+    svc, repo, _, bli_svc = _service_for_bill_only(
+        staged=staged,
+        live_by_header=live,
+        bill=bill,
+        bill_line_item=bli,
+    )
+
+    class _RaisingForHeader500(_FakeBillService):
+        def read_by_qbo_identity(self, qbo_id, realm_id):
+            if qbo_id == "500":
+                raise RuntimeError("simulated dbo read failure")
+            return super().read_by_qbo_identity(qbo_id, realm_id)
+
+    svc._bill_service_factory = lambda: _RaisingForHeader500(bill)
+    result = svc.run("realm-1", dry_run=True)
+    assert result["bill"]["dbo_heal_errors"] == 1
+    assert result["bill"]["dbo_would_heal"] == 1
+    assert result["bill"]["flipped_to_has_been_billed"] == 2
+    assert repo.cas_calls == []
+    assert bli_svc.update_calls == []
+    assert "purchase" in result and "vendor_credit" in result
+
+
 def test_dry_run_no_writes_counts_dbo_would_heal():
     staged = [_StagedLine(id=6, qbo_line_id="40", header_qbo_id="400")]
     live = _live_bill("400", [_bill_line("40", "HasBeenBilled")])

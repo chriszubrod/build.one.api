@@ -22,7 +22,7 @@ class QboReimburseChargeRepository:
     """
     Repository for QboReimburseCharge persistence operations.
 
-    Pull-only staging: create + upsert-update + reads. No delete sproc.
+    Pull-only staging: create + upsert-update + reads + delete by QBO identity.
     """
 
     def __init__(self):
@@ -201,4 +201,28 @@ class QboReimburseChargeRepository:
                         pass
         except Exception as error:
             logger.error(f"Error during update qbo reimburse charge by QBO ID: {error}")
+            raise map_database_error(error)
+
+    def delete_by_qbo_id(self, qbo_id: str, realm_id: str) -> Optional[QboReimburseCharge]:
+        """
+        Delete a QboReimburseCharge by QBO ID and realm ID.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="DeleteQboReimburseChargeByQboId",
+                        params={"QboId": qbo_id, "RealmId": realm_id},
+                    )
+                    row = cursor.fetchone()
+                    return self._from_db(row) if row else None
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during delete qbo reimburse charge by QBO ID: {error}")
             raise map_database_error(error)

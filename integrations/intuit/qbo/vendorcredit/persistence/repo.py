@@ -288,6 +288,22 @@ class QboVendorCreditRepository:
             logger.error(f"Error deleting QboVendorCredit by QboId: {e}")
             raise map_database_error(e)
 
+    def delete_by_qbo_id_and_realm_id(self, qbo_id: str, realm_id: str) -> None:
+        """Delete a qbo.VendorCredit staging header by QBO id and realm."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor,
+                    "DeleteQboVendorCreditByQboIdAndRealmId",
+                    {"QboId": qbo_id, "RealmId": realm_id},
+                )
+        except Exception as e:
+            logger.error(
+                f"Error deleting QboVendorCredit by QboId and RealmId: {e}"
+            )
+            raise map_database_error(e)
+
     def _staged_billable_from_db(self, row: pyodbc.Row) -> StagedBillableQboLine:
         amount = getattr(row, "Amount", None)
         return StagedBillableQboLine(

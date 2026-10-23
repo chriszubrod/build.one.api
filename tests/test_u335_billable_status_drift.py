@@ -47,6 +47,11 @@ class _FakeIssueRepo:
             keys.append((realm_id, entity_type, qbo_id))
         return keys
 
+    def read_unresolved_issues_by_drift_type(
+        self, drift_type, *, realm_id=None, entity_type=None
+    ):
+        return []
+
 
 def _fake_service(*, seeded_issues=None, create_raises=False):
     repo = _FakeIssueRepo(seeded_issues=seeded_issues, create_raises=create_raises)
@@ -129,7 +134,14 @@ def test_bill_branch_flags_drifting_bill_and_aggregates_lines(monkeypatch):
 
     result = svc._reconcile_bill_billable_status_drift(realm_id="realm-1", run_id="run-1")
 
-    assert result == {"auto_fixed": 0, "flagged": 1, "flagged_deduped": 0, "errors": 0}
+    assert result == {
+        "auto_fixed": 0,
+        "flagged": 1,
+        "flagged_deduped": 0,
+        "errors": 0,
+        "auto_resolved": 0,
+        "auto_resolve_errors": 0,
+    }
     assert repo.create_calls == 1
     issue = repo.issues[0]
     assert issue["drift_type"] == DRIFT_BILLABLE_STATUS_DRIFT
@@ -166,7 +178,14 @@ def test_bill_branch_no_drift_writes_nothing(monkeypatch):
 
     result = svc._reconcile_bill_billable_status_drift(realm_id="realm-1", run_id="run-1")
 
-    assert result == {"auto_fixed": 0, "flagged": 0, "flagged_deduped": 0, "errors": 0}
+    assert result == {
+        "auto_fixed": 0,
+        "flagged": 0,
+        "flagged_deduped": 0,
+        "errors": 0,
+        "auto_resolved": 0,
+        "auto_resolve_errors": 0,
+    }
     assert repo.issues == []
 
 
@@ -277,7 +296,14 @@ def test_purchase_branch_flags_drifting_expense(monkeypatch):
 
     result = svc._reconcile_purchase_billable_status_drift(realm_id="realm-1", run_id="run-1")
 
-    assert result == {"auto_fixed": 0, "flagged": 1, "flagged_deduped": 0, "errors": 0}
+    assert result == {
+        "auto_fixed": 0,
+        "flagged": 1,
+        "flagged_deduped": 0,
+        "errors": 0,
+        "auto_resolved": 0,
+        "auto_resolve_errors": 0,
+    }
     issue = repo.issues[0]
     assert issue["drift_type"] == DRIFT_BILLABLE_STATUS_DRIFT
     assert issue["entity_type"] == "Expense"
@@ -291,7 +317,14 @@ def test_purchase_branch_no_drift_writes_nothing(monkeypatch):
 
     result = svc._reconcile_purchase_billable_status_drift(realm_id="realm-1", run_id="run-1")
 
-    assert result == {"auto_fixed": 0, "flagged": 0, "flagged_deduped": 0, "errors": 0}
+    assert result == {
+        "auto_fixed": 0,
+        "flagged": 0,
+        "flagged_deduped": 0,
+        "errors": 0,
+        "auto_resolved": 0,
+        "auto_resolve_errors": 0,
+    }
     assert repo.issues == []
 
 

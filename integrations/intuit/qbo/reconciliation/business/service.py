@@ -57,6 +57,8 @@ SEVERITY_BY_DRIFT = {
 # issue-write is suppressed. Do not add them together.
 RECONCILE_COUNT_KEYS = ("auto_fixed", "flagged", "flagged_deduped", "errors")
 
+DEFAULT_DRIFT_AUTORESOLVE_MAX = 5000
+
 # reconcile_invoice_draws' row source (U-356): dbo-native identity JOIN.
 #
 # Pre-U-356 this hopped through the qbo.InvoiceInvoice mapping table
@@ -693,8 +695,12 @@ class ReconciliationService:
              qbo.Bill -> qbo.BillLine
           2. Purchase branch — dbo.ExpenseLineItem -> qbo.PurchaseLineExpenseLineItem -> qbo.PurchaseLine
 
-        FLAG-ONLY: never auto-fixes, never mutates BillableStatus, never
-        touches the source rows. Aggregates to ONE issue per drifting parent
+        Closes its own stale issues when a parent no longer drifts (U-718):
+        unresolved billable_status_drift rows for that realm/entity are
+        resolved if the parent is absent from the current drift set. Staged
+        BillLine/PurchaseLine input is kept fresh by the hourly billable-status
+        refresh (U-718 bite 1). Never auto-fixes BillableStatus, never mutates
+        source rows. Aggregates to ONE issue per drifting parent
         (Bill / Expense) — not per line — sized 2026-08-30 at ~1,104 drifting
         lines / ~600 parents / ~$5.35M live; a per-line issue would flood the
         table. Idempotent via the same (realm_id, entity_type, qbo_id)
@@ -715,11 +721,15 @@ class ReconciliationService:
         )
 
         counts = dict.fromkeys(RECONCILE_COUNT_KEYS, 0)
+        auto_resolved = 0
+        auto_resolve_errors = 0
 
         try:
             d1 = self._reconcile_bill_billable_status_drift(realm_id=realm_id, run_id=run_id)
             for key in RECONCILE_COUNT_KEYS:
                 counts[key] += d1.get(key, 0)
+            auto_resolved += d1.get("auto_resolved", 0)
+            auto_resolve_errors += d1.get("auto_resolve_errors", 0)
         except Exception:
             logger.exception("qbo.reconcile.detector.failed",
                              extra={"detector": "bill_billable_status_drift",
@@ -730,6 +740,8 @@ class ReconciliationService:
             d2 = self._reconcile_purchase_billable_status_drift(realm_id=realm_id, run_id=run_id)
             for key in RECONCILE_COUNT_KEYS:
                 counts[key] += d2.get(key, 0)
+            auto_resolved += d2.get("auto_resolved", 0)
+            auto_resolve_errors += d2.get("auto_resolve_errors", 0)
         except Exception:
             logger.exception("qbo.reconcile.detector.failed",
                              extra={"detector": "purchase_billable_status_drift",
@@ -744,10 +756,17 @@ class ReconciliationService:
                 "entity_type": "BillLineItem/ExpenseLineItem",
                 "realm_id": realm_id,
                 "reconcile_run_id": run_id,
+                "auto_resolved": auto_resolved,
+                "auto_resolve_errors": auto_resolve_errors,
                 **counts,
             },
         )
-        return {"run_id": run_id, **counts}
+        return {
+            "run_id": run_id,
+            **counts,
+            "auto_resolved": auto_resolved,
+            "auto_resolve_errors": auto_resolve_errors,
+        }
 
     # ------------------------------------------------------------------ #
     # Concrete detectors
@@ -1642,6 +1661,73 @@ class ReconciliationService:
     # Billable-status drift detection (U-335)
     # ------------------------------------------------------------------ #
 
+    def _drift_autoresolve_max(self) -> int:
+        from shared.env_flags import _env_positive_int
+
+        return _env_positive_int(
+            "QBO_DRIFT_AUTORESOLVE_MAX",
+            DEFAULT_DRIFT_AUTORESOLVE_MAX,
+            minimum=1,
+            warn=False,
+        )
+
+    def _autoresolve_cleared_billable_status_drift(
+        self,
+        *,
+        realm_id: str,
+        entity_type: str,
+        drifting_parent_qbo_ids: set,
+    ) -> tuple[int, int]:
+        """Resolve open/ack billable_status_drift issues whose parent is not drifting."""
+        from integrations.intuit.qbo.base.ids import normalize_qbo_id
+
+        unresolved = self.repo.read_unresolved_issues_by_drift_type(
+            DRIFT_BILLABLE_STATUS_DRIFT,
+            realm_id=realm_id,
+            entity_type=entity_type,
+        )
+        eligible = []
+        for issue in unresolved:
+            norm_qbo_id = normalize_qbo_id(issue.get("qbo_id"))
+            if not norm_qbo_id:
+                continue
+            if norm_qbo_id not in drifting_parent_qbo_ids:
+                eligible.append(issue)
+
+        cap = self._drift_autoresolve_max()
+        if len(eligible) > cap:
+            logger.error(
+                "qbo.reconcile.billable_status_drift.autoresolve.cap_exceeded: "
+                "eligible=%s exceeds QBO_DRIFT_AUTORESOLVE_MAX=%s — resolving none",
+                len(eligible),
+                cap,
+                extra={
+                    "realm_id": realm_id,
+                    "entity_type": entity_type,
+                    "eligible_count": len(eligible),
+                    "QBO_DRIFT_AUTORESOLVE_MAX": cap,
+                },
+            )
+            return 0, 0
+
+        auto_resolved = 0
+        auto_resolve_errors = 0
+        for issue in eligible:
+            try:
+                self.repo.resolve(issue["id"])
+                auto_resolved += 1
+            except Exception:
+                auto_resolve_errors += 1
+                logger.exception(
+                    "qbo.reconcile.billable_status_drift.autoresolve.failed",
+                    extra={
+                        "issue_id": issue.get("id"),
+                        "realm_id": realm_id,
+                        "entity_type": entity_type,
+                    },
+                )
+        return auto_resolved, auto_resolve_errors
+
     def _reconcile_bill_billable_status_drift(self, realm_id: str, run_id: str) -> dict:
         """
         Bill branch of the billable_status_drift detector (U-335). Scans
@@ -1659,6 +1745,8 @@ class ReconciliationService:
 
         flagged = 0
         flagged_deduped = 0
+        auto_resolved = 0
+        auto_resolve_errors = 0
 
         with get_connection() as conn:
             cursor = conn.cursor()
@@ -1721,7 +1809,31 @@ class ReconciliationService:
                 ):
                     dedup_keys.add(key)
 
-        return {"auto_fixed": 0, "flagged": flagged, "flagged_deduped": flagged_deduped, "errors": 0}
+        drifting_parent_qbo_ids = {
+            normalize_qbo_id(g["qbo_id"]) for g in groups.values()
+        }
+        drifting_parent_qbo_ids.discard(None)
+        try:
+            auto_resolved, auto_resolve_errors = self._autoresolve_cleared_billable_status_drift(
+                realm_id=realm_id,
+                entity_type="Bill",
+                drifting_parent_qbo_ids=drifting_parent_qbo_ids,
+            )
+        except Exception:
+            auto_resolve_errors += 1
+            logger.exception(
+                "qbo.reconcile.billable_status_drift.autoresolve.read_failed",
+                extra={"realm_id": realm_id, "entity_type": "Bill"},
+            )
+
+        return {
+            "auto_fixed": 0,
+            "flagged": flagged,
+            "flagged_deduped": flagged_deduped,
+            "errors": 0,
+            "auto_resolved": auto_resolved,
+            "auto_resolve_errors": auto_resolve_errors,
+        }
 
     def _reconcile_purchase_billable_status_drift(self, realm_id: str, run_id: str) -> dict:
         """
@@ -1738,6 +1850,8 @@ class ReconciliationService:
 
         flagged = 0
         flagged_deduped = 0
+        auto_resolved = 0
+        auto_resolve_errors = 0
 
         with get_connection() as conn:
             cursor = conn.cursor()
@@ -1791,7 +1905,31 @@ class ReconciliationService:
                 ):
                     dedup_keys.add(key)
 
-        return {"auto_fixed": 0, "flagged": flagged, "flagged_deduped": flagged_deduped, "errors": 0}
+        drifting_parent_qbo_ids = {
+            normalize_qbo_id(g["qbo_id"]) for g in groups.values()
+        }
+        drifting_parent_qbo_ids.discard(None)
+        try:
+            auto_resolved, auto_resolve_errors = self._autoresolve_cleared_billable_status_drift(
+                realm_id=realm_id,
+                entity_type="Expense",
+                drifting_parent_qbo_ids=drifting_parent_qbo_ids,
+            )
+        except Exception:
+            auto_resolve_errors += 1
+            logger.exception(
+                "qbo.reconcile.billable_status_drift.autoresolve.read_failed",
+                extra={"realm_id": realm_id, "entity_type": "Expense"},
+            )
+
+        return {
+            "auto_fixed": 0,
+            "flagged": flagged,
+            "flagged_deduped": flagged_deduped,
+            "errors": 0,
+            "auto_resolved": auto_resolved,
+            "auto_resolve_errors": auto_resolve_errors,
+        }
 
     # ------------------------------------------------------------------ #
     # Issue-recording helper (shared across all detectors)

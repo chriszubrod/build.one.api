@@ -137,6 +137,46 @@ class ReconciliationIssueRepository:
             logger.error(f"Error during read unresolved issue keys by drift type: {error}")
             raise map_database_error(error)
 
+    def read_unresolved_issues_by_drift_type(
+        self,
+        drift_type: str,
+        *,
+        realm_id: Optional[str] = None,
+        entity_type: Optional[str] = None,
+    ) -> List[dict]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadQboUnresolvedIssuesByDriftType",
+                        params={
+                            "DriftType": drift_type,
+                            "RealmId": realm_id,
+                            "EntityType": entity_type,
+                        },
+                    )
+                    rows = cursor.fetchall()
+                    return [
+                        {
+                            "id": getattr(r, "Id", None),
+                            "realm_id": getattr(r, "RealmId", None),
+                            "entity_type": getattr(r, "EntityType", None),
+                            "qbo_id": getattr(r, "QboId", None),
+                            "status": getattr(r, "Status", None),
+                        }
+                        for r in rows if r
+                    ]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read unresolved issues by drift type: {error}")
+            raise map_database_error(error)
+
     def count_by_group(self) -> List[dict]:
         """Return aggregated counts grouped by (drift_type, severity, action, status)."""
         try:

@@ -200,6 +200,28 @@ GO
 -- ========================== U-160 END ==========================
 
 
+-- U-718: full unresolved rows for billable_status_drift auto-resolve (Id + status).
+CREATE OR ALTER PROCEDURE ReadQboUnresolvedIssuesByDriftType
+(
+    @DriftType NVARCHAR(32),
+    @RealmId NVARCHAR(64) = NULL,
+    @EntityType NVARCHAR(32) = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT [Id], [RealmId], [EntityType], [QboId], [Status]
+    FROM [qbo].[ReconciliationIssue]
+    WHERE [DriftType] = @DriftType
+      AND [Action] = 'flagged'
+      AND [Status] IN ('open', 'acknowledged')
+      AND [QboId] IS NOT NULL
+      AND (@RealmId IS NULL OR [RealmId] = @RealmId)
+      AND (@EntityType IS NULL OR [EntityType] = @EntityType);
+END;
+GO
+
+
 -- ========================= U-246 BEGIN =========================
 
 CREATE OR ALTER PROCEDURE AcknowledgeQboReconciliationIssue

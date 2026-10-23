@@ -2,6 +2,17 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-716a follow-ups — expense receipt drop/match (booked 2026-10-23, shipped `cf439563`)
+
+- [ ] **Auto-attach a unique strong match** — v1 always asks for a click (Chris, Gate 1). Revisit once we see how often the top candidate is right (the prod proof: 24/25 self-ranked first).
+- [ ] **Retry unmatched receipts when new purchases sync** — a receipt dropped before its card charge is pulled finds nothing; today it stays uploaded and unlinked. Needs a pending-receipt list + a match pass after the Purchase pull. Never create an expense from it (the QBO Purchase pull never adopts a hand-made one → duplicate).
+- [ ] **Send the receipt to QuickBooks as an Attachable** — expense attachments are pull-only today (design doc Q3).
+- [ ] **Box/SharePoint copy for receipts added to COMPLETED expenses** — the U-468 add-only exception adds the receipt in the app only; the complete job's copies are not redone.
+- [ ] **Re-read for expenses** — the bill Re-read (U-704) has no expense twin.
+- [ ] **Pass 2 skip: drop the attach pre-read** — `attach_receipt_to_expense` reads the expense (2 round trips) only to decide the `terminal_add` log line; the sproc could return Status/IsDraft under its lock instead. Changes reviewed SQL → own unit.
+- [ ] **Policy check (Pass 3 note)** — under the add-only exception any user with expense can_update who can access a completed receipt-less expense (incl. one created by someone else) can add its first receipt; not removable afterwards. Logged (`expense.attach_receipt.terminal_add`, App Insights only). If stricter is wanted: creator/admin only, or a durable audit row.
+- [ ] **Unlinked uploads accumulate** — a dismissed or unmatched dropped receipt leaves an orphan Attachment + blob (same as the bill drop). Confirm an orphan sweep covers them.
+
 ## U-701a deferred — similar-bills token hashes (booked 2026-10-22, shipped `92a92024`)
 
 Shadow-only today (nothing user-facing reads it). Items before or with U-701b:

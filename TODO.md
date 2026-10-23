@@ -2,6 +2,15 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-721b follow-ups - drain-time insert placement (booked 2026-10-23, shipped `01e37e63`)
+
+- [ ] **Drain-time 00.02 drop** (Chris 2026-10-23: book, not in U-721b) - the holding rule is enforced only at enqueue (workbook_sections.enqueue_section_inserts); the worker never filters it for insert_excel_row or append_excel_row. Drop ALWAYS_HELD_SUB_COST_CODES rows at drain (the worker already parses column C). First, read-only: any pending/retrying/dead-letter Excel outbox rows enqueued before `2b1512b8` that carry column C = 00.02?
+- [ ] **Section-missing append is only a WARNING log** (`ms.outbox.excel.insert_section_missing_appended`) - the line lands below the sections and may sit outside the totals; raise a ReconciliationIssue so someone moves it.
+- [ ] **One SCC-equality helper** - the exact-or-float comparison is inlined 3x in workbook_sections (holding match, find_insertion_row, find_first_row) and the worker borrows `sub_cost_code_number_matches_holding(x, frozenset({t}))`; add `sub_cost_code_numbers_match(a, b)` and move the worker's `_unified_sub_cost_code_from_kept_rows` there.
+- [ ] **Pre-existing placement edge cases** (same at enqueue and drain): an empty section uses first-match+2, which can land in the next section when the section is one row; rows with blank date/vendor are not "data rows", so later inserts go above them.
+- [ ] **Read/dedup/place happens outside `ms_excel_write:{item_id}`** - drains are serialized by DRAIN_LOCK, so only non-drain writers (people editing in Excel) can race the few-second window.
+
+
 ## U-723 follow-ups - bill possible-duplicate warning (booked 2026-10-23, shipped api `c52a0769`, web `7e31e16`)
 
 - [ ] **Flip BILL_DUPLICATE_WARN to warn** (App Service setting) once `record` rows in dbo.BillDuplicateOverride look right - Chris approval. iOS cannot send confirm_not_duplicate yet (U-723e) - in warn mode an iOS user cannot create/submit/complete a bill with a visible match.

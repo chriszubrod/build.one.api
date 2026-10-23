@@ -18,6 +18,7 @@ class SubCostCodeService:
         """Initialize the SubCostCodeService."""
         self.repo = repo or SubCostCodeRepository()
         self._holding_sub_cost_code_ids: Optional[frozenset[int]] = None
+        self._holding_sub_cost_code_numbers: Optional[frozenset[str]] = None
 
     def create(self, *, tenant_id: int = 1, number: str, name: str, description: Optional[str] = None, cost_code_id: int, aliases: Optional[str] = None) -> SubCostCode:
         """
@@ -51,6 +52,21 @@ class SubCostCodeService:
             sub_cost_code_id is not None
             and sub_cost_code_id in self.holding_sub_cost_code_ids()
         )
+
+    def holding_sub_cost_code_numbers(self) -> frozenset[str]:
+        """SCC Number strings for all holding codes (one ReadHoldingSubCostCodeIds per instance)."""
+        if self._holding_sub_cost_code_numbers is None:
+            numbers: set[str] = set()
+            for hid in self.holding_sub_cost_code_ids():
+                scc = self.read_by_id(hid)
+                num = str(scc.number).strip() if scc is not None and scc.number else ""
+                if not num:
+                    # Fail closed: an unresolvable holding code would silently let its
+                    # lines sync to the draw workbooks (U-721 holding rule).
+                    raise RuntimeError(f"holding sub cost code {hid} has no number")
+                numbers.add(num)
+            self._holding_sub_cost_code_numbers = frozenset(numbers)
+        return self._holding_sub_cost_code_numbers
 
     def read_by_public_id(self, public_id: str) -> Optional[SubCostCode]:
         """

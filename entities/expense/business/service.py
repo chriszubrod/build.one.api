@@ -1550,6 +1550,7 @@ class ExpenseService:
             enqueue_res = enqueue_section_inserts(
                 worksheet_values=worksheet_values,
                 groups=section_groups,
+                holding_sub_cost_codes=self.sub_cost_code_service.holding_sub_cost_code_numbers(),
                 entity_type="Expense",
                 entity_public_id=str(expense.public_id),
                 drive_id=drive.drive_id,
@@ -1742,6 +1743,7 @@ class ExpenseService:
             enqueue_res = enqueue_section_inserts(
                 worksheet_values=worksheet_values,
                 groups=section_groups,
+                holding_sub_cost_codes=self.sub_cost_code_service.holding_sub_cost_code_numbers(),
                 entity_type="ExpenseBatch",
                 entity_public_id=batch_entity_public_id(project_id),
                 drive_id=drive.drive_id,

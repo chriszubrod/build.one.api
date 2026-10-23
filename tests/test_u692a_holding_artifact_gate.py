@@ -54,6 +54,9 @@ def _wire_excel_service(service):
         return_value=SimpleNamespace(name="Vendor Co")
     )
     service.sub_cost_code_service.is_holding_code = MagicMock(side_effect=_is_holding)
+    service.sub_cost_code_service.holding_sub_cost_code_numbers = MagicMock(
+        return_value=frozenset({"00.02"})
+    )
     service.sub_cost_code_service.read_by_id = MagicMock(
         side_effect=lambda id: SimpleNamespace(
             number="00.02" if str(id) == str(HOLDING_SCC_ID) else "45.00"
@@ -793,7 +796,9 @@ def test_repair_db_to_excel_expense_uses_synced_count_not_missing_len(capsys):
     expense_service.sync_to_excel_workbook.assert_called_once()
 
 
-def test_build_details_rows_bill_still_emits_holding_line(monkeypatch):
+def test_build_details_rows_bill_holds_holding_line(monkeypatch):
+    """U-692a scoped the gate to Expense and booked Bill/BillCredit as a follow-up;
+    U-721 (Chris, 2026-10-23: never sync a 00.02 line) closes it for the Box bill rows."""
     import entities.bill.business.service as bill_service
     import entities.bill_line_item.business.service as bli_service
     import entities.sub_cost_code.business.service as scc_service
@@ -840,5 +845,4 @@ def test_build_details_rows_bill_still_emits_holding_line(monkeypatch):
         ),
     )
     rows = rb.build_details_rows("bill", "bill-pub", project_id=PROJECT_ID)
-    assert len(rows) == 1
-    assert rows[0][25] == "b-holding"
+    assert rows == []

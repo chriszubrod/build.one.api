@@ -1,0 +1,815 @@
+"""U-721a extra golden coverage — values captured from code 2026-10-23."""
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import entities.bill.business.service as bill_mod
+import entities.bill_credit.business.complete_service as credit_mod
+import entities.expense.business.service as exp_mod
+from tests.test_u721_section_insert_golden import (
+    PROJECT_ID,
+    _assert_golden,
+    _bill_header,
+    _bill_line,
+    _bill_service,
+    _credit_header,
+    _credit_line,
+    _credit_service,
+    _data_row,
+    _expense_header,
+    _expense_line,
+    _expense_service,
+    _std_sheet,
+    _workbook_patches,
+)
+
+GOLDEN = {'bill_single_second_insert_raises': {'calls': [{'method': 'enqueue_excel_insert',
+                                                 'kwargs': {'entity_type': 'Bill',
+                                                            'entity_public_id': '11111111-1111-4111-8111-111111111101',
+                                                            'drive_id': 'drv',
+                                                            'item_id': 'itm',
+                                                            'worksheet_name': 'DETAILS',
+                                                            'row_index': 6,
+                                                            'values': [['',
+                                                                        '20',
+                                                                        '20.01',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '2026-10-01',
+                                                                        'Acme',
+                                                                        'B-100',
+                                                                        'line 2',
+                                                                        'Bill',
+                                                                        10.5,
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        'li-0002-aaaa-4111-8111-111111110002']],
+                                                            'session_id': None}},
+                                                {'method': 'enqueue_excel_insert',
+                                                 'kwargs': {'entity_type': 'Bill',
+                                                            'entity_public_id': '11111111-1111-4111-8111-111111111101',
+                                                            'drive_id': 'drv',
+                                                            'item_id': 'itm',
+                                                            'worksheet_name': 'DETAILS',
+                                                            'row_index': 4,
+                                                            'values': [['',
+                                                                        '10',
+                                                                        '10.01',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '2026-10-01',
+                                                                        'Acme',
+                                                                        'B-100',
+                                                                        'line 1',
+                                                                        'Bill',
+                                                                        10.5,
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        'li-0001-aaaa-4111-8111-111111110001']],
+                                                            'session_id': None}}],
+                                      'result': {'success': False,
+                                                 'message': 'Error syncing to Excel: boom',
+                                                 'synced_count': 0,
+                                                 'errors': [{'error': 'boom'}]},
+                                      'close': 1},
+ 'bill_batch_second_insert_raises': {'calls': [{'method': 'enqueue_excel_insert',
+                                                'kwargs': {'entity_type': 'BillBatch',
+                                                           'entity_public_id': '6085baa5-a8c9-592e-9a7f-c6289f0eb5cf',
+                                                           'drive_id': 'drv',
+                                                           'item_id': 'itm',
+                                                           'worksheet_name': 'DETAILS',
+                                                           'row_index': 6,
+                                                           'values': [['',
+                                                                       '20',
+                                                                       '20.01',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '2026-10-01',
+                                                                       'Acme',
+                                                                       'B-100',
+                                                                       'line 2',
+                                                                       'Bill',
+                                                                       10.5,
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       'li-0002-aaaa-4111-8111-111111110002']],
+                                                           'session_id': None}},
+                                               {'method': 'enqueue_excel_insert',
+                                                'kwargs': {'entity_type': 'BillBatch',
+                                                           'entity_public_id': '6085baa5-a8c9-592e-9a7f-c6289f0eb5cf',
+                                                           'drive_id': 'drv',
+                                                           'item_id': 'itm',
+                                                           'worksheet_name': 'DETAILS',
+                                                           'row_index': 4,
+                                                           'values': [['',
+                                                                       '10',
+                                                                       '10.01',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '2026-10-01',
+                                                                       'Acme',
+                                                                       'B-100',
+                                                                       'line 1',
+                                                                       'Bill',
+                                                                       10.5,
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       '',
+                                                                       'li-0001-aaaa-4111-8111-111111110001']],
+                                                           'session_id': None}}],
+                                     'result': {'success': False,
+                                                'message': 'Error syncing to Excel: boom',
+                                                'synced_count': 0,
+                                                'errors': [{'error': 'boom'}]},
+                                     'close': 1},
+ 'bill_single_append_raises': {'calls': [{'method': 'enqueue_excel_insert',
+                                          'kwargs': {'entity_type': 'Bill',
+                                                     'entity_public_id': '11111111-1111-4111-8111-111111111101',
+                                                     'drive_id': 'drv',
+                                                     'item_id': 'itm',
+                                                     'worksheet_name': 'DETAILS',
+                                                     'row_index': 4,
+                                                     'values': [['',
+                                                                 '10',
+                                                                 '10.01',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '2026-10-01',
+                                                                 'Acme',
+                                                                 'B-100',
+                                                                 'line 1',
+                                                                 'Bill',
+                                                                 10.5,
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 'li-0001-aaaa-4111-8111-111111110001']],
+                                                     'session_id': None}},
+                                         {'method': 'enqueue_excel_append',
+                                          'kwargs': {'entity_type': 'Bill',
+                                                     'entity_public_id': '11111111-1111-4111-8111-111111111101',
+                                                     'drive_id': 'drv',
+                                                     'item_id': 'itm',
+                                                     'worksheet_name': 'DETAILS',
+                                                     'values': [['',
+                                                                 '99',
+                                                                 '99.99',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '2026-10-01',
+                                                                 'Acme',
+                                                                 'B-100',
+                                                                 'line 2',
+                                                                 'Bill',
+                                                                 10.5,
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 'li-0002-aaaa-4111-8111-111111110002']],
+                                                     'session_id': None}}],
+                               'result': {'success': False,
+                                          'message': 'Error syncing to Excel: append-boom',
+                                          'synced_count': 0,
+                                          'errors': [{'error': 'append-boom'}]},
+                               'close': 1},
+ 'bill_batch_non200_append_all': {'calls': [{'method': 'enqueue_excel_append',
+                                             'kwargs': {'entity_type': 'BillBatch',
+                                                        'entity_public_id': '6085baa5-a8c9-592e-9a7f-c6289f0eb5cf',
+                                                        'drive_id': 'drv',
+                                                        'item_id': 'itm',
+                                                        'worksheet_name': 'DETAILS',
+                                                        'values': [['',
+                                                                    '10',
+                                                                    '10.01',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '2026-10-01',
+                                                                    'Acme',
+                                                                    'B-100',
+                                                                    'line 1',
+                                                                    'Bill',
+                                                                    10.5,
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    'li-0001-aaaa-4111-8111-111111110001'],
+                                                                   ['',
+                                                                    '99',
+                                                                    '99.99',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '2026-10-01',
+                                                                    'Acme',
+                                                                    'B-100',
+                                                                    'line 2',
+                                                                    'Bill',
+                                                                    10.5,
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    '',
+                                                                    'li-0002-aaaa-4111-8111-111111110002']],
+                                                        'session_id': None}}],
+                                  'result': {'success': True,
+                                             'message': 'Synced 2 row(s) to Excel workbook',
+                                             'synced_count': 2,
+                                             'errors': []}},
+ 'credit_batch_empty_ws_append_all': {'calls': [{'method': 'enqueue_excel_append',
+                                                 'kwargs': {'entity_type': 'BillCreditBatch',
+                                                            'entity_public_id': '6085baa5-a8c9-592e-9a7f-c6289f0eb5cf',
+                                                            'drive_id': 'drv',
+                                                            'item_id': 'itm',
+                                                            'worksheet_name': 'DETAILS',
+                                                            'values': [['',
+                                                                        '10',
+                                                                        '10.01',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '2026-10-02',
+                                                                        'Acme',
+                                                                        'C-50',
+                                                                        'credit line 1',
+                                                                        'Credit',
+                                                                        25.75,
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        'cli-0001-aaaa-4111-8111-111111110001'],
+                                                                       ['',
+                                                                        '99',
+                                                                        '99.99',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '2026-10-02',
+                                                                        'Acme',
+                                                                        'C-50',
+                                                                        'credit line 2',
+                                                                        'Credit',
+                                                                        25.75,
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        '',
+                                                                        'cli-0002-aaaa-4111-8111-111111110002']],
+                                                            'session_id': None}}],
+                                      'result': {'success': True,
+                                                 'message': 'Synced 2 row(s) to Excel workbook',
+                                                 'synced_count': 2,
+                                                 'errors': []}},
+ 'bill_batch_append_refused': {'calls': [{'method': 'enqueue_excel_insert',
+                                          'kwargs': {'entity_type': 'BillBatch',
+                                                     'entity_public_id': '6085baa5-a8c9-592e-9a7f-c6289f0eb5cf',
+                                                     'drive_id': 'drv',
+                                                     'item_id': 'itm',
+                                                     'worksheet_name': 'DETAILS',
+                                                     'row_index': 4,
+                                                     'values': [['',
+                                                                 '10',
+                                                                 '10.01',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '2026-10-01',
+                                                                 'Acme',
+                                                                 'B-100',
+                                                                 'line 1',
+                                                                 'Bill',
+                                                                 10.5,
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 'li-0001-aaaa-4111-8111-111111110001']],
+                                                     'session_id': None}},
+                                         {'method': 'enqueue_excel_append',
+                                          'kwargs': {'entity_type': 'BillBatch',
+                                                     'entity_public_id': '6085baa5-a8c9-592e-9a7f-c6289f0eb5cf',
+                                                     'drive_id': 'drv',
+                                                     'item_id': 'itm',
+                                                     'worksheet_name': 'DETAILS',
+                                                     'values': [['',
+                                                                 '99',
+                                                                 '99.99',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '2026-10-01',
+                                                                 'Acme',
+                                                                 'B-100',
+                                                                 'line 2',
+                                                                 'Bill',
+                                                                 10.5,
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 '',
+                                                                 'li-0002-aaaa-4111-8111-111111110002']],
+                                                     'session_id': None}}],
+                               'result': {'success': True,
+                                          'message': 'Synced 1 row(s) to Excel workbook',
+                                          'synced_count': 1,
+                                          'errors': [{'error': 'Excel append enqueue refused (ALLOW_MS_WRITES=false or '
+                                                               'enqueue failure)'}]}},
+ 'credit_batch_append_refused': {'calls': [{'method': 'enqueue_excel_insert',
+                                            'kwargs': {'entity_type': 'BillCreditBatch',
+                                                       'entity_public_id': '6085baa5-a8c9-592e-9a7f-c6289f0eb5cf',
+                                                       'drive_id': 'drv',
+                                                       'item_id': 'itm',
+                                                       'worksheet_name': 'DETAILS',
+                                                       'row_index': 4,
+                                                       'values': [['',
+                                                                   '10',
+                                                                   '10.01',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '2026-10-02',
+                                                                   'Acme',
+                                                                   'C-50',
+                                                                   'credit line 1',
+                                                                   'Credit',
+                                                                   25.75,
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   'cli-0001-aaaa-4111-8111-111111110001']],
+                                                       'session_id': None}},
+                                           {'method': 'enqueue_excel_append',
+                                            'kwargs': {'entity_type': 'BillCreditBatch',
+                                                       'entity_public_id': '6085baa5-a8c9-592e-9a7f-c6289f0eb5cf',
+                                                       'drive_id': 'drv',
+                                                       'item_id': 'itm',
+                                                       'worksheet_name': 'DETAILS',
+                                                       'values': [['',
+                                                                   '99',
+                                                                   '99.99',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '2026-10-02',
+                                                                   'Acme',
+                                                                   'C-50',
+                                                                   'credit line 2',
+                                                                   'Credit',
+                                                                   25.75,
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   '',
+                                                                   'cli-0002-aaaa-4111-8111-111111110002']],
+                                                       'session_id': None}}],
+                                 'result': {'success': True,
+                                            'message': 'Synced 1 row(s) to Excel workbook',
+                                            'synced_count': 1,
+                                            'errors': [{'error': 'Excel append enqueue refused (ALLOW_MS_WRITES=false '
+                                                                 'or enqueue failure)'}]}},
+ 'exp_batch_insert_refused': {'calls': [{'method': 'enqueue_excel_insert',
+                                         'kwargs': {'entity_type': 'ExpenseBatch',
+                                                    'entity_public_id': '6085baa5-a8c9-592e-9a7f-c6289f0eb5cf',
+                                                    'drive_id': 'drv',
+                                                    'item_id': 'itm',
+                                                    'worksheet_name': 'DETAILS',
+                                                    'row_index': 4,
+                                                    'values': [['',
+                                                                '10',
+                                                                '10.01',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '2026-10-03',
+                                                                'Ramp Vendor',
+                                                                'REF-9',
+                                                                'exp line 1',
+                                                                'Expense',
+                                                                40.0,
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                'eli-0001-aaaa-4111-8111-111111110001']],
+                                                    'session_id': None}},
+                                        {'method': 'enqueue_excel_append',
+                                         'kwargs': {'entity_type': 'ExpenseBatch',
+                                                    'entity_public_id': '6085baa5-a8c9-592e-9a7f-c6289f0eb5cf',
+                                                    'drive_id': 'drv',
+                                                    'item_id': 'itm',
+                                                    'worksheet_name': 'DETAILS',
+                                                    'values': [['',
+                                                                '99',
+                                                                '99.99',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '2026-10-03',
+                                                                'Ramp Vendor',
+                                                                'REF-9',
+                                                                'exp line 2',
+                                                                'Expense',
+                                                                40.0,
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                'eli-0002-aaaa-4111-8111-111111110002']],
+                                                    'session_id': None}}],
+                              'result': {'success': True,
+                                         'message': 'Synced 1 row(s) to Excel workbook',
+                                         'synced_count': 1,
+                                         'deferred_holding_count': 0,
+                                         'errors': [{'sub_cost_code': '10.01',
+                                                     'error': 'Excel insert enqueue refused (ALLOW_MS_WRITES=false or '
+                                                              'enqueue failure)'}]}},
+ 'exp_batch_append_refused': {'calls': [{'method': 'enqueue_excel_append',
+                                         'kwargs': {'entity_type': 'ExpenseBatch',
+                                                    'entity_public_id': '6085baa5-a8c9-592e-9a7f-c6289f0eb5cf',
+                                                    'drive_id': 'drv',
+                                                    'item_id': 'itm',
+                                                    'worksheet_name': 'DETAILS',
+                                                    'values': [['',
+                                                                '99',
+                                                                '99.99',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '2026-10-03',
+                                                                'Ramp Vendor',
+                                                                'REF-9',
+                                                                'exp line 1',
+                                                                'Expense',
+                                                                40.0,
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                '',
+                                                                'eli-0001-aaaa-4111-8111-111111110001']],
+                                                    'session_id': None}}],
+                              'result': {'success': False,
+                                         'message': 'Synced 0 row(s) to Excel workbook',
+                                         'synced_count': 0,
+                                         'deferred_holding_count': 0,
+                                         'errors': [{'error': 'Excel append enqueue refused (ALLOW_MS_WRITES=false or '
+                                                              'enqueue failure)'}]}},
+ 'exp_batch_col_z_dedup': {'calls': [{'method': 'enqueue_excel_insert',
+                                      'kwargs': {'entity_type': 'ExpenseBatch',
+                                                 'entity_public_id': '6085baa5-a8c9-592e-9a7f-c6289f0eb5cf',
+                                                 'drive_id': 'drv',
+                                                 'item_id': 'itm',
+                                                 'worksheet_name': 'DETAILS',
+                                                 'row_index': 6,
+                                                 'values': [['',
+                                                             '20',
+                                                             '20.01',
+                                                             '',
+                                                             '',
+                                                             '',
+                                                             '',
+                                                             '',
+                                                             '2026-10-03',
+                                                             'Ramp Vendor',
+                                                             'REF-9',
+                                                             'exp line 2',
+                                                             'Expense',
+                                                             40.0,
+                                                             '',
+                                                             '',
+                                                             '',
+                                                             '',
+                                                             '',
+                                                             '',
+                                                             '',
+                                                             '',
+                                                             '',
+                                                             '',
+                                                             '',
+                                                             'eli-0002-aaaa-4111-8111-111111110002']],
+                                                 'session_id': None}}],
+                           'result': {'success': True,
+                                      'message': 'Synced 1 row(s) to Excel workbook',
+                                      'synced_count': 1,
+                                      'deferred_holding_count': 0,
+                                      'errors': []}}}
+
+CLOSE_EXPECT = {'bill_batch_close_on_raise': 1, 'bill_batch_close_success': 1}
+
+def _run_bill_single_second_insert_raises():
+    sheet = _std_sheet()
+    ms = MagicMock()
+    ms.enqueue_excel_insert.side_effect = [
+        SimpleNamespace(public_id="ob-1"),
+        RuntimeError("boom"),
+    ]
+    ms.enqueue_excel_append.return_value = SimpleNamespace(public_id="ob-app")
+    ms, patches = _workbook_patches(bill_mod, sheet, ms_outbox=ms)
+    svc = _bill_service(bill_mod)
+    with patches[0], patches[1], patch.object(bill_mod, "close_workbook_session") as close_mock, patches[3], patches[4]:
+        result = svc.sync_to_excel_workbook(_bill_header(), [_bill_line(1, 1), _bill_line(2, 2)], PROJECT_ID)
+    _assert_golden(ms, result, GOLDEN["bill_single_second_insert_raises"]["calls"], GOLDEN["bill_single_second_insert_raises"]["result"])
+    assert close_mock.call_count == GOLDEN["bill_single_second_insert_raises"]["close"]
+
+
+def test_bill_single_second_insert_raises():
+    _run_bill_single_second_insert_raises()
+
+
+def test_bill_batch_second_insert_raises():
+    sheet = _std_sheet()
+    ms = MagicMock()
+    ms.enqueue_excel_insert.side_effect = [
+        SimpleNamespace(public_id="ob-1"),
+        RuntimeError("boom"),
+    ]
+    ms.enqueue_excel_append.return_value = SimpleNamespace(public_id="ob-app")
+    ms, patches = _workbook_patches(bill_mod, sheet, ms_outbox=ms)
+    svc = _bill_service(bill_mod)
+    with patches[0], patches[1], patch.object(bill_mod, "close_workbook_session") as close_mock, patches[3], patches[4]:
+        result = svc.sync_bills_batch_to_excel([(_bill_header(), [_bill_line(1, 1), _bill_line(2, 2)])], PROJECT_ID)
+    _assert_golden(ms, result, GOLDEN["bill_batch_second_insert_raises"]["calls"], GOLDEN["bill_batch_second_insert_raises"]["result"])
+    assert close_mock.call_count == GOLDEN["bill_batch_second_insert_raises"]["close"]
+
+
+def test_bill_single_append_raises_after_inserts():
+    sheet = _std_sheet()
+    ms = MagicMock()
+    ms.enqueue_excel_insert.return_value = SimpleNamespace(public_id="ob-ins")
+    ms.enqueue_excel_append.side_effect = RuntimeError("append-boom")
+    ms, patches = _workbook_patches(bill_mod, sheet, ms_outbox=ms)
+    svc = _bill_service(bill_mod)
+    with patches[0], patches[1], patch.object(bill_mod, "close_workbook_session") as close_mock, patches[3], patches[4]:
+        result = svc.sync_to_excel_workbook(_bill_header(), [_bill_line(1, 1), _bill_line(2, 3)], PROJECT_ID)
+    _assert_golden(ms, result, GOLDEN["bill_single_append_raises"]["calls"], GOLDEN["bill_single_append_raises"]["result"])
+    assert close_mock.call_count == GOLDEN["bill_single_append_raises"]["close"]
+
+
+def test_bill_batch_non200_append_all():
+    sheet = _std_sheet()
+    ms, patches = _workbook_patches(bill_mod, sheet)
+    svc = _bill_service(bill_mod)
+    with patches[0], patches[1], patches[2], patch.object(
+        bill_mod, "get_excel_used_range_values", return_value={"status_code": 503, "message": "fail"}
+    ), patches[4]:
+        result = svc.sync_bills_batch_to_excel([(_bill_header(), [_bill_line(1, 1), _bill_line(2, 3)])], PROJECT_ID)
+    _assert_golden(ms, result, GOLDEN["bill_batch_non200_append_all"]["calls"], GOLDEN["bill_batch_non200_append_all"]["result"])
+
+
+def test_credit_batch_empty_ws_append_all():
+    ms, patches = _workbook_patches(credit_mod, [])
+    svc = _credit_service(credit_mod)
+    with patches[0], patches[1], patches[2], patch.object(
+        credit_mod, "get_excel_used_range_values", return_value={"status_code": 200, "range": {"values": []}}
+    ), patches[4]:
+        result = svc.sync_bill_credits_batch_to_excel([(_credit_header(), [_credit_line(1, 1), _credit_line(2, 3)])], PROJECT_ID)
+    _assert_golden(ms, result, GOLDEN["credit_batch_empty_ws_append_all"]["calls"], GOLDEN["credit_batch_empty_ws_append_all"]["result"])
+
+
+def test_bill_batch_append_refused():
+    sheet = _std_sheet()
+    ms = MagicMock()
+    ms.enqueue_excel_insert.return_value = SimpleNamespace(public_id="ob-ins")
+    ms.enqueue_excel_append.return_value = None
+    ms, patches = _workbook_patches(bill_mod, sheet, ms_outbox=ms)
+    svc = _bill_service(bill_mod)
+    with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        result = svc.sync_bills_batch_to_excel([(_bill_header(), [_bill_line(1, 1), _bill_line(2, 3)])], PROJECT_ID)
+    _assert_golden(ms, result, GOLDEN["bill_batch_append_refused"]["calls"], GOLDEN["bill_batch_append_refused"]["result"])
+
+
+def test_credit_batch_append_refused():
+    sheet = _std_sheet()
+    ms = MagicMock()
+    ms.enqueue_excel_insert.return_value = SimpleNamespace(public_id="ob-ins")
+    ms.enqueue_excel_append.return_value = None
+    ms, patches = _workbook_patches(credit_mod, sheet, ms_outbox=ms)
+    svc = _credit_service(credit_mod)
+    with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        result = svc.sync_bill_credits_batch_to_excel([(_credit_header(), [_credit_line(1, 1), _credit_line(2, 3)])], PROJECT_ID)
+    _assert_golden(ms, result, GOLDEN["credit_batch_append_refused"]["calls"], GOLDEN["credit_batch_append_refused"]["result"])
+
+
+def test_exp_batch_insert_refused():
+    sheet = _std_sheet()
+    ms = MagicMock()
+    ms.enqueue_excel_insert.return_value = None
+    ms.enqueue_excel_append.return_value = SimpleNamespace(public_id="ob-app")
+    ms, patches = _workbook_patches(exp_mod, sheet, ms_outbox=ms)
+    svc = _expense_service(exp_mod)
+    with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        result = svc.sync_expenses_batch_to_excel([(_expense_header(), [_expense_line(1, 1), _expense_line(2, 3)])], PROJECT_ID)
+    _assert_golden(ms, result, GOLDEN["exp_batch_insert_refused"]["calls"], GOLDEN["exp_batch_insert_refused"]["result"])
+
+
+def test_exp_batch_append_refused():
+    sheet = _std_sheet()
+    ms = MagicMock()
+    ms.enqueue_excel_insert.return_value = SimpleNamespace(public_id="ob-ins")
+    ms.enqueue_excel_append.return_value = None
+    ms, patches = _workbook_patches(exp_mod, sheet, ms_outbox=ms)
+    svc = _expense_service(exp_mod)
+    with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        result = svc.sync_expenses_batch_to_excel([(_expense_header(), [_expense_line(1, 3)])], PROJECT_ID)
+    _assert_golden(ms, result, GOLDEN["exp_batch_append_refused"]["calls"], GOLDEN["exp_batch_append_refused"]["result"])
+
+
+def test_exp_batch_col_z_dedup():
+    sheet = [list(r) for r in _std_sheet()]
+    sheet.append(_data_row("10.01", "existing", type_col="Expense", z="eli-0001-aaaa-4111-8111-111111110001"))
+    ms, patches = _workbook_patches(exp_mod, sheet)
+    svc = _expense_service(exp_mod)
+    with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        result = svc.sync_expenses_batch_to_excel([(_expense_header(), [_expense_line(1, 1), _expense_line(2, 2)])], PROJECT_ID)
+    _assert_golden(ms, result, GOLDEN["exp_batch_col_z_dedup"]["calls"], GOLDEN["exp_batch_col_z_dedup"]["result"])
+
+
+def test_bill_batch_close_workbook_session_once_on_success():
+    sheet = _std_sheet()
+    ms, patches = _workbook_patches(bill_mod, sheet)
+    svc = _bill_service(bill_mod)
+    with patches[0], patches[1], patch.object(bill_mod, "close_workbook_session") as close_mock, patches[3], patches[4]:
+        svc.sync_bills_batch_to_excel([(_bill_header(), [_bill_line(1, 1)])], PROJECT_ID)
+    assert close_mock.call_count == CLOSE_EXPECT["bill_batch_close_success"]
+
+
+def test_bill_batch_close_workbook_session_once_on_raise():
+    sheet = _std_sheet()
+    ms = MagicMock()
+    ms.enqueue_excel_insert.side_effect = RuntimeError("boom")
+    ms, patches = _workbook_patches(bill_mod, sheet, ms_outbox=ms)
+    svc = _bill_service(bill_mod)
+    with patches[0], patches[1], patch.object(bill_mod, "close_workbook_session") as close_mock, patches[3], patches[4]:
+        svc.sync_bills_batch_to_excel([(_bill_header(), [_bill_line(1, 1)])], PROJECT_ID)
+    assert close_mock.call_count == CLOSE_EXPECT["bill_batch_close_on_raise"]

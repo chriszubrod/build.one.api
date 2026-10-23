@@ -19,6 +19,60 @@ class SectionGroup:
 class SectionEnqueueResult:
     synced_count: int
     errors: list
+    held_count: int = 0
+
+
+def sub_cost_code_number_matches_holding(
+    candidate: Any,
+    holding_sub_cost_codes: frozenset[str],
+) -> bool:
+    """True when candidate matches any holding SCC number (exact string or float equivalence)."""
+    if not holding_sub_cost_codes:
+        return False
+    if candidate is None:
+        return False
+    col_c_str = str(candidate).strip()
+    if not col_c_str:
+        return False
+    for target in holding_sub_cost_codes:
+        target_str = str(target).strip()
+        if col_c_str == target_str:
+            return True
+        try:
+            if float(col_c_str) == float(target_str):
+                return True
+        except (ValueError, TypeError):
+            pass
+    return False
+
+
+# The suspense SCC (U-632). Held on every path regardless of the holding flag.
+ALWAYS_HELD_SUB_COST_CODES: frozenset[str] = frozenset({"00.02"})
+
+
+def _row_is_holding_line(row: list, holding_sub_cost_codes: frozenset[str]) -> bool:
+    col_c = row[2] if len(row) > 2 else None
+    return sub_cost_code_number_matches_holding(col_c, holding_sub_cost_codes)
+
+
+def _filter_holding_rows_from_groups(
+    groups: list[SectionGroup],
+    holding_sub_cost_codes: frozenset[str],
+) -> tuple[list[SectionGroup], int]:
+    if not holding_sub_cost_codes:
+        return groups, 0
+    held_count = 0
+    filtered: list[SectionGroup] = []
+    for group in groups:
+        kept: list[list] = []
+        for row in group.rows:
+            if _row_is_holding_line(row, holding_sub_cost_codes):
+                held_count += 1
+            else:
+                kept.append(row)
+        if kept:
+            filtered.append(SectionGroup(sub_cost_code=group.sub_cost_code, rows=kept))
+    return filtered, held_count
 
 
 def find_insertion_row_for_subcostcode(worksheet_values: List[List[Any]], target_subcostcode: str) -> Optional[int]:
@@ -199,6 +253,7 @@ def enqueue_section_inserts(
     *,
     worksheet_values: List[List[Any]],
     groups: list[SectionGroup],
+    holding_sub_cost_codes: frozenset[str],
     entity_type: str,
     entity_public_id: str,
     drive_id: str,
@@ -207,6 +262,31 @@ def enqueue_section_inserts(
     batch: bool,
     log_no_match: bool = False,
 ) -> SectionEnqueueResult:
+    """Enqueue DETAILS worksheet section inserts/appends (SharePoint Excel outbox).
+
+    Holding-code rule (Chris, 2026-10-23): never sync a line whose SubCostCode is a
+    suspense/holding code (e.g. 00.02 — uncorrected / unapproved coding). Rows whose
+    column C matches a holding number are dropped here; this is the single enforcement
+    point for SharePoint DETAILS insert/append paths (Bill, BillCredit, Expense).
+    """
+    # Accept any iterable of numbers (a non-iterable raises - fail loudly, never
+    # silently disable the rule). 00.02 is ALWAYS held: Chris named it, so the rule
+    # must not depend on how the holding flag happens to be configured.
+    if isinstance(holding_sub_cost_codes, (str, bytes)):
+        raise TypeError("holding_sub_cost_codes must be a collection of numbers, not a string")
+    holding_sub_cost_codes = frozenset(
+        str(n).strip() for n in holding_sub_cost_codes if str(n).strip()
+    ) | ALWAYS_HELD_SUB_COST_CODES
+
+    groups, held_count = _filter_holding_rows_from_groups(groups, holding_sub_cost_codes)
+    if held_count > 0:
+        logger.warning(
+            "ms.excel.holding_rows_held entity_type=%s entity_public_id=%s held=%d",
+            entity_type,
+            entity_public_id,
+            held_count,
+        )
+
     insert_groups, rows_to_append = plan_section_inserts(
         worksheet_values, groups, log_no_match=log_no_match
     )
@@ -279,4 +359,6 @@ def enqueue_section_inserts(
                 "error": "Excel append enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
             })
 
-    return SectionEnqueueResult(synced_count=synced_count, errors=errors)
+    return SectionEnqueueResult(
+        synced_count=synced_count, errors=errors, held_count=held_count
+    )

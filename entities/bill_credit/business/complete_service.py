@@ -32,7 +32,9 @@ from integrations.ms.sharepoint.external.client import (
     close_workbook_session,
 )
 from integrations.ms.sharepoint.excel.workbook_sections import (
+    ALWAYS_HELD_SUB_COST_CODES,
     find_insertion_row_for_subcostcode,
+    sub_cost_code_number_matches_holding,
 )
 from shared.api.money import to_decimal_or_none
 
@@ -808,6 +810,21 @@ class BillCreditCompleteService:
                         else:
                             cost_code_number = sub_cost_code_number
 
+                # U-721 holding rule (Chris, 2026-10-23): never sync a line on a
+                # holding / suspense SubCostCode (00.02). This inline writer bypasses
+                # workbook_sections.enqueue_section_inserts, so it checks here.
+                if self.sub_cost_code_service.is_holding_code(
+                    sub_cost_code_id
+                ) or sub_cost_code_number_matches_holding(
+                    sub_cost_code_number, ALWAYS_HELD_SUB_COST_CODES
+                ):
+                    logger.warning(
+                        "ms.excel.holding_rows_held entity_type=BillCredit entity_public_id=%s held=%d",
+                        bill_credit.public_id,
+                        len(subcostcode_line_items),
+                    )
+                    continue
+
                 # Build rows for this SubCostCode group
                 # Row structure: A(empty), B(CostCode), C(SubCostCode), D-H(empty), I(Date), J(Vendor), K(CreditNum), L(Desc), M("Credit"), N(Amount)
                 group_rows = []
@@ -1092,6 +1109,7 @@ class BillCreditCompleteService:
             enqueue_res = enqueue_section_inserts(
                 worksheet_values=worksheet_values,
                 groups=section_groups,
+                holding_sub_cost_codes=self.sub_cost_code_service.holding_sub_cost_code_numbers(),
                 entity_type="BillCreditBatch",
                 entity_public_id=batch_entity_public_id(project_id),
                 drive_id=drive.drive_id,

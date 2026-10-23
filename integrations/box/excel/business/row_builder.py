@@ -4,6 +4,10 @@ from decimal import Decimal
 from typing import Any, List, Optional
 
 # Local Imports
+from integrations.ms.sharepoint.excel.workbook_sections import (
+    ALWAYS_HELD_SUB_COST_CODES,
+    sub_cost_code_number_matches_holding,
+)
 from shared.api.money import details_ledger_amount
 
 # All entity/service imports are lazy (inside build_details_rows) so importing
@@ -116,6 +120,18 @@ def build_details_rows(
         scc_number_cache[sub_cost_code_id] = number
         return number
 
+    def _is_held(li) -> bool:
+        """U-721 holding rule (Chris, 2026-10-23): never sync a line on a holding /
+        suspense SubCostCode (00.02 = not yet approved and corrected). Same rule as the
+        SharePoint paths (integrations/ms/sharepoint/excel/workbook_sections.py):
+        flagged holding id, or a number equal to an always-held code."""
+        scc_id = getattr(li, "sub_cost_code_id", None)
+        if sub_cost_code_service.is_holding_code(scc_id):
+            return True
+        return sub_cost_code_number_matches_holding(
+            _scc_number(scc_id), ALWAYS_HELD_SUB_COST_CODES
+        )
+
     if et == "bill":
         from entities.bill.business.service import BillService
         from entities.bill_line_item.business.service import BillLineItemService
@@ -135,6 +151,8 @@ def build_details_rows(
 
         rows: List[List[Any]] = []
         for li in line_items:
+            if _is_held(li):
+                continue
             scc_number = _scc_number(li.sub_cost_code_id)
             row = _empty_row()
             row[1] = _cost_code_from_subcostcode(scc_number)            # B
@@ -173,9 +191,7 @@ def build_details_rows(
 
         rows = []
         for li in line_items:
-            if sub_cost_code_service.is_holding_code(
-                getattr(li, "sub_cost_code_id", None)
-            ):
+            if _is_held(li):
                 continue
             scc_number = _scc_number(li.sub_cost_code_id)
             row = _empty_row()
@@ -213,6 +229,8 @@ def build_details_rows(
 
     rows = []
     for li in line_items:
+        if _is_held(li):
+            continue
         scc_number = _scc_number(li.sub_cost_code_id)
         row = _empty_row()
         row[1] = _cost_code_from_subcostcode(scc_number)               # B

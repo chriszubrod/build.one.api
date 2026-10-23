@@ -14,6 +14,9 @@ from fastapi.responses import Response, StreamingResponse
 # Local Imports
 from entities.attachment.api.schemas import AttachmentUpdate
 from entities.attachment.business.service import AttachmentService
+from entities.attachment.business.text_fingerprint_service import (
+    persist_text_fingerprint_failure_isolated,
+)
 from shared.api.responses import list_response, item_response, raise_not_found, raise_workflow_error
 from shared.lifecycle.terminal_lock import StatusLockedError
 from shared.rbac import require_module_api
@@ -323,7 +326,7 @@ async def upload_attachment_router(
             )
 
             # Create attachment record
-            return service.create(
+            attachment = service.create(
                 filename=file.filename,
                 original_filename=file.filename,
                 file_extension=file_extension,
@@ -339,6 +342,13 @@ async def upload_attachment_router(
                 expiration_date=expiration_date,
                 storage_tier="Hot",
             )
+            if content_type == "application/pdf" and attachment and attachment.id:
+                persist_text_fingerprint_failure_isolated(
+                    attachment_id=attachment.id,
+                    pdf_bytes=file_content,
+                    content_type=content_type,
+                )
+            return attachment
 
         attachment = await asyncio.to_thread(_upload_blocking)
 
@@ -408,7 +418,7 @@ async def upload_bill_line_item_attachment_router(
             logger.info(f"Uploaded bill line item attachment to Azure Blob: {blob_url}")
 
             # Create attachment record in database
-            return service.create(
+            attachment = service.create(
                 filename=file.filename,
                 original_filename=file.filename,
                 file_extension=file_extension,
@@ -424,6 +434,13 @@ async def upload_bill_line_item_attachment_router(
                 expiration_date=None,
                 storage_tier="Hot",
             )
+            if content_type == "application/pdf" and attachment and attachment.id:
+                persist_text_fingerprint_failure_isolated(
+                    attachment_id=attachment.id,
+                    pdf_bytes=file_content,
+                    content_type=content_type,
+                )
+            return attachment
 
         attachment = await asyncio.to_thread(_upload_blocking)
 

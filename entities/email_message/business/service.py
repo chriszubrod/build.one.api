@@ -1467,21 +1467,7 @@ class EmailAttachmentBridgeService:
         content, metadata = self.storage.download_file(ea.blob_uri)
         file_hash = attachment_service.calculate_hash(content)
 
-        existing = attachment_service.read_by_hash(file_hash)
-        if existing:
-            logger.info(
-                f"Bridge: attachment with hash {file_hash[:16]}... already exists "
-                f"({existing.public_id}); reusing"
-            )
-            return existing
-
-        # Resolve content type + extension. Mail systems frequently send
-        # PDFs (and images) as the generic "application/octet-stream" MIME
-        # when they don't sniff the type — Walker Lumber's mailer is one
-        # such culprit ("IN125AAC.pdf" with content_type=octet-stream).
-        # Fall back to the file extension as the source of truth so
-        # downstream validators (e.g. create_bill's PDF-only check) get
-        # a usable type.
+        # Resolve content type + extension before dedup (fingerprint hook is PDF-only).
         raw_content_type = (
             metadata.get("content_type")
             or ea.content_type
@@ -1489,6 +1475,24 @@ class EmailAttachmentBridgeService:
         )
         file_extension = attachment_service.extract_extension(ea.filename or "")
         content_type = _normalize_content_type(raw_content_type, file_extension)
+
+        existing = attachment_service.read_by_hash(file_hash)
+        if existing:
+            logger.info(
+                f"Bridge: attachment with hash {file_hash[:16]}... already exists "
+                f"({existing.public_id}); reusing"
+            )
+            if content_type == "application/pdf" and existing.id:
+                from entities.attachment.business.text_fingerprint_service import (
+                    persist_text_fingerprint_failure_isolated,
+                )
+
+                persist_text_fingerprint_failure_isolated(
+                    attachment_id=existing.id,
+                    pdf_bytes=content,
+                    content_type=content_type,
+                )
+            return existing
 
         attachment = attachment_service.create(
             filename=ea.filename,
@@ -1505,6 +1509,16 @@ class EmailAttachmentBridgeService:
         logger.info(
             f"Bridge: created Attachment {attachment.public_id} from EmailAttachment {ea.public_id}"
         )
+        if content_type == "application/pdf" and attachment.id:
+            from entities.attachment.business.text_fingerprint_service import (
+                persist_text_fingerprint_failure_isolated,
+            )
+
+            persist_text_fingerprint_failure_isolated(
+                attachment_id=attachment.id,
+                pdf_bytes=content,
+                content_type=content_type,
+            )
         return attachment
 
 

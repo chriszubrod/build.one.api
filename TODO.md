@@ -6615,3 +6615,41 @@ above in § U-503d/e residuals). Two items the reviews surfaced and this unit de
   positions — invisible to every total — hand-repaired 2026-10-10. Fix both: make the guard positive-match the MODERN layout
   (B Cost Code, C Sub Cost Code, H draw, N amount, Z key) and refuse anything else, and call it on the Graph insert/append path.
   Same class as the FP 2022-original finding above.
+
+## U-718 — QBO staging drift: deferred items (booked 2026-10-22)
+
+Shipped in U-718: hourly billable-status refresh (+ dbo IsBilled 0→1 heal), CDC-hourly / full-weekly
+staging-delete reconcile (dbo flag-only), U-335 drift auto-resolve. Runbook:
+`docs/runbooks/qbo-staging-freshness.md`. Root causes, measured live 2026-10-22: QBO surfaces an invoice's
+BillableStatus flip through NEITHER the `MetaData.LastUpdatedTime` query NOR CDC (displayed LastUpdatedTime
+moves, SyncToken does not); delete-reconcile only ran on full pulls, which never run in prod.
+
+- [ ] 🟡 **Reverse billable flips are still invisible.** A line that goes `HasBeenBilled` → `Billable` (QBO
+  invoice deleted, or a line removed from it) is never re-fetched: the refresh only sweeps documents whose
+  staged lines say `Billable`. Proposed detector: per customer, Σ staged `Billable` line amounts vs Σ live
+  un-invoiced ReimburseCharge line amounts (RC flips ARE visible to the RC pull); on a mismatch, re-fetch that
+  customer's recent `HasBeenBilled` documents by id.
+- [ ] 🟡 **`ExpenseLineItem` update round-trip truncates `BillableDecidedAt` to whole seconds** (pre-existing,
+  NOT introduced by U-718). `ReadExpenseLineItem*` returns `CONVERT(VARCHAR(19), [BillableDecidedAt], 120)`
+  (`entities/expense_line_item/sql/dbo.expense_line_item.sql` ~321); `ExpenseLineItemRepository.update_by_id`
+  forwards it (`persistence/repo.py` ~267) and `UpdateExpenseLineItemById` writes it back (~462). Every
+  `ExpenseLineItemService.update_by_public_id` caller loses the milliseconds — invoice completion's
+  `_mark_source_as_billed`, and now the U-718 heal. Fix at the source (full-precision read, or only pass the
+  stamp when it actually changes).
+- [ ] 🟢 **Confirm loop does not abort on repeated transport/5xx errors** (Pass 3 L3). `confirm_deleted_ids`
+  (`integrations/intuit/qbo/base/delete_reconcile.py`) treats only auth/budget/rate-limit as systemic; a QBO
+  outage with many candidates walks every one with retries. Add a consecutive-non-404-failure abort. Shared
+  with the existing pull delete-reconcilers, so it is its own change.
+- [ ] 🟢 **VendorCredit lines are refreshed in staging but not healed in dbo** (`BillCreditLineItem.IsBilled`).
+  Out of U-718 scope by design; 17 lines today.
+- [ ] 🟢 **Pass 2 items not applied** (behaviour-adjacent or low value): `run_full` computes `absent` a second
+  time and fetches live ids even when local ids are empty; `_ensure_invoice_issue` re-reads unresolved
+  `qbo_deleted` keys per invoice; `StagedBillableQboLine` lives in a feature package and three repos map rows
+  with different Decimal helpers (move to `base/` + `to_decimal_or_none`).
+- ℹ️ **Accepted by design (Pass 3 L1):** `max_candidates` on `POST /admin/reconcile/qbo/staging-deletes?mode=full`
+  can raise the delete ceiling above `QBO_PULL_DELETE_MAX_CANDIDATES` (1..1000) for a drain-secret caller. It
+  exists for the one-time backlog run; every delete still needs an individual GET 404/610.
+- ℹ️ **Decisions for the operator (not code):** the 4 dbo invoices whose QBO invoices are deleted
+  (TB3-DRAFT-17, OL-DRAFT-10, HP-DRAFT-23, HP2-DRAFT-07, $943,747.24 showing as open A/R) get `qbo_deleted`
+  issues on the first full run; the 48 dbo Bills and 38 dbo Expenses whose QBO records are gone are already
+  carried by `qbo_voided` issues. Nothing deletes dbo rows automatically.

@@ -1,4 +1,5 @@
 """Pure-logic tests for U-718 QBO billable-status refresh sweep (staging CAS + dbo heal)."""
+import asyncio
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -429,7 +430,8 @@ def test_cas_skipped_no_dbo_heal():
     )
     result = svc.run("realm-1", dry_run=False)
     assert result["bill"]["cas_skipped"] == 1
-    assert bli_svc.update_calls == []
+    assert len(bli_svc.update_calls) == 1
+    assert bli_svc.update_calls[0]["is_billed"] is True
 
 
 def test_systemic_error_on_second_batch_aborts_run():
@@ -522,3 +524,406 @@ def test_query_bills_by_ids_batches_and_strict(monkeypatch):
     assert "'123'" in http_skip.queries[0]
     assert "'456'" in http_skip.queries[0]
     assert "abc" not in http_skip.queries[0]
+
+
+def test_heal_raises_run1_no_cas_run2_retries_heal_and_cas():
+    staged = [_StagedLine(id=11, qbo_line_id="80", header_qbo_id="800")]
+    live = _live_bill("800", [_bill_line("80", "HasBeenBilled")])
+    bill = SimpleNamespace(id=11, public_id="bill-pub", qbo_id="800")
+    bli = SimpleNamespace(
+        public_id="bli-pub",
+        row_version="rv1",
+        bill_id=11,
+        qbo_line_id="80",
+        is_billed=False,
+    )
+    svc, repo, _, bli_svc = _service_for_bill_only(
+        staged=staged,
+        live_by_header={"800": live},
+        bill=bill,
+        bill_line_item=bli,
+    )
+    heal_attempts = {"n": 0}
+    real_heal = svc._try_dbo_heal_bill
+
+    def heal_raises_then_ok(**kw):
+        heal_attempts["n"] += 1
+        if heal_attempts["n"] == 1:
+            raise RuntimeError("heal failed")
+        return real_heal(**kw)
+
+    svc._try_dbo_heal_bill = heal_raises_then_ok
+
+    result1 = svc.run("realm-1", dry_run=False)
+    assert result1["bill"]["dbo_heal_errors"] == 1
+    assert repo.cas_calls == []
+    assert bli_svc.update_calls == []
+
+    result2 = svc.run("realm-1", dry_run=False)
+    assert result2["bill"]["dbo_heal_errors"] == 0
+    assert result2["bill"]["dbo_healed"] == 1
+    assert len(repo.cas_calls) == 1
+    assert repo.cas_calls[0]["new"] == "HasBeenBilled"
+    assert len(bli_svc.update_calls) == 1
+
+
+def test_heal_precedes_cas_call_order():
+    staged = [_StagedLine(id=12, qbo_line_id="81", header_qbo_id="801")]
+    live = _live_bill("801", [_bill_line("81", "HasBeenBilled")])
+    bill = SimpleNamespace(id=12, public_id="bill-pub", qbo_id="801")
+    bli = SimpleNamespace(
+        public_id="bli-pub",
+        row_version="rv1",
+        bill_id=12,
+        qbo_line_id="81",
+        is_billed=False,
+    )
+    svc, repo, _, _ = _service_for_bill_only(
+        staged=staged,
+        live_by_header={"801": live},
+        bill=bill,
+        bill_line_item=bli,
+    )
+    order: list[str] = []
+    real_heal = svc._try_dbo_heal_bill
+
+    def recording_heal(**kw):
+        order.append("heal")
+        return real_heal(**kw)
+
+    original_cas = repo.update_billable_status_by_id
+
+    def recording_cas(**kw):
+        order.append("cas")
+        return original_cas(**kw)
+
+    repo.update_billable_status_by_id = recording_cas
+    svc._try_dbo_heal_bill = recording_heal
+
+    svc.run("realm-1", dry_run=False)
+    assert order == ["heal", "cas"]
+
+
+class _FakeExpenseService:
+    def __init__(self, expense):
+        self._expense = expense
+
+    def read_by_qbo_identity(self, qbo_id, realm_id):
+        if self._expense and self._expense.qbo_id == qbo_id:
+            return self._expense
+        return None
+
+
+class _FakeExpenseLineItemService:
+    def __init__(self, line_item):
+        self._line = line_item
+        self.update_calls = []
+
+    def read_by_qbo_identity(self, expense_id, qbo_id):
+        if self._line and self._line.qbo_line_id == qbo_id:
+            return self._line
+        return None
+
+    def update_by_public_id(self, **kwargs):
+        self.update_calls.append(kwargs)
+
+
+def test_purchase_heal_updates_expense_line_item_is_billed():
+    from integrations.intuit.qbo.purchase.external.schemas import (
+        QboAccountBasedExpenseLineDetail,
+        QboPurchaseLine,
+    )
+
+    staged = [_StagedLine(id=20, qbo_line_id="p1", header_qbo_id="P100")]
+    detail = QboAccountBasedExpenseLineDetail(billable_status="HasBeenBilled")
+    pline = QboPurchaseLine(
+        id="p1",
+        detail_type="AccountBasedExpenseLineDetail",
+        account_based_expense_line_detail=detail,
+    )
+    live_purchase = SimpleNamespace(id="P100", line=[pline])
+
+    purchase_repo = _FakePurchaseLineRepo(staged)
+    bill_repo = _FakeBillLineRepo([])
+    vc_repo = _FakeVendorCreditLineRepo([])
+
+    class _PurchaseClient:
+        def query_purchases_by_ids(self, ids):
+            return [live_purchase] if "P100" in ids else []
+
+    expense = SimpleNamespace(id=50, public_id="exp-pub", qbo_id="P100")
+    eli = SimpleNamespace(
+        public_id="eli-pub",
+        row_version="rv2",
+        expense_id=50,
+        qbo_line_id="p1",
+        is_billed=False,
+    )
+    eli_svc = _FakeExpenseLineItemService(eli)
+
+    svc = QboBillableStatusRefreshService(
+        bill_line_repo=bill_repo,
+        purchase_line_repo=purchase_repo,
+        vendor_credit_line_repo=vc_repo,
+        bill_client=_EmptyEntityClient(),
+        purchase_client=_PurchaseClient(),
+        vendor_credit_client=_EmptyEntityClient(),
+        expense_service_factory=lambda: _FakeExpenseService(expense),
+        expense_line_item_service_factory=lambda: eli_svc,
+    )
+    result = svc.run("realm-1", dry_run=False)
+
+    assert eli_svc.update_calls == [
+        {
+            "public_id": "eli-pub",
+            "row_version": "rv2",
+            "expense_public_id": "exp-pub",
+            "is_billed": True,
+            "_via_internal_pipeline": True,
+        }
+    ]
+    assert result["purchase"]["dbo_healed"] == 1
+
+
+def test_systemic_abort_on_first_bill_batch_skips_later_entities():
+    staged_bills = [
+        _StagedLine(id=i, qbo_line_id=str(i), header_qbo_id=str(2000 + i))
+        for i in range(1, 102)
+    ]  # 101 headers → two bill batches; systemic on the first
+    purchase_staged = [_StagedLine(id=999, qbo_line_id="px", header_qbo_id="P999")]
+    live_map = {
+        str(2000 + i): _live_bill(str(2000 + i), [_bill_line(str(i), "Billable")])
+        for i in range(1, 102)
+    }  # matches 101 staged headers
+    bill_repo = _FakeBillLineRepo(staged_bills)
+    purchase_repo = _FakePurchaseLineRepo(purchase_staged)
+    vc_repo = _FakeVendorCreditLineRepo(
+        [_StagedLine(id=888, qbo_line_id="vx", header_qbo_id="V888")]
+    )
+    purchase_reads: list[str] = []
+
+    class _TrackingPurchaseRepo(_FakePurchaseLineRepo):
+        def read_by_billable_status_and_realm_id(self, realm_id, billable_status="Billable"):
+            purchase_reads.append("read")
+            return super().read_by_billable_status_and_realm_id(realm_id, billable_status)
+
+    purchase_repo = _TrackingPurchaseRepo(purchase_staged)
+
+    bill_client = _RecordingBillClient(
+        live_map,
+        batch_side_effect=[QboBudgetExceededError("budget")],
+    )
+
+    class _PurchaseClient:
+        query_calls = []
+
+        def query_purchases_by_ids(self, ids):
+            _PurchaseClient.query_calls.append(list(ids))
+            return []
+
+    class _VCClient:
+        query_calls = []
+
+        def query_vendor_credits_by_ids(self, ids):
+            _VCClient.query_calls.append(list(ids))
+            return []
+
+    svc = QboBillableStatusRefreshService(
+        bill_line_repo=bill_repo,
+        purchase_line_repo=purchase_repo,
+        vendor_credit_line_repo=vc_repo,
+        bill_client=bill_client,
+        purchase_client=_PurchaseClient(),
+        vendor_credit_client=_VCClient(),
+    )
+    result = svc.run("realm-1", dry_run=False)
+
+    assert len(bill_client.query_calls) == 1
+    assert result["aborted"] is not None
+    assert purchase_reads == []
+    assert _PurchaseClient.query_calls == []
+    assert _VCClient.query_calls == []
+    assert "purchase" not in result
+
+
+def test_batch_fetch_drives_cas_for_has_been_billed_line_ids():
+    staged = [
+        _StagedLine(id=41, qbo_line_id="L41", header_qbo_id="H41"),
+        _StagedLine(id=42, qbo_line_id="L42", header_qbo_id="H41"),
+        _StagedLine(id=43, qbo_line_id="L43", header_qbo_id="H42"),
+    ]
+    live_h41 = _live_bill(
+        "H41",
+        [
+            _bill_line("L41", "HasBeenBilled"),
+            _bill_line("L42", "Billable"),
+        ],
+    )
+    live_h42 = _live_bill("H42", [_bill_line("L43", "NotBillable")])
+    svc, repo, _, _ = _service_for_bill_only(
+        staged=staged,
+        live_by_header={"H41": live_h41, "H42": live_h42},
+        bill=SimpleNamespace(id=1, public_id="b", qbo_id="H41"),
+        bill_line_item=SimpleNamespace(
+            public_id="x",
+            row_version="rv",
+            bill_id=1,
+            qbo_line_id="L41",
+            is_billed=True,
+        ),
+    )
+    svc.run("realm-1", dry_run=False)
+    cas_ids = sorted(c["id"] for c in repo.cas_calls)
+    assert cas_ids == [41, 43]
+
+
+@pytest.mark.parametrize(
+    "live_status",
+    ["", "garbage", None],
+)
+def test_unknown_live_status_no_write_counted(live_status):
+    staged = [_StagedLine(id=51, qbo_line_id="U1", header_qbo_id="HU1")]
+    if live_status is None:
+        acct_detail = None
+    else:
+        acct_detail = SimpleNamespace(billable_status=live_status)
+    live_line = SimpleNamespace(
+        id="U1",
+        detail_type="AccountBasedExpenseLineDetail",
+        item_based_expense_line_detail=None,
+        account_based_expense_line_detail=acct_detail,
+    )
+    live = SimpleNamespace(id="HU1", line=[live_line])
+
+    svc, repo, _, _ = _service_for_bill_only(
+        staged=staged,
+        live_by_header={"HU1": live},
+    )
+    result = svc.run("realm-1", dry_run=False)
+    assert repo.cas_calls == []
+    assert result["bill"]["unexpected_live_status"] == 1
+
+
+def test_admin_billable_refresh_closes_clients_on_success(monkeypatch):
+    from shared.api import admin as admin_module
+
+    exits: list[str] = []
+
+    class _FakeClient:
+        def __init__(self, name, **kw):
+            self.name = name
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            exits.append(self.name)
+
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.bill.external.client.QboBillClient",
+        lambda **kw: _FakeClient("bill", **kw),
+    )
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.purchase.external.client.QboPurchaseClient",
+        lambda **kw: _FakeClient("purchase", **kw),
+    )
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.vendorcredit.external.client.QboVendorCreditClient",
+        lambda **kw: _FakeClient("vc", **kw),
+    )
+
+    class _Auth:
+        realm_id = "realm-x"
+
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.auth.business.service.QboAuthService",
+        lambda: SimpleNamespace(ensure_valid_token=lambda: _Auth()),
+    )
+    monkeypatch.setattr(admin_module, "qbo_sync_lock", lambda *a, **k: _NullLock())
+
+    run_calls = {"n": 0}
+
+    class _Svc:
+        def __init__(self, **kw):
+            pass
+
+        def run(self, realm_id, *, dry_run=False):
+            run_calls["n"] += 1
+            return {"ok": True}
+
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.billable_refresh.business.service.QboBillableStatusRefreshService",
+        _Svc,
+    )
+
+    from shared.api.admin import reconcile_qbo_billable_status_router
+
+    asyncio.run(reconcile_qbo_billable_status_router(dry_run=False))
+    assert sorted(exits) == ["bill", "purchase", "vc"]
+    assert run_calls["n"] == 1
+
+
+def test_admin_billable_refresh_closes_clients_when_run_raises(monkeypatch):
+    from shared.api import admin as admin_module
+
+    exits: list[str] = []
+
+    class _FakeClient:
+        def __init__(self, name, **kw):
+            self.name = name
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            exits.append(self.name)
+
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.bill.external.client.QboBillClient",
+        lambda **kw: _FakeClient("bill", **kw),
+    )
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.purchase.external.client.QboPurchaseClient",
+        lambda **kw: _FakeClient("purchase", **kw),
+    )
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.vendorcredit.external.client.QboVendorCreditClient",
+        lambda **kw: _FakeClient("vc", **kw),
+    )
+
+    class _Auth:
+        realm_id = "realm-x"
+
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.auth.business.service.QboAuthService",
+        lambda: SimpleNamespace(ensure_valid_token=lambda: _Auth()),
+    )
+    monkeypatch.setattr(admin_module, "qbo_sync_lock", lambda *a, **k: _NullLock())
+
+    class _Svc:
+        def __init__(self, **kw):
+            pass
+
+        def run(self, realm_id, *, dry_run=False):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        "integrations.intuit.qbo.billable_refresh.business.service.QboBillableStatusRefreshService",
+        _Svc,
+    )
+
+    from fastapi import HTTPException
+
+    from shared.api.admin import reconcile_qbo_billable_status_router
+
+    with pytest.raises(HTTPException):
+        asyncio.run(reconcile_qbo_billable_status_router(dry_run=False))
+    assert sorted(exits) == ["bill", "purchase", "vc"]
+
+
+class _NullLock:
+    def __enter__(self):
+        return True
+
+    def __exit__(self, *args):
+        pass

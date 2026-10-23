@@ -8,7 +8,12 @@ Owns:
 
 Invariants:
   - Staging writes touch BillableStatus (+ ModifiedDatetime) only via CAS from Billable.
-  - dbo heal sets is_billed True only; never False; never other dbo fields.
+  - Only HasBeenBilled and NotBillable may be written to staging; other live values are skipped.
+  - dbo heal goes through update_by_public_id (round-trips the stored row). ExpenseLineItem's
+    read sproc truncates BillableDecidedAt to whole seconds on that round trip (pre-existing,
+    shared by every caller incl. invoice completion). Heal sets is_billed True only; never False;
+    passes no other field.
+  - HasBeenBilled dbo heal runs before staging CAS; CAS runs only after heal completes without error.
   - Never deletes staging or dbo rows; QBO is read-only (no outbox / no push).
 
 External writes:
@@ -64,6 +69,7 @@ class _EntityCounts:
     dbo_would_heal: int = 0
     dbo_heal_errors: int = 0
     batch_errors: int = 0
+    unexpected_live_status: int = 0
 
     def as_dict(self, *, dry_run: bool) -> dict:
         out = {
@@ -76,6 +82,7 @@ class _EntityCounts:
             "cas_skipped": self.cas_skipped,
             "dbo_heal_errors": self.dbo_heal_errors,
             "batch_errors": self.batch_errors,
+            "unexpected_live_status": self.unexpected_live_status,
         }
         if dry_run:
             out["dbo_would_heal"] = self.dbo_would_heal
@@ -289,62 +296,63 @@ class QboBillableStatusRefreshService:
 
                 live_line = live_line_by_id[qbo_line_id]
                 live_status = extract_billable_status(live_line)
-                if live_status is None or live_status == _STAGED_BILLABLE:
+                if live_status == _STAGED_BILLABLE:
                     continue
 
-                if live_status == _LIVE_HAS_BEEN_BILLED:
-                    counts.flipped_to_has_been_billed += 1
-                elif live_status == "NotBillable":
-                    counts.flipped_to_not_billable += 1
-                else:
-                    logger.info(
-                        "billable_refresh.%s.unexpected_live_status line_id=%s status=%s",
+                if live_status not in (_LIVE_HAS_BEEN_BILLED, "NotBillable"):
+                    counts.unexpected_live_status += 1
+                    logger.warning(
+                        "billable_refresh.%s.unexpected_live_status line_id=%s status=%r",
                         cfg.name,
                         staged.id,
                         live_status,
                     )
+                    continue
 
-                updated = False
-                if not dry_run:
-                    try:
-                        updated = cfg.line_repo.update_billable_status_by_id(
-                            id=staged.id,
-                            expected_billable_status=_STAGED_BILLABLE,
-                            billable_status=live_status,
-                        )
-                    except Exception:
-                        logger.exception(
-                            "billable_refresh.%s.cas_failed staged_id=%s",
-                            cfg.name,
-                            staged.id,
-                        )
-                        continue
+                if live_status == _LIVE_HAS_BEEN_BILLED:
+                    counts.flipped_to_has_been_billed += 1
                 else:
-                    updated = True
+                    counts.flipped_to_not_billable += 1
 
-                if not dry_run and not updated:
-                    counts.cas_skipped += 1
+                if dry_run:
+                    if live_status == _LIVE_HAS_BEEN_BILLED and cfg.heal_dbo is not None:
+                        counts.dbo_would_heal += 1
                     continue
 
                 if live_status == _LIVE_HAS_BEEN_BILLED and cfg.heal_dbo is not None:
-                    if dry_run:
-                        counts.dbo_would_heal += 1
-                    else:
-                        try:
-                            if cfg.heal_dbo(
-                                realm_id=realm_id,
-                                header_qbo_id=header_id,
-                                qbo_line_id=qbo_line_id,
-                            ):
-                                counts.dbo_healed += 1
-                        except Exception:
-                            logger.exception(
-                                "billable_refresh.%s.dbo_heal_failed header=%s line=%s",
-                                cfg.name,
-                                header_id,
-                                qbo_line_id,
-                            )
-                            counts.dbo_heal_errors += 1
+                    try:
+                        if cfg.heal_dbo(
+                            realm_id=realm_id,
+                            header_qbo_id=header_id,
+                            qbo_line_id=qbo_line_id,
+                        ):
+                            counts.dbo_healed += 1
+                    except Exception:
+                        logger.exception(
+                            "billable_refresh.%s.dbo_heal_failed header=%s line=%s",
+                            cfg.name,
+                            header_id,
+                            qbo_line_id,
+                        )
+                        counts.dbo_heal_errors += 1
+                        continue
+
+                try:
+                    updated = cfg.line_repo.update_billable_status_by_id(
+                        id=staged.id,
+                        expected_billable_status=_STAGED_BILLABLE,
+                        billable_status=live_status,
+                    )
+                except Exception:
+                    logger.exception(
+                        "billable_refresh.%s.cas_failed staged_id=%s",
+                        cfg.name,
+                        staged.id,
+                    )
+                    continue
+
+                if not updated:
+                    counts.cas_skipped += 1
 
         return counts, None
 

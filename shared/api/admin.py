@@ -641,12 +641,22 @@ async def reconcile_qbo_billable_status_router(
 
             realm_id = auth.realm_id
             with system_authz():
-                service = QboBillableStatusRefreshService(
-                    bill_client=QboBillClient(realm_id=realm_id),
-                    purchase_client=QboPurchaseClient(realm_id=realm_id),
-                    vendor_credit_client=QboVendorCreditClient(realm_id=realm_id),
-                )
-                return service.run(realm_id, dry_run=dry_run)
+                from contextlib import ExitStack
+
+                with ExitStack() as stack:
+                    bill_client = stack.enter_context(QboBillClient(realm_id=realm_id))
+                    purchase_client = stack.enter_context(
+                        QboPurchaseClient(realm_id=realm_id)
+                    )
+                    vendor_credit_client = stack.enter_context(
+                        QboVendorCreditClient(realm_id=realm_id)
+                    )
+                    service = QboBillableStatusRefreshService(
+                        bill_client=bill_client,
+                        purchase_client=purchase_client,
+                        vendor_credit_client=vendor_credit_client,
+                    )
+                    return service.run(realm_id, dry_run=dry_run)
 
     return await _timed("reconcile.qbo.billable_status", _run)
 

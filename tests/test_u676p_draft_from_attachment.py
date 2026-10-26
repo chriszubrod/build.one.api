@@ -32,6 +32,7 @@ ATT2_UUID = "11111111-bbbb-cccc-dddd-eeeeeeeeeeee"
 EXISTING_BILL = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
 INACCESSIBLE_DUP = "CCCCCCCC-CCCC-CCCC-CCCC-CCCCCCCCCCCC"
 VENDOR_UUID = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+DUE_ON_RECEIPT_TERM = "ffffffff-ffff-ffff-ffff-ffffffffffff"
 
 
 def _attachment(**kw):
@@ -148,7 +149,8 @@ def _run(awaitable):
     return asyncio.run(awaitable)
 
 
-def test_same_pdf_existing_skips_read_and_create():
+def test_same_pdf_existing_skips_read_and_create(_no_live_payment_term_lookup):
+    pt_cls = _no_live_payment_term_lookup
     att_svc, blia_svc, bill_svc, read_fn = _service_mocks(hash_bill=EXISTING_BILL)
     with _patch_gate(), patch.object(dfs, "_resolve_sub_cost_code_id", return_value=501):
         out = _run(
@@ -165,6 +167,111 @@ def test_same_pdf_existing_skips_read_and_create():
     assert out["bill_public_id"] == EXISTING_BILL.lower()
     read_fn.assert_not_called()
     bill_svc.create.assert_not_called()
+    pt_cls.return_value.read_by_name.assert_not_called()
+    pt_cls.return_value.read_all.assert_not_called()
+
+
+def test_list_drop_default_payment_term_found(_no_live_payment_term_lookup):
+    pt_cls = _no_live_payment_term_lookup
+    _configure_due_on_receipt(pt_cls, name="Due on receipt")
+    att_svc, blia_svc, bill_svc, read_fn = _service_mocks()
+    with _patch_gate(), patch.object(dfs, "_resolve_sub_cost_code_id", return_value=501):
+        _run(
+            draft_bill_from_attachment(
+                attachment_public_id=ATT_UUID,
+                attachment_service=att_svc,
+                blia_service=blia_svc,
+                bill_service=bill_svc,
+                read_fn=read_fn,
+            )
+        )
+    assert bill_svc.create.call_args.kwargs["payment_term_public_id"] == DUE_ON_RECEIPT_TERM
+
+
+def test_list_drop_default_payment_term_case_insensitive(_no_live_payment_term_lookup):
+    pt_cls = _no_live_payment_term_lookup
+    _configure_due_on_receipt(pt_cls, name="DUE ON RECEIPT")
+    att_svc, blia_svc, bill_svc, read_fn = _service_mocks()
+    with _patch_gate(), patch.object(dfs, "_resolve_sub_cost_code_id", return_value=None):
+        _run(
+            draft_bill_from_attachment(
+                attachment_public_id=ATT_UUID,
+                attachment_service=att_svc,
+                blia_service=blia_svc,
+                bill_service=bill_svc,
+                read_fn=read_fn,
+            )
+        )
+    assert bill_svc.create.call_args.kwargs["payment_term_public_id"] == DUE_ON_RECEIPT_TERM
+
+
+def test_list_drop_default_payment_term_not_found_still_creates(_no_live_payment_term_lookup):
+    pt_cls = _no_live_payment_term_lookup
+    pt_cls.return_value.read_by_name.return_value = None
+    pt_cls.return_value.read_all.return_value = [
+        SimpleNamespace(name="Net 30", public_id="99999999-9999-9999-9999-999999999999"),
+    ]
+    att_svc, blia_svc, bill_svc, read_fn = _service_mocks()
+    with _patch_gate(), patch.object(dfs, "_resolve_sub_cost_code_id", return_value=None):
+        out = _run(
+            draft_bill_from_attachment(
+                attachment_public_id=ATT_UUID,
+                attachment_service=att_svc,
+                blia_service=blia_svc,
+                bill_service=bill_svc,
+                read_fn=read_fn,
+            )
+        )
+    assert out["existing"] is False
+    assert "payment_term_public_id" not in bill_svc.create.call_args.kwargs
+
+
+def test_list_drop_default_payment_term_lookup_raises_still_creates(_no_live_payment_term_lookup):
+    pt_cls = _no_live_payment_term_lookup
+    pt_cls.return_value.read_all.side_effect = RuntimeError("db down")
+    att_svc, blia_svc, bill_svc, read_fn = _service_mocks()
+    with _patch_gate(), patch.object(dfs, "_resolve_sub_cost_code_id", return_value=None):
+        out = _run(
+            draft_bill_from_attachment(
+                attachment_public_id=ATT_UUID,
+                attachment_service=att_svc,
+                blia_service=blia_svc,
+                bill_service=bill_svc,
+                read_fn=read_fn,
+            )
+        )
+    assert out["existing"] is False
+    assert "payment_term_public_id" not in bill_svc.create.call_args.kwargs
+
+
+def test_list_drop_duplicate_retry_keeps_default_payment_term(_no_live_payment_term_lookup):
+    pt_cls = _no_live_payment_term_lookup
+    _configure_due_on_receipt(pt_cls)
+    att_svc, blia_svc, bill_svc, read_fn = _service_mocks(
+        create_bill=SimpleNamespace(public_id=EXISTING_BILL)
+    )
+    bill_svc.create.side_effect = [
+        DuplicateBillError("dup", existing_bill_public_id=INACCESSIBLE_DUP),
+        SimpleNamespace(public_id=EXISTING_BILL),
+    ]
+
+    def _deny(_pid):
+        raise EntityNotAccessibleError("bill", 99)
+
+    bill_svc.read_by_public_id.side_effect = _deny
+    with _patch_gate(), patch.object(dfs, "_resolve_sub_cost_code_id", return_value=None):
+        _run(
+            draft_bill_from_attachment(
+                attachment_public_id=ATT_UUID,
+                attachment_service=att_svc,
+                blia_service=blia_svc,
+                bill_service=bill_svc,
+                read_fn=read_fn,
+            )
+        )
+    assert bill_svc.create.call_count == 2
+    for call in bill_svc.create.call_args_list:
+        assert call.kwargs["payment_term_public_id"] == DUE_ON_RECEIPT_TERM
 
 
 def test_same_pdf_inaccessible_creates():
@@ -998,6 +1105,22 @@ def _no_live_user_lookup():
         user_cls.return_value.read_by_id.return_value = blank_user
         auth_cls.return_value.read_by_user_id.return_value = None
         yield
+
+
+@pytest.fixture(autouse=True)
+def _no_live_payment_term_lookup():
+    """U-731a: default payment-term resolution must never reach the real DB in this module."""
+    with patch("entities.payment_term.business.service.PaymentTermService") as pt_cls:
+        pt_cls.return_value.read_by_name.return_value = None
+        pt_cls.return_value.read_all.return_value = []
+        yield pt_cls
+
+
+def _configure_due_on_receipt(pt_cls, *, name: str = "Due on receipt"):
+    pt_cls.return_value.read_by_name.return_value = None
+    pt_cls.return_value.read_all.return_value = [
+        SimpleNamespace(name=name, public_id=DUE_ON_RECEIPT_TERM),
+    ]
 
 
 def test_list_drop_memo_includes_description_and_reference():

@@ -108,6 +108,28 @@ def _response(
 
 # Same gate as the web's applyReadAttachment: no memo unless the read produced fields.
 _MEMO_READ_STATUSES = frozenset({"ok", "partial"})
+_DEFAULT_PAYMENT_TERM_NAME = "due on receipt"
+
+
+async def _resolve_default_payment_term_public_id() -> Optional[str]:
+    """Match New Bill page default: payment term named 'Due on receipt' (case-insensitive)."""
+    try:
+        from entities.payment_term.business.service import PaymentTermService
+
+        def _lookup() -> Optional[str]:
+            # Same predicate as BillCreate.tsx: first term whose lower-cased name matches.
+            for term in PaymentTermService().read_all():
+                if (term.name or "").lower() == _DEFAULT_PAYMENT_TERM_NAME and term.public_id:
+                    return str(term.public_id)
+            return None
+
+        return await asyncio.to_thread(_lookup)
+    except Exception:
+        logger.warning(
+            "draft_from_attachment.default_payment_term_lookup_failed",
+            exc_info=True,
+        )
+        return None
 
 
 async def _resolve_entered_by_for_memo(user_id: Optional[int]) -> str:
@@ -278,6 +300,8 @@ async def draft_bill_from_attachment(
         }
         line_kwargs = {k: v for k, v in line_candidates.items() if v is not None}
 
+        payment_term_public_id = await _resolve_default_payment_term_public_id()
+
         create_kwargs = dict(
             tenant_id=tenant_id,
             user_id=user_id,
@@ -293,6 +317,8 @@ async def draft_bill_from_attachment(
             submit_for_review=False,
             **line_kwargs,
         )
+        if payment_term_public_id:
+            create_kwargs["payment_term_public_id"] = payment_term_public_id
 
         created = await _create_with_duplicate_handling(
             bill_svc,

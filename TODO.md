@@ -14,7 +14,7 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 
 - [ ] **Upload crash window dead-letters as "foreign file"** - push_blob_to_box uploads to Box BEFORE the [box].[File] registry write; a death in between (or a lost response) makes the retry 409 -> `name_collision_foreign_file` (non-retryable, critical issue). Fail-safe, no duplicate. Fix: in conflict recovery, treat an unregistered conflicting file whose sha1 matches ours as ours and register it.
 - [ ] **In-process scheduler fallback never reclaims** (MS and Box) - shared/scheduler.py calls drain_once, not drain_all; only matters if ENABLE_SCHEDULER=true (prod: false). Switch the fallback to drain_all.
-- [ ] **67 Box dead letters** (63 upload_box_file from 2026-07, 3 from 08, 1 update_box_excel 08) - read-only classification like the MS one in U-703, then a cleanup decision.
+- [x] **67 Box dead letters** - done 2026-10-26 (see board U-727).
 
 
 ## U-703 follow-ups - MS outbox stranded-claim reclaim (booked 2026-10-26, shipped `d3fa103c`)

@@ -268,7 +268,9 @@ def test_read_ok_create_args_exact():
     att_svc, blia_svc, bill_svc, read_fn = _service_mocks()
     with _patch_gate(), patch.object(
         dfs, "_resolve_sub_cost_code_id", return_value=501
-    ), patch.object(dfs, "business_today_iso", return_value="2026-10-19"):
+    ), patch.object(dfs, "business_today_iso", return_value="2026-10-19"), patch.object(
+        dfs, "_resolve_entered_by_for_memo", new=AsyncMock(return_value="Chris Z")
+    ):
         _run(
             draft_bill_from_attachment(
                 attachment_public_id=ATT_UUID,
@@ -292,6 +294,7 @@ def test_read_ok_create_args_exact():
     assert kwargs["submit_for_review"] is False
     assert kwargs["intake_source"] == "list_drop"
     assert kwargs["attachment_public_id"] == ATT_UUID
+    assert kwargs["memo"] == "Chris Z via PDF drop"
     read_fn.assert_awaited_once()
     assert read_fn.await_args.kwargs["attachment_public_id"] == ATT_UUID
     assert read_fn.await_args.kwargs["intake_source"] == "list_drop"
@@ -984,6 +987,137 @@ def test_completed_bill_update_via_pipeline_preserves_bill_number():
     assert sent2.bill_number == "INV-1 "
 
 
+@pytest.fixture(autouse=True)
+def _no_live_user_lookup():
+    """U-728: the memo's entered-by lookup must never reach the real DB in this module.
+    Tests that exercise the lookup patch these again inside the test (inner patch wins)."""
+    blank_user = SimpleNamespace(firstname=None, lastname=None)
+    with patch("entities.user.business.service.UserService") as user_cls, patch(
+        "entities.auth.business.service.AuthService"
+    ) as auth_cls:
+        user_cls.return_value.read_by_id.return_value = blank_user
+        auth_cls.return_value.read_by_user_id.return_value = None
+        yield
+
+
+def test_list_drop_memo_includes_description_and_reference():
+    att_svc, blia_svc, bill_svc, read_fn = _service_mocks()
+    read_fn.return_value = _read_ok(
+        long_description={"value": "Long desc", "confidence": "0.9"},
+        reference={"value": "PO 99", "confidence": "0.9"},
+    )
+    with _patch_gate(), patch.object(
+        dfs, "_resolve_sub_cost_code_id", return_value=None
+    ), patch.object(
+        dfs, "_resolve_entered_by_for_memo", new=AsyncMock(return_value="Pat")
+    ):
+        _run(
+            draft_bill_from_attachment(
+                attachment_public_id=ATT_UUID,
+                user_id=5,
+                attachment_service=att_svc,
+                blia_service=blia_svc,
+                bill_service=bill_svc,
+                read_fn=read_fn,
+            )
+        )
+    memo = bill_svc.create.call_args.kwargs["memo"]
+    assert memo == "Pat via PDF drop | Long desc | Ref: PO 99"
+
+
+def test_list_drop_memo_omits_doc_when_read_number_matches_bill_number():
+    att_svc, blia_svc, bill_svc, read_fn = _service_mocks()
+    with _patch_gate(), patch.object(
+        dfs, "_resolve_sub_cost_code_id", return_value=None
+    ), patch.object(
+        dfs, "_resolve_entered_by_for_memo", new=AsyncMock(return_value="U")
+    ):
+        _run(
+            draft_bill_from_attachment(
+                attachment_public_id=ATT_UUID,
+                attachment_service=att_svc,
+                blia_service=blia_svc,
+                bill_service=bill_svc,
+                read_fn=read_fn,
+            )
+        )
+    memo = bill_svc.create.call_args.kwargs["memo"]
+    assert "DOC#" not in memo
+    assert memo == "U via PDF drop"
+
+
+def test_list_drop_memo_retry_includes_doc_when_bill_number_cleared():
+    att_svc, blia_svc, bill_svc, read_fn = _service_mocks(
+        create_bill=SimpleNamespace(public_id=EXISTING_BILL)
+    )
+    bill_svc.create.side_effect = [
+        DuplicateBillError("dup", existing_bill_public_id=INACCESSIBLE_DUP),
+        SimpleNamespace(public_id=EXISTING_BILL),
+    ]
+
+    def _deny(_pid):
+        raise EntityNotAccessibleError("bill", 99)
+
+    bill_svc.read_by_public_id.side_effect = _deny
+    with _patch_gate(), patch.object(
+        dfs, "_resolve_sub_cost_code_id", return_value=None
+    ), patch.object(
+        dfs, "_resolve_entered_by_for_memo", new=AsyncMock(return_value="U")
+    ):
+        _run(
+            draft_bill_from_attachment(
+                attachment_public_id=ATT_UUID,
+                attachment_service=att_svc,
+                blia_service=blia_svc,
+                bill_service=bill_svc,
+                read_fn=read_fn,
+            )
+        )
+    first_memo = bill_svc.create.call_args_list[0].kwargs["memo"]
+    retry_memo = bill_svc.create.call_args_list[1].kwargs["memo"]
+    assert "DOC#" not in first_memo
+    assert retry_memo == "U via PDF drop | DOC#: INV-9"
+
+
+def test_list_drop_memo_user_lookup_failure_uses_pdf_drop_head():
+    att_svc, blia_svc, bill_svc, read_fn = _service_mocks()
+    with _patch_gate(), patch.object(
+        dfs, "_resolve_sub_cost_code_id", return_value=None
+    ), patch(
+        "entities.user.business.service.UserService",
+    ) as user_svc_cls:
+        user_svc_cls.return_value.read_by_id.side_effect = RuntimeError("db down")
+        _run(
+            draft_bill_from_attachment(
+                attachment_public_id=ATT_UUID,
+                user_id=17,
+                attachment_service=att_svc,
+                blia_service=blia_svc,
+                bill_service=bill_svc,
+                read_fn=read_fn,
+            )
+        )
+    assert bill_svc.create.call_args.kwargs["memo"] == "PDF drop"
+
+
+def test_list_drop_memo_no_user_id_uses_pdf_drop_head():
+    att_svc, blia_svc, bill_svc, read_fn = _service_mocks()
+    with _patch_gate(), patch.object(
+        dfs, "_resolve_sub_cost_code_id", return_value=None
+    ):
+        _run(
+            draft_bill_from_attachment(
+                attachment_public_id=ATT_UUID,
+                user_id=None,
+                attachment_service=att_svc,
+                blia_service=blia_svc,
+                bill_service=bill_svc,
+                read_fn=read_fn,
+            )
+        )
+    assert bill_svc.create.call_args.kwargs["memo"] == "PDF drop"
+
+
 def test_list_drop_record_mode_surfaces_possible_duplicates(monkeypatch):
     """U-723: list-drop uses record-path duplicate gate after create."""
     from decimal import Decimal
@@ -1037,3 +1171,46 @@ def test_list_drop_record_mode_surfaces_possible_duplicates(monkeypatch):
         )
     assert out.get("possible_duplicates")
     assert out["possible_duplicates"][0]["public_id"] == "dup-match"
+
+
+def test_list_drop_memo_skipped_when_read_failed():
+    """Same gate as the web: no memo unless the read status is ok/partial."""
+    att_svc, blia_svc, bill_svc, read_fn = _service_mocks()
+    read_fn.return_value = {**_read_ok(), "status": "unreadable"}
+    with _patch_gate(), patch.object(dfs, "_resolve_sub_cost_code_id", return_value=None):
+        _run(
+            draft_bill_from_attachment(
+                attachment_public_id=ATT_UUID,
+                user_id=5,
+                attachment_service=att_svc,
+                blia_service=blia_svc,
+                bill_service=bill_svc,
+                read_fn=read_fn,
+            )
+        )
+    assert bill_svc.create.call_args.kwargs["memo"] is None
+
+
+@pytest.mark.parametrize(
+    "user, auth, auth_raises, expected",
+    [
+        (SimpleNamespace(firstname="Chris", lastname="Z"), None, False, "Chris Z"),
+        (SimpleNamespace(firstname=" ", lastname=None), SimpleNamespace(username="czub"), False, "czub"),
+        (SimpleNamespace(firstname="Chris", lastname="Z"), None, True, "Chris Z"),
+        (SimpleNamespace(firstname=None, lastname=None), None, True, ""),
+        (None, None, False, ""),
+    ],
+)
+def test_resolve_entered_by_for_memo(user, auth, auth_raises, expected):
+    with patch("entities.user.business.service.UserService") as user_cls, patch(
+        "entities.auth.business.service.AuthService"
+    ) as auth_cls:
+        user_cls.return_value.read_by_id.return_value = user
+        if auth_raises:
+            auth_cls.return_value.read_by_user_id.side_effect = RuntimeError("db down")
+        else:
+            auth_cls.return_value.read_by_user_id.return_value = auth
+        assert _run(dfs._resolve_entered_by_for_memo(17)) == expected
+        user_cls.return_value.read_by_id.assert_called_once_with("17")
+        if user is not None and expected and not auth_raises and user.firstname and user.firstname.strip():
+            auth_cls.return_value.read_by_user_id.assert_not_called()

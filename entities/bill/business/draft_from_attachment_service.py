@@ -18,6 +18,7 @@ from entities.bill.business.read_attachment_service import (
     read_attachment_link_state,
     run_bill_read_attachment_with_timeout,
 )
+from entities.bill.business.bill_memo import compose_bill_memo, entered_by_display_name
 from entities.bill.business.service import BillService, DuplicateBillError
 from entities.bill_line_item_attachment.business.service import BillLineItemAttachmentService
 from entities.sub_cost_code.business.service import SubCostCodeService
@@ -105,12 +106,43 @@ def _response(
     }
 
 
+# Same gate as the web's applyReadAttachment: no memo unless the read produced fields.
+_MEMO_READ_STATUSES = frozenset({"ok", "partial"})
+
+
+async def _resolve_entered_by_for_memo(user_id: Optional[int]) -> str:
+    """The dropping user's first + last name, else their username; "" on any failure."""
+    if user_id is None:
+        return ""
+    try:
+        from entities.user.business.service import UserService
+
+        user = await asyncio.to_thread(UserService().read_by_id, str(user_id))
+    except Exception:
+        logger.debug("draft_from_attachment.entered_by_lookup_failed user_id=%s", user_id, exc_info=True)
+        return ""
+    if user is None:
+        return ""
+    name = entered_by_display_name(user.firstname, user.lastname, None)
+    if name:
+        return name
+    try:
+        from entities.auth.business.service import AuthService
+
+        auth = await asyncio.to_thread(AuthService().read_by_user_id, user_id=int(user_id))
+    except Exception:
+        logger.debug("draft_from_attachment.entered_by_username_lookup_failed user_id=%s", user_id, exc_info=True)
+        return ""
+    return entered_by_display_name(None, None, auth.username if auth is not None else None)
+
+
 async def _create_with_duplicate_handling(
     bill_svc: BillService,
     *,
     create_kwargs: dict[str, Any],
     read_status: str,
     read_produced_bill_date: bool,
+    retry_memo: Optional[str] = None,
 ) -> dict[str, Any]:
     """Create via BillService; dedup is create-driven (no pre-check oracle)."""
     try:
@@ -132,7 +164,8 @@ async def _create_with_duplicate_handling(
                 existing_reason="same_vendor_number_date",
                 read_status=read_status,
             )
-        retry_kwargs = {**create_kwargs, "bill_number": None}
+        # The memo's DOC# segment is relative to the bill number actually used.
+        retry_kwargs = {**create_kwargs, "bill_number": None, "memo": retry_memo}
         bill = await asyncio.to_thread(bill_svc.create, **retry_kwargs)
 
     return _response(
@@ -207,6 +240,17 @@ async def draft_bill_from_attachment(
 
         vendor_public_id = _vendor_public_id(fields)
         bill_number = _field_value(fields, "bill_number")
+        memo = retry_memo = None
+        if read_status in _MEMO_READ_STATUSES:
+            memo_args = dict(
+                entered_by=await _resolve_entered_by_for_memo(user_id),
+                method="PDF drop",
+                long_description=_field_value(fields, "long_description"),
+                reference=_field_value(fields, "reference"),
+                read_bill_number=bill_number,
+            )
+            memo = compose_bill_memo(**memo_args, current_bill_number=bill_number)
+            retry_memo = compose_bill_memo(**memo_args, current_bill_number=None)
         predicted_bill_date = _field_value(fields, "bill_date")
         bill_date = predicted_bill_date or business_today_iso()
         due_date = bill_date
@@ -242,7 +286,7 @@ async def draft_bill_from_attachment(
             due_date=due_date,
             bill_number=bill_number,
             total_amount=total,
-            memo=None,
+            memo=memo,
             is_draft=True,
             intake_source="list_drop",
             attachment_public_id=attachment_public_id,
@@ -255,6 +299,7 @@ async def draft_bill_from_attachment(
             create_kwargs=create_kwargs,
             read_status=read_status,
             read_produced_bill_date=predicted_bill_date is not None,
+            retry_memo=retry_memo,
         )
         bill_public_id = created.get("bill_public_id")
         if bill_public_id and not created.get("existing"):

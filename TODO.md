@@ -2,6 +2,13 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-731 follow-ups - create-path parity (booked 2026-10-26)
+
+- [ ] **Silent "today" bill date on list drop** when the read found none (draft_from_attachment_service) - Chris did not choose the flag for now; surface it if drafts get misdated.
+- [ ] **Project without SCC on list drop** (rare: SCC stops resolving between read and create) - set the project only with a resolved SCC, like the page. Chris did not choose it for now.
+- [ ] **Vendor name read from the PDF is never shown when no vendor matches** (both paths) - render vendor_extracted_name in the header.
+
+
 ## U-730 follow-ups — ProcessEngine update routers answer 200 on an unknown id (booked 2026-10-26, shipped `2517eba7`)
 
 - [ ] **~25 of ~30 entity `*_update` routers return HTTP 200 with a null body for a public_id that does not exist.** When a service's `update_by_public_id` returns `None`, `core/workflow/business/instant.py::_serialize_result` maps it to `None` and the workflow still reports `success=True`; `InstantWorkflowResult.to_dict` then omits the `data` key, so a router that only checks `success` falls through to `item_response(result.get("data"))` and emits 200. The caller believes a non-existent row was updated. Only **budget, budget_line_item, budget_revision, contract, contract_labor** and now **project** guard it with `if result.get("data") is None: raise_not_found(...)`. Missing on at least: asset, attachment, bill, bill_credit, bill_credit_line_item, bill_line_item, business_license, certificate_of_insurance, company, contact, contractors_license, cost_code, customer, employee, employee_labor, employee_labor_line_item, employee_project_rate, expense, expense_line_item, integration, module, organization, organization_company, payment_term. ⚠️ Some of those services *raise* instead of returning None, so the 200 is not universal — enumerate per entity before changing anything. **Altitude question to settle first:** patch ~25 routers, or make the instant workflow treat a `None` service result as not-found centrally? The central fix is one place but changes behaviour for every entity, and some services may return `None` to mean "nothing to do" rather than "not found" — that distinction has to be checked per service, which is why U-730 fixed only the router it touched.

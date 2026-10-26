@@ -199,6 +199,10 @@ def update_project_by_public_id_router(public_id: str, body: ProjectUpdate, curr
     if not result.get("success"):
         raise_workflow_error(result.get("error", ""), "Failed to update project")
 
+    # A None service result serializes as success=True with no `data` key, so
+    # without this an unknown public_id answers 200 with a null body (U-730).
+    if result.get("data") is None:
+        raise_not_found("Project")
     return item_response(result.get("data"))
 
 

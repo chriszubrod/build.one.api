@@ -13,10 +13,10 @@ class ProjectCreate(BaseModel):
         max_length=50,
         description="The name of the project."
     )
-    description: str = Field(
-        min_length=1,
+    description: Optional[str] = Field(
+        default=None,
         max_length=500,
-        description="The description of the project."
+        description="The description of the project. Optional and may be empty — the column is nullable and 135 of the 140 existing projects store an empty string, so a non-empty requirement did not reflect reality (U-730). Omitted is normalised to an empty string on create so the column keeps one shape."
     )
     status: str = Field(
         min_length=1,
@@ -51,10 +51,10 @@ class ProjectUpdate(BaseModel):
         max_length=50,
         description="The name of the project."
     )
-    description: str = Field(
-        min_length=1,
+    description: Optional[str] = Field(
+        default=None,
         max_length=500,
-        description="The description of the project."
+        description="The description of the project. Optional and may be empty — requiring a non-empty value made every read-modify-write PUT fail for the 135 of 140 projects that store an empty string (U-730). Omit to keep the stored value; send an empty string to clear it."
     )
     status: str = Field(
         min_length=1,

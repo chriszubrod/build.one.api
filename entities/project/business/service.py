@@ -128,7 +128,7 @@ class ProjectService:
         """Initialize the ProjectService."""
         self.repo = repo or ProjectRepository()
 
-    def create(self, *, tenant_id: int = 1, name: str, description: str, status: str, customer_id: Optional[int] = None, abbreviation: Optional[str] = None, notes: Optional[str] = None, is_cost_plus: Optional[bool] = None) -> Project:
+    def create(self, *, tenant_id: int = 1, name: str, description: Optional[str] = None, status: str, customer_id: Optional[int] = None, abbreviation: Optional[str] = None, notes: Optional[str] = None, is_cost_plus: Optional[bool] = None) -> Project:
         """
         Create a new project.
 
@@ -163,7 +163,11 @@ class ProjectService:
         project = self.repo.create(
             tenant_id=tenant_id,
             name=name,
-            description=description,
+            # U-730: an omitted description becomes "" rather than NULL. The column
+            # is nullable, but all 140 existing rows hold a string, so normalising
+            # here keeps one shape for every reader instead of minting the first NULL.
+            # Same form as the QBO connector's `qbo_customer.notes or ""`.
+            description=description or "",
             status=status,
             customer_id=customer_id,
             abbreviation=abbreviation,
@@ -333,6 +337,12 @@ class ProjectService:
                 existing.notes = notes if notes != "" else None
             if is_cost_plus is not None:
                 existing.is_cost_plus = is_cost_plus
+        else:
+            # U-730: an unknown public_id used to fall through to the repo with
+            # None and raise, surfacing as a 500. Returning None lets the
+            # router's not-found check (added alongside this) answer 404 —
+            # on its own this would be a silent 200 with a null body.
+            return None
         return self.repo.update_by_id(existing)
 
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[Project]:

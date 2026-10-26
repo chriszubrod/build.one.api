@@ -819,6 +819,14 @@ class ReviewNotificationService:
                 f"<p>Attached: <strong>{html.escape(attachment_filename)}</strong></p>"
             )
 
+        memo = (getattr(expense, "memo", None) or "").strip()
+        memo_line = ""
+        if memo:
+            memo_html = (
+                html.escape(memo).replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br/>")
+            )
+            memo_line = f"<br/>Memo: {memo_html}"
+
         return (
             f"{greeting}"
             "<p>A new expense has been submitted for review:</p>"
@@ -826,7 +834,7 @@ class ReviewNotificationService:
             f"Project: {project}<br/>"
             f"Vendor: {vendor}<br/>"
             f"Reference: {reference_number}<br/>"
-            f"Amount: {amount_str}"
+            f"Amount: {amount_str}{memo_line}"
             "</p>"
             "<p>"
             f"Submitted By: {submitter}<br/>"

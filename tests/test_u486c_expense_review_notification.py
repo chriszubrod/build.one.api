@@ -356,3 +356,59 @@ def test_enqueue_for_expense_swallows_exceptions():
     src = inspect.getsource(ReviewNotificationService.enqueue_for_expense)
     assert "logger.exception" in src
     assert "except Exception" in src
+
+
+# ---------------------------------------------------------------------------
+# 8 — expense review email body includes memo (U-729)
+# ---------------------------------------------------------------------------
+
+
+def _build_expense_html_body_for_test(*, memo=None, **expense_extra):
+    expense = SimpleNamespace(
+        reference_number="REF-1",
+        total_amount="42.00",
+        created_datetime="2026-09-01",
+        memo=memo,
+        **expense_extra,
+    )
+    return ReviewNotificationService._build_expense_html_body(
+        expense=expense,
+        vendor_name="Acme",
+        project_label="Project A",
+        submitter_name="Sam Sub",
+        line_items=[],
+        scc_label_by_id={},
+        to_recipients=None,
+        attachment_filename=None,
+    )
+
+
+def test_expense_html_body_includes_memo_after_amount():
+    body = _build_expense_html_body_for_test(memo="  Office supplies  ")
+    assert "Amount: $42.00<br/>Memo: Office supplies</p>" in body
+    assert body.index("Amount: $42.00") < body.index("Memo: Office supplies")
+
+
+@pytest.mark.parametrize("memo", [None, "   ", ""])
+def test_expense_html_body_omits_memo_when_blank(memo):
+    body = _build_expense_html_body_for_test(memo=memo)
+    assert "Memo:" not in body
+
+
+def test_expense_html_body_escapes_memo_html():
+    body = _build_expense_html_body_for_test(memo="<script>alert(1)</script> & Co")
+    assert "Memo: &lt;script&gt;alert(1)&lt;/script&gt; &amp; Co" in body
+    assert "<script>" not in body
+
+
+def test_expense_html_body_memo_line_breaks_use_br_not_raw_newlines():
+    body = _build_expense_html_body_for_test(memo="line1\nline2")
+    assert "Memo: line1<br/>line2</p>" in body
+    assert "Memo: line1\n" not in body
+
+    body_crlf = _build_expense_html_body_for_test(memo="a\r\nb")
+    assert "Memo: a<br/>b</p>" in body_crlf
+    assert "Memo: a\r\n" not in body_crlf
+
+    body_cr = _build_expense_html_body_for_test(memo="a\rb")
+    assert "Memo: a<br/>b</p>" in body_cr

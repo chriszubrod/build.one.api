@@ -448,6 +448,27 @@ def test_prediction_without_coding_line_state_none():
         )
     kwargs = bill_svc.create.call_args.kwargs
     assert kwargs.get("line_coding_prefill_state") is None
+    assert "line_project_public_id" not in kwargs
+    assert "line_sub_cost_code_id" not in kwargs
+
+
+def test_list_drop_coding_scc_unresolved_omits_project_and_prefill():
+    """U-732a: project + prefilled only when SubCostCode resolves (matches web list drop)."""
+    att_svc, blia_svc, bill_svc, read_fn = _service_mocks()
+    with _patch_gate(), patch.object(dfs, "_resolve_sub_cost_code_id", return_value=None):
+        _run(
+            draft_bill_from_attachment(
+                attachment_public_id=ATT_UUID,
+                attachment_service=att_svc,
+                blia_service=blia_svc,
+                bill_service=bill_svc,
+                read_fn=read_fn,
+            )
+        )
+    kwargs = bill_svc.create.call_args.kwargs
+    assert "line_sub_cost_code_id" not in kwargs
+    assert "line_project_public_id" not in kwargs
+    assert "line_coding_prefill_state" not in kwargs
 
 
 def test_linked_attachment_raises_not_found():

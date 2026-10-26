@@ -279,14 +279,18 @@ async def draft_bill_from_attachment(
 
         total = _parse_total_amount(fields)
         description = _field_value(fields, "description")
+        line_sub_cost_code_id = await asyncio.to_thread(_resolve_sub_cost_code_id, coding)
+        # Match New Bill applyFileReadCodingPair: project only with a resolved, mappable SCC.
         line_project_public_id = (
             str(coding.get("project_public_id"))
-            if coding and coding.get("project_public_id")
+            if line_sub_cost_code_id is not None
+            and coding
+            and coding.get("project_public_id")
             else None
         )
-        line_sub_cost_code_id = await asyncio.to_thread(_resolve_sub_cost_code_id, coding)
-        has_coding = line_sub_cost_code_id is not None or line_project_public_id is not None
-        line_coding_prefill_state = "prefilled" if has_coding else None
+        line_coding_prefill_state = (
+            "prefilled" if line_sub_cost_code_id is not None else None
+        )
 
         line_candidates = {
             "line_description": description,

@@ -242,6 +242,27 @@ class BoxOutboxRepository:
             logger.error(f"Error during claim next pending box outbox: {error}")
             raise map_database_error(error)
 
+    def read_stale_in_progress(self, stale_before: datetime) -> List[BoxOutbox]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadStaleInProgressBoxOutbox",
+                        params={"StaleBefore": stale_before},
+                    )
+                    rows = cursor.fetchall()
+                    return [self._from_db(row) for row in rows if row]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read stale in_progress box outbox: {error}")
+            raise map_database_error(error)
+
     def mark_done(self, id: int, row_version: str) -> None:
         try:
             with get_connection() as conn:

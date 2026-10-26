@@ -49,6 +49,17 @@ def _is_unsupported_layout(error: BaseException) -> bool:
 DRAIN_LOCK_NAME = "box_outbox_drain"
 DRAIN_LOCK_TIMEOUT_MS = 1000
 
+# Same shape as the MS (U-703) / QBO (DEFAULT_RECLAIM_AFTER_SECONDS, 900s) reclaim.
+# 1800s comfortably exceeds the longest Box handler (tier-C upload ~130s per
+# attempt incl. in-handler retries). The real guarantee is that reclaim runs
+# under box_outbox_drain, the lock every claim holds for its whole handler.
+RECLAIM_STALE_AFTER_SECONDS = 1800
+
+
+def _retries_exhausted(attempts_so_far: int, *, max_attempts: int) -> bool:
+    """True when the next attempt would exceed max_attempts (retry + reclaim)."""
+    return attempts_so_far + 1 > max_attempts
+
 # Visibility-lost circuit: abort the pass after this many consecutive
 # not-found / permission outcomes — the service account has likely lost
 # collaboration on the target folders, and burning through the queue would
@@ -143,6 +154,82 @@ class BoxOutboxWorker:
                 result[outcome] += 1
             return result
 
+    def reclaim_stale_claims(self) -> int:
+        """
+        Under the drain applock, release rows stuck in `in_progress` after a
+        prior worker died mid-handler (U-727). Returns count of rows acted on.
+        """
+        with box_app_lock(DRAIN_LOCK_NAME, timeout_ms=DRAIN_LOCK_TIMEOUT_MS) as got_lock:
+            if not got_lock:
+                return 0
+
+            stale_before = datetime.now(timezone.utc) - timedelta(
+                seconds=RECLAIM_STALE_AFTER_SECONDS
+            )
+            rows = self.repo.read_stale_in_progress(stale_before)
+            acted = 0
+            for row in rows:
+                try:
+                    # Same system intent as _process: dead-letter escalation
+                    # writes a ReconciliationIssue whatever called drain_all.
+                    with system_authz():
+                        self._reclaim_one_stale_row(row)
+                    acted += 1
+                except Exception:
+                    logger.exception(
+                        "box.outbox.reclaim.row_failed",
+                        extra={
+                            "event_name": "box.outbox.reclaim.row_failed",
+                            "outbox_public_id": row.public_id,
+                        },
+                    )
+            return acted
+
+    def _reclaim_one_stale_row(self, row: BoxOutbox) -> None:
+        """
+        No kind-specific carve-out (cf. MS send_mail): update_box_excel re-reads
+        column Z before applying, and upload_box_file re-versions a registered
+        file of ours. If an upload died after Box accepted it but before the
+        registry write, the retry dead-letters as a foreign-name collision -
+        fail-safe, never a duplicate.
+        """
+        started = row.started_at or "unknown"
+        attempts_so_far = row.attempts or 1
+
+        if _retries_exhausted(attempts_so_far, max_attempts=self.MAX_ATTEMPTS):
+            last_error = (
+                f"U-727 reclaim: abandoned claim; retries exhausted after {attempts_so_far}"
+            )
+            self._dead_letter(row, last_error)
+            action = "dead_letter"
+        else:
+            now = datetime.now(timezone.utc)
+            last_error = (
+                f"U-727 reclaim: abandoned in_progress claim (started {started}); retrying"
+            )
+            self.repo.mark_failed(
+                id=row.id,
+                row_version=row.row_version,
+                next_retry_at=now,
+                last_error=last_error,
+            )
+            action = "retry"
+
+        logger.warning(
+            "box.outbox.row.reclaimed_stranded",
+            extra={
+                "event_name": "box.outbox.row.reclaimed_stranded",
+                "outbox_public_id": row.public_id,
+                "operation_name": row.kind,
+                "entity_type": row.entity_type,
+                "entity_public_id": row.entity_public_id,
+                "started_at": started,
+                "stale_after_seconds": RECLAIM_STALE_AFTER_SECONDS,
+                "attempts": attempts_so_far,
+                "action": action,
+            },
+        )
+
     def drain_all(
         self,
         max_rows: int = 20,
@@ -150,6 +237,10 @@ class BoxOutboxWorker:
     ) -> Dict[str, Any]:
         """
         Drain up to `max_rows` within `time_budget_seconds`.
+
+        Stale-claim reclaim (U-727): once per pass, after the pause/configured
+        gates and before the token mint (DB-only, so an auth outage does not
+        block it); fail-open.
 
         Pre-pass auth circuit breaker: mint a CCG token before claiming
         anything. If the token endpoint is unavailable (retryable BoxError),
@@ -177,6 +268,14 @@ class BoxOutboxWorker:
         auth = BoxAuthService()
         if not auth.is_configured():
             return {"skipped": "box_not_configured", **totals}
+
+        try:
+            self.reclaim_stale_claims()
+        except Exception:
+            logger.exception(
+                "box.outbox.reclaim.failed",
+                extra={"event_name": "box.outbox.reclaim.failed"},
+            )
 
         try:
             auth.ensure_valid_token()
@@ -385,7 +484,7 @@ class BoxOutboxWorker:
             self._dead_letter(row, f"{type(error).__name__}: {error}")
             return "dead_lettered"
 
-        if next_attempt > self.MAX_ATTEMPTS:
+        if _retries_exhausted(attempts_so_far, max_attempts=self.MAX_ATTEMPTS):
             logger.error(
                 "box.outbox.row.retry_exhausted",
                 extra={

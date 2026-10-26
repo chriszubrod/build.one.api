@@ -28,6 +28,7 @@ from entities.expense.business.receipt_match_service import (
 from entities.bill.business.read_attachment_service import AttachmentNotReadable
 from entities.expense.business.service import ExpenseService
 from shared.access import EntityNotAccessibleError
+from shared.api.auth_user import resolve_user_id
 from shared.api.errors import ApiError, ErrorCode
 from shared.api.responses import list_response, item_response, accepted_response, raise_workflow_error, raise_not_found
 from shared.lifecycle.completion_gate import HoldingCodeRefused
@@ -368,9 +369,9 @@ async def suggest_expense_coding_for_expense_router(
 
     Permission mirrors PUT /update/expense/{public_id} (can_update on Modules.EXPENSES).
     """
-    user_id = current_user.get("id")
-    if user_id is None:
-        raise HTTPException(status_code=401, detail="Authenticated user required.")
+    # The JWT carries `sub` (Auth.PublicId), never `id`; resolve it like every other
+    # router (U-733: `current_user.get("id")` was always None -> 401 -> client logout).
+    user_id = resolve_user_id(current_user)
 
     def _run():
         from entities.coding_suggestion.business.service import CodingSuggestionService

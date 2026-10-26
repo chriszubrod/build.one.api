@@ -623,7 +623,8 @@ def _suggest_client(*, allow: bool) -> TestClient:
         .default.dependency
     )
     if allow:
-        app.dependency_overrides[dep] = lambda: {"id": 17, "tenant_id": 1}
+        # Real-shaped token user: `sub` only, never `id` (U-733).
+        app.dependency_overrides[dep] = lambda: {"sub": AUTH_SUB, "tenant_id": 1}
     else:
 
         def _deny():
@@ -735,3 +736,19 @@ def test_suggest_for_item_exposes_per_field_provenance():
         "scc_reason",
     ):
         assert key in result
+
+
+AUTH_SUB = "11111111-2222-3333-4444-555555555555"
+
+
+@pytest.fixture(autouse=True)
+def _resolve_sub_to_user_17():
+    """U-733: the router resolves the user from `sub`; map the test token to user 17."""
+
+    def _resolve(current_user):
+        if current_user.get("sub") != AUTH_SUB:
+            raise HTTPException(status_code=401, detail="Invalid authentication token.")
+        return 17
+
+    with patch("entities.expense.api.router.resolve_user_id", side_effect=_resolve):
+        yield

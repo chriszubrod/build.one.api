@@ -2,6 +2,13 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-727 follow-ups - Box outbox stranded-claim reclaim (booked 2026-10-26, shipped `c710e76e`)
+
+- [ ] **Upload crash window dead-letters as "foreign file"** - push_blob_to_box uploads to Box BEFORE the [box].[File] registry write; a death in between (or a lost response) makes the retry 409 -> `name_collision_foreign_file` (non-retryable, critical issue). Fail-safe, no duplicate. Fix: in conflict recovery, treat an unregistered conflicting file whose sha1 matches ours as ours and register it.
+- [ ] **In-process scheduler fallback never reclaims** (MS and Box) - shared/scheduler.py calls drain_once, not drain_all; only matters if ENABLE_SCHEDULER=true (prod: false). Switch the fallback to drain_all.
+- [ ] **67 Box dead letters** (63 upload_box_file from 2026-07, 3 from 08, 1 update_box_excel 08) - read-only classification like the MS one in U-703, then a cleanup decision.
+
+
 ## U-703 follow-ups - MS outbox stranded-claim reclaim (booked 2026-10-26, shipped `d3fa103c`)
 
 - [ ] **Box outbox has the same gap** - no reclaim for box.Outbox `in_progress`; row **11087** (`update_box_excel`) stuck since 2026-10-16 18:35 UTC (same restart that stranded MS 9685). Mirror U-703 (Box `apply_rows_to_details` re-reads col Z, so a retry is safe) and close 11087 after checking its rows are in the Box tracker - needs Gate 1.

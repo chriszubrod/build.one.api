@@ -72,6 +72,16 @@ END
 GO
 
 
+-- U-703: the stale-claim reclaim reads in_progress rows every drain tick.
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_MsOutbox_InProgress' AND object_id = OBJECT_ID('ms.Outbox'))
+BEGIN
+    CREATE INDEX IX_MsOutbox_InProgress
+        ON [ms].[Outbox] ([StartedAt])
+        WHERE [Status] = 'in_progress';
+END
+GO
+
+
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_MsOutbox_Entity' AND object_id = OBJECT_ID('ms.Outbox'))
 BEGIN
     CREATE INDEX IX_MsOutbox_Entity
@@ -423,6 +433,45 @@ BEGIN
         CONVERT(VARCHAR(19), [DeadLetteredAt], 120) AS [DeadLetteredAt]
     FROM [ms].[Outbox]
     WHERE [Id] = @Id;
+END;
+GO
+
+
+-- ============================================================================
+-- ReadStaleInProgressMsOutbox (U-703: reclaim path; read-only)
+-- Rows abandoned in 'in_progress' after a worker crash/restart. Caller holds
+-- the ms_outbox_drain applock before acting on the result set.
+-- Unlike ReclaimStrandedQboOutbox, a NULL StartedAt is aged by ModifiedDatetime
+-- (the claim always stamps StartedAt; only legacy/hand-edited rows lack it).
+-- ============================================================================
+CREATE OR ALTER PROCEDURE ReadStaleInProgressMsOutbox
+(
+    @StaleBefore DATETIME2(3)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT TOP 50
+        [Id], [PublicId], [RowVersion],
+        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
+        [Kind], [EntityType], [EntityPublicId],
+        [TenantId], [RequestId], [Payload],
+        [Status], [Attempts],
+        CONVERT(VARCHAR(19), [NextRetryAt], 120) AS [NextRetryAt],
+        CONVERT(VARCHAR(19), [ReadyAfter], 120) AS [ReadyAfter],
+        [LastError], [CorrelationId],
+        CONVERT(VARCHAR(19), [StartedAt], 120) AS [StartedAt],
+        CONVERT(VARCHAR(19), [CompletedAt], 120) AS [CompletedAt],
+        CONVERT(VARCHAR(19), [DeadLetteredAt], 120) AS [DeadLetteredAt]
+    FROM [ms].[Outbox]
+    WHERE [Status] = 'in_progress'
+      AND (
+            ([StartedAt] IS NOT NULL AND [StartedAt] < @StaleBefore)
+         OR ([StartedAt] IS NULL AND [ModifiedDatetime] < @StaleBefore)
+      )
+    ORDER BY [Id];
 END;
 GO
 

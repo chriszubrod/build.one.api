@@ -37,6 +37,11 @@ logger = get_ms_logger(__name__)
 # Chapter 5 parity with QBO: dead-letter after 5 failed attempts.
 MAX_ATTEMPTS = 5
 
+
+def _retries_exhausted(attempts_so_far: int) -> bool:
+    """True when the next attempt would exceed MAX_ATTEMPTS (one rule for retry and reclaim)."""
+    return attempts_so_far + 1 > MAX_ATTEMPTS
+
 # `ExpenseService.sync_expenses_batch_to_excel` /
 # `_upload_attachments_to_module_folder` report an UNMAPPED project with these
 # messages. They are configuration, not
@@ -99,6 +104,12 @@ def _raise_fanout_transient_db_error(*, step: str, project_id: int, entity_publi
 # Cross-process drain lock.
 DRAIN_LOCK_NAME = "ms_outbox_drain"
 DRAIN_LOCK_TIMEOUT_MS = 1000
+
+# Same shape as the QBO outbox reclaim (`DEFAULT_RECLAIM_AFTER_SECONDS`, 900s);
+# 1800s like CompletionJob - the longest real MS handler in the last 30 days was
+# ~53s. The real guarantee is that reclaim runs under ms_outbox_drain, the lock
+# every claim holds for its whole handler.
+RECLAIM_STALE_AFTER_SECONDS = 1800
 
 # Column Z (0-based) of a DETAILS row — the line-item public_id that keys
 # reconciliation. Same key Box's `apply_rows_to_details` dedups on
@@ -181,6 +192,82 @@ class MsOutboxWorker:
             self._process(row)
             return True
 
+    def reclaim_stale_claims(self) -> int:
+        """
+        Under the drain applock, release rows stuck in `in_progress` after a
+        prior worker died mid-handler (U-703). Returns count of rows acted on.
+        """
+        with ms_app_lock(DRAIN_LOCK_NAME, timeout_ms=DRAIN_LOCK_TIMEOUT_MS) as got_lock:
+            if not got_lock:
+                return 0
+
+            stale_before = datetime.now(timezone.utc) - timedelta(
+                seconds=RECLAIM_STALE_AFTER_SECONDS
+            )
+            rows = self.repo.read_stale_in_progress(stale_before)
+            acted = 0
+            for row in rows:
+                try:
+                    # Same system intent as _process: dead-letter escalation
+                    # writes a ReconciliationIssue whatever called drain_all.
+                    with system_authz():
+                        self._reclaim_one_stale_row(row)
+                    acted += 1
+                except Exception:
+                    logger.exception(
+                        "ms.outbox.reclaim.row_failed",
+                        extra={
+                            "event_name": "ms.outbox.reclaim.row_failed",
+                            "outbox_public_id": row.public_id,
+                        },
+                    )
+            return acted
+
+    def _reclaim_one_stale_row(self, row: MsOutbox) -> None:
+        started = row.started_at or "unknown"
+        attempts_so_far = (row.attempts or 0) + 1
+
+        if row.kind == KIND_SEND_MAIL:
+            last_error = (
+                f"U-703 reclaim: abandoned in_progress send_mail claim (started {started}); "
+                "delivery unknown - not resent automatically"
+            )
+            self._dead_letter(row, last_error)
+            action = "dead_letter"
+        elif _retries_exhausted(attempts_so_far):
+            last_error = (
+                f"U-703 reclaim: abandoned claim; retries exhausted after {attempts_so_far}"
+            )
+            self._dead_letter(row, last_error)
+            action = "dead_letter"
+        else:
+            now = datetime.now(timezone.utc)
+            last_error = (
+                f"U-703 reclaim: abandoned in_progress claim (started {started}); retrying"
+            )
+            self.repo.mark_failed(
+                id=row.id,
+                row_version=row.row_version,
+                next_retry_at=now,
+                last_error=last_error,
+            )
+            action = "retry"
+
+        logger.warning(
+            "ms.outbox.row.reclaimed_stranded",
+            extra={
+                "event_name": "ms.outbox.row.reclaimed_stranded",
+                "outbox_public_id": row.public_id,
+                "operation_name": row.kind,
+                "entity_type": row.entity_type,
+                "entity_public_id": row.entity_public_id,
+                "started_at": started,
+                "stale_after_seconds": RECLAIM_STALE_AFTER_SECONDS,
+                "attempts": attempts_so_far,
+                "action": action,
+            },
+        )
+
     def drain_all(
         self,
         max_rows: int = 100,
@@ -191,13 +278,22 @@ class MsOutboxWorker:
         `time_budget_seconds` has elapsed (checked between rows — a row that is
         already in flight always finishes). Returns count processed.
 
-        The scheduler's 30s `drain_ms_outbox` timer used to call `drain_once`,
-        i.e. ONE row per tick: a single-attachment expense completion (3-4 rows)
-        took ~2 minutes to land and a pull of 20 expenses queued behind
-        everything else for the better part of an hour. The Box drain already
-        runs a bounded loop (`BoxOutboxWorker.drain_all(max_rows=20,
+        Reclaims stale `in_progress` rows once at the start (U-703) before
+        draining. The scheduler's 30s `drain_ms_outbox` timer used to call
+        `drain_once`, i.e. ONE row per tick: a single-attachment expense
+        completion (3-4 rows) took ~2 minutes to land and a pull of 20 expenses
+        queued behind everything else for the better part of an hour. The Box
+        drain already runs a bounded loop (`BoxOutboxWorker.drain_all(max_rows=20,
         time_budget_seconds=20.0)`); this is the same shape.
         """
+        try:
+            self.reclaim_stale_claims()
+        except Exception:
+            logger.exception(
+                "ms.outbox.reclaim.failed",
+                extra={"event_name": "ms.outbox.reclaim.failed"},
+            )
+
         processed = 0
         started = time.monotonic()   # monotonic, like the Box drain
         while processed < max_rows:
@@ -328,7 +424,7 @@ class MsOutboxWorker:
             self._dead_letter(row, f"{type(error).__name__}: {error}")
             return
 
-        if next_attempt > MAX_ATTEMPTS:
+        if _retries_exhausted(attempts_so_far):
             logger.error(
                 "ms.outbox.row.retry_exhausted",
                 extra={

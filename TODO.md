@@ -2,6 +2,14 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-703 follow-ups - MS outbox stranded-claim reclaim (booked 2026-10-26, shipped `d3fa103c`)
+
+- [ ] **Box outbox has the same gap** - no reclaim for box.Outbox `in_progress`; row **11087** (`update_box_excel`) stuck since 2026-10-16 18:35 UTC (same restart that stranded MS 9685). Mirror U-703 (Box `apply_rows_to_details` re-reads col Z, so a retry is safe) and close 11087 after checking its rows are in the Box tracker - needs Gate 1.
+- [ ] **FailMsOutbox / DeadLetterMsOutbox silently match 0 rows on a RowVersion mismatch** - callers (incl. reclaim) still log success and, for send_mail, escalate. Return @@ROWCOUNT and skip the log/escalation on 0 (pre-existing pattern).
+- [ ] **Attachment 4304 blob is missing from storage** (bill 18468, 2026-04-28); its SharePoint upload (outbox 6431) was cancelled. Re-attach the PDF from the source if it is still needed.
+- [ ] **find_insertion_row_for_subcostcode counts misplaced rows as part of a section** - a misplaced line sitting BELOW its real section pulls later inserts down after it; anchor the block on the section header (col D) instead. Moot once the U-712 move list is applied.
+
+
 ## U-721b follow-ups - drain-time insert placement (booked 2026-10-23, shipped `01e37e63`)
 
 - [ ] **Drain-time 00.02 drop** (Chris 2026-10-23: book, not in U-721b) - the holding rule is enforced only at enqueue (workbook_sections.enqueue_section_inserts); the worker never filters it for insert_excel_row or append_excel_row. Drop ALWAYS_HELD_SUB_COST_CODES rows at drain (the worker already parses column C). First, read-only: any pending/retrying/dead-letter Excel outbox rows enqueued before `2b1512b8` that carry column C = 00.02?

@@ -4,7 +4,7 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 
 ## U-733 follow-ups (booked 2026-10-26)
 
-- [ ] **Token refresh never succeeds** (U-735): no dbo.AuthRefreshToken row has ever been rotated (ReplacedByTokenJti always NULL; checked back to 10-20), so every 401 and every 1-hour access-token expiry logs the user out. Likely the refresh cookie is not sent cross-site from the web app to api.bld-one.com (SameSite/Domain/credentials). Read-only diagnosis first, then a design for Chris.
+- [ ] **U-735 (re-diagnosed): one broken endpoint logs a valid session out** - refresh works (Chris = auth 6 rotates hourly; the never-rotated auth 23 is the claude_agent service login). The web client (src/api/client.ts) calls redirectToLogin when a request is still 401 AFTER a successful refresh. Harden in the web client: error for that request; log out only when the refresh fails or /auth/me is 401. Web work; Gate 1.
 - [ ] **156 `user_id=current_user.get("id")` call sites** across entities/ (e.g. expense create/update/delete) pass None - tokens carry `sub`; no 401, but audit attribution is lost. Use resolve_user_id or current_user["user_id"] (enriched by get_current_user_api).
 
 

@@ -37,6 +37,64 @@ from entities.sub_cost_code.business.service import SubCostCodeService
 logger = logging.getLogger(__name__)
 
 
+def classify_purchase_line_leftover_rebind(
+    existing_lines,
+    live_qbo_line_ids: frozenset,
+    *,
+    unbound_live_line_amount=None,
+    holding_sub_cost_code_ids: frozenset | None = None,
+):
+    """
+    Classify leftover local lines vs live QBO line ids for a single expense pull.
+
+    Returns (unambiguous_leftover, ambiguous, ambiguous_reason):
+      * unambiguous_leftover — stale line to rebind when 1:1 and true-recode gates pass.
+      * ambiguous — True when leftovers and unbound live ids exist but rebind is unsafe.
+      * ambiguous_reason — short token for logging (amount_mismatch, recode_not_suspense_line, …).
+    """
+    from integrations.intuit.qbo.base.ids import normalize_qbo_id
+    from integrations.intuit.qbo.purchase.connector.recode_leftover import true_recode_skip_reason
+
+    holding_sub_cost_code_ids = holding_sub_cost_code_ids or frozenset()
+    live_ids = frozenset(
+        normalize_qbo_id(qbo_id)
+        for qbo_id in live_qbo_line_ids
+        if qbo_id is not None and normalize_qbo_id(qbo_id) is not None
+    )
+    if not live_ids:
+        return None, False, None
+
+    stale = []
+    bound_live: set = set()
+    for line in existing_lines or []:
+        qbo_id = normalize_qbo_id(getattr(line, "qbo_id", None))
+        if qbo_id is None:
+            continue
+        if qbo_id in live_ids:
+            bound_live.add(qbo_id)
+        else:
+            stale.append(line)
+
+    unbound_live = live_ids - bound_live
+    if len(stale) == 1 and len(unbound_live) == 1:
+        reason = true_recode_skip_reason(
+            stale[0],
+            unbound_live_line_amount,
+            holding_sub_cost_code_ids=holding_sub_cost_code_ids,
+            live_line_count=len(live_ids),
+        )
+        if reason is None:
+            return stale[0], False, None
+        return None, True, reason
+    if stale and unbound_live:
+        if len(stale) != 1:
+            return None, True, "ambiguous_leftover_count"
+        if len(unbound_live) != 1:
+            return None, True, "ambiguous_unbound_live_count"
+        return None, True, "ambiguous_pair"
+    return None, False, None
+
+
 class VendorNotResolvedError(RuntimeError):
     """
     A Purchase whose QBO vendor has no dbo.Vendor even after an on-demand pull.
@@ -546,10 +604,78 @@ class PurchaseExpenseConnector:
         # from a line correctly bound elsewhere in this same expense (never steal).
         live_qbo_line_ids = frozenset(line.qbo_line_id for line in qbo_purchase_lines if line.qbo_line_id)
 
+        eli_svc = getattr(line_connector, "expense_line_item_service", None)
+        existing_lines = (
+            eli_svc.read_by_expense_id(expense_id=expense_id) if eli_svc is not None else []
+        )
+        if not isinstance(existing_lines, (list, tuple)):
+            existing_lines = []
+        from integrations.intuit.qbo.base.ids import normalize_qbo_id
+
+        bound_live = {
+            normalize_qbo_id(getattr(li, "qbo_id", None))
+            for li in existing_lines
+            if normalize_qbo_id(getattr(li, "qbo_id", None))
+            in {normalize_qbo_id(x) for x in live_qbo_line_ids if x}
+        }
+        live_norm = {normalize_qbo_id(x) for x in live_qbo_line_ids if normalize_qbo_id(x)}
+        unbound = live_norm - bound_live
+        unbound_qbo_line_id = next(iter(unbound)) if len(unbound) == 1 else None
+        unbound_qbo_amount = None
+        if unbound_qbo_line_id is not None:
+            for ql in qbo_purchase_lines:
+                if normalize_qbo_id(ql.qbo_line_id) == unbound_qbo_line_id:
+                    unbound_qbo_amount = ql.amount
+                    break
+
+        scc_svc = SubCostCodeService()
+        holding_scc_ids: set[int] = set()
+        for li in existing_lines:
+            sid = getattr(li, "sub_cost_code_id", None)
+            if sid is not None and scc_svc.is_holding_code(sid):
+                holding_scc_ids.add(int(sid))
+
+        unambiguous_leftover, leftover_ambiguous, ambiguous_reason = (
+            classify_purchase_line_leftover_rebind(
+                existing_lines,
+                live_qbo_line_ids,
+                unbound_live_line_amount=unbound_qbo_amount,
+                holding_sub_cost_code_ids=frozenset(holding_scc_ids),
+            )
+        )
+        if leftover_ambiguous:
+            logger.warning(
+                "qbo.purchase.line_leftover_ambiguous",
+                extra={
+                    "expense_id": expense_id,
+                    "live_qbo_line_ids": sorted(live_qbo_line_ids),
+                    "reason": ambiguous_reason or "ambiguous",
+                },
+            )
+
+        if eli_svc is not None:
+            line_connector._u738_invoice_linked_eli_ids = (
+                eli_svc.read_invoice_linked_line_ids_for_expense(expense_id)
+            )
+        else:
+            line_connector._u738_invoice_linked_eli_ids = frozenset()
+
         for qbo_line in qbo_purchase_lines:
             try:
+                rebind_target_id = None
+                if (
+                    unambiguous_leftover is not None
+                    and unbound_qbo_line_id is not None
+                    and normalize_qbo_id(qbo_line.qbo_line_id) == unbound_qbo_line_id
+                ):
+                    rebind_target_id = int(unambiguous_leftover.id)
                 line_connector.sync_from_qbo_purchase_line(
-                    expense_id, expense_public_id, qbo_line, live_qbo_line_ids, realm_id
+                    expense_id,
+                    expense_public_id,
+                    qbo_line,
+                    live_qbo_line_ids,
+                    realm_id,
+                    u738_rebind_target_id=rebind_target_id,
                 )
             except Exception as e:
                 logger.error(f"Failed to sync QboPurchaseLine {qbo_line.id} to ExpenseLineItem: {e}")

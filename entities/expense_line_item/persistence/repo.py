@@ -386,6 +386,20 @@ class ExpenseLineItemRepository:
             )
             raise map_database_error(error)
 
+    def read_invoice_linked_line_ids_for_expense(self, expense_id: int) -> frozenset[int]:
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT DISTINCT ili.[ExpenseLineItemId]
+                FROM dbo.[InvoiceLineItem] ili
+                INNER JOIN dbo.[ExpenseLineItem] eli ON eli.[Id] = ili.[ExpenseLineItemId]
+                WHERE eli.[ExpenseId] = ? AND ili.[ExpenseLineItemId] IS NOT NULL
+                """,
+                expense_id,
+            )
+            return frozenset(int(row.ExpenseLineItemId) for row in cur.fetchall())
+
 
 def _bit(flag: Optional[bool]) -> Optional[int]:
     """SQL Server BIT params take 0/1, not Python bool. Local copy per the

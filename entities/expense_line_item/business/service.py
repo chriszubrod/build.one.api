@@ -171,6 +171,10 @@ class ExpenseLineItemService:
         assert_can_access_expense(expense_id)
         return self.repo.read_by_expense_id(expense_id=expense_id)
 
+    def read_invoice_linked_line_ids_for_expense(self, expense_id: int) -> frozenset[int]:
+        assert_can_access_expense(expense_id)
+        return self.repo.read_invoice_linked_line_ids_for_expense(expense_id)
+
     def read_by_qbo_identity(self, expense_id: int, qbo_id: str) -> Optional[ExpenseLineItem]:
         """
         Read an expense line item directly by its dbo-native QBO identity,

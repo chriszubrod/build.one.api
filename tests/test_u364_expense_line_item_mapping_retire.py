@@ -512,8 +512,12 @@ def test_sync_line_items_computes_live_qbo_line_ids_once_and_threads_to_every_li
     line_connector = Mock()
     seen_calls = []
     line_connector.sync_from_qbo_purchase_line.side_effect = (
-        lambda expense_id, expense_public_id, line, live_ids, realm_id=None:
+        lambda expense_id, expense_public_id, line, live_ids, realm_id=None, **kwargs:
         seen_calls.append((expense_id, line.qbo_line_id, live_ids, realm_id))
+    )
+    line_connector.expense_line_item_service.read_by_expense_id.return_value = []
+    line_connector.expense_line_item_service.read_invoice_linked_line_ids_for_expense.return_value = (
+        frozenset()
     )
     connector._line_connector = line_connector
 
@@ -536,6 +540,10 @@ def test_sync_line_items_raises_when_any_line_fails():
     connector = PurchaseExpenseConnector(expense_service=Mock())
     line_connector = Mock()
     line_connector.sync_from_qbo_purchase_line.side_effect = [None, RuntimeError("boom")]
+    line_connector.expense_line_item_service.read_by_expense_id.return_value = []
+    line_connector.expense_line_item_service.read_invoice_linked_line_ids_for_expense.return_value = (
+        frozenset()
+    )
     connector._line_connector = line_connector
 
     with pytest.raises(RuntimeError, match=r"1 of 2"):

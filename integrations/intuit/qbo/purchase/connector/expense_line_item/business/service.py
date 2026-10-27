@@ -50,6 +50,9 @@ def default_amount_only_line(qty, unit_price, amount):
     return qty, unit_price
 
 
+from integrations.intuit.qbo.purchase.connector.recode_leftover import pull_is_billed as u738_pull_is_billed
+
+
 def pull_is_billable(direct, mirrored):
     """The IsBillable the QBO pull may write onto an existing local line (U-646).
 
@@ -146,6 +149,7 @@ class PurchaseLineExpenseLineItemConnector:
         qbo_line: QboPurchaseLine,
         live_qbo_line_ids: frozenset,
         realm_id: Optional[str] = None,
+        u738_rebind_target_id: Optional[int] = None,
     ) -> ExpenseLineItem:
         """
         Upsert a QBO PurchaseLine into an ExpenseLineItem, via the shared dbo-only
@@ -293,6 +297,8 @@ class PurchaseLineExpenseLineItemConnector:
             update_rate = preserve_stored_value(default_rate, qbo_line.unit_price, direct.rate)
             update_markup = preserve_stored_value(default_markup, qbo_line.markup_percent, direct.markup)
 
+            invoice_linked = getattr(self, "_u738_invoice_linked_eli_ids", frozenset())
+            has_invoice_ref = coerce_id(direct.id) in invoice_linked
             updated = self.expense_line_item_service.update_by_public_id(
                 direct.public_id,
                 row_version=direct.row_version,
@@ -303,7 +309,9 @@ class PurchaseLineExpenseLineItemConnector:
                 rate=update_rate,
                 amount=amount,
                 is_billable=pull_is_billable(direct, is_billable),
-                is_billed=is_billed,
+                is_billed=u738_pull_is_billed(
+                    direct, is_billed, has_invoice_ref=has_invoice_ref
+                ),
                 markup=update_markup,
                 price=price,
                 _via_internal_pipeline=True,
@@ -369,12 +377,31 @@ class PurchaseLineExpenseLineItemConnector:
                 cand_qty, cand_rate = default_amount_only_line(li.quantity, li.rate, li.amount)
                 return _fp(li.description, li.amount, cand_qty, cand_rate)
 
-            return find_stale_identity_orphan(
+            adopted = find_stale_identity_orphan(
                 existing_lines=existing,
                 live_qbo_line_ids=live_qbo_line_ids,
                 fingerprint=_candidate_fingerprint,
                 target=_fp(description, amount, default_qty, default_rate),
             )
+            if adopted is not None:
+                return adopted
+            # U-738: QBO recode 58999→item regenerates Line.Id AND changes line
+            # content (detail type, SubCostCode, description), so fingerprint
+            # readopt (U-364) correctly refuses — rebind the single leftover when
+            # this expense has exactly one stale line and one unbound live id.
+            if u738_rebind_target_id is not None:
+                from integrations.intuit.qbo.base.ids import normalize_qbo_id
+
+                live_ids = frozenset(
+                    normalize_qbo_id(qbo_id) for qbo_id in live_qbo_line_ids if qbo_id
+                )
+                for li in existing:
+                    if coerce_id(li.id) != coerce_id(u738_rebind_target_id):
+                        continue
+                    stale_id = normalize_qbo_id(getattr(li, "qbo_id", None))
+                    if stale_id is not None and stale_id not in live_ids:
+                        return li
+            return None
 
         def _create_line() -> Optional[ExpenseLineItem]:
             """

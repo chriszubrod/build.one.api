@@ -586,7 +586,7 @@ def sync_qbo_purchase(
     try:
         sync_service = SyncService()
         qbo_purchase_service = QboPurchaseService()
-        purchase_connector = PurchaseExpenseConnector()
+        purchase_connector = PurchaseExpenseConnector(autocomplete_coded_drafts=True)
         auth_service = QboAuthService()
 
         provider = 'qbo'

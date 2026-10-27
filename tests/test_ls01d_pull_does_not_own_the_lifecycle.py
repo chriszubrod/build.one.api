@@ -24,14 +24,22 @@ read the connectors' own ASTs:
    Expense's header connector (U-467) passes `status='completed'` instead of
    `is_draft`; every other connector still passes `is_draft`. Either form
    is the "born complete" contract for documents that already exist finished
-   in QBO. Expense exception (U-486 Phase F, CREATE-only): the Purchase header
+   in QBO.    Expense exception (U-486 Phase F, CREATE-only): the Purchase header
    connector may now be born `draft` when the pulled purchase still has a
    genuinely uncoded 58999 placeholder line (NEED TO CATEGORIZE account label
    AND ItemRef NULL). QBO card spend in that state is not a finished document
    — marking it `completed` was the false statement and produced 330
    completed-but-uncoded expenses. The UPDATE prohibition in pin 1 is
-   unchanged; re-pulling an existing Expense never overrides a human lifecycle
-   decision.
+   unchanged for status *writes on update_by_* — re-pulling an existing Expense
+   never passes `status`/`is_draft` on UPDATE. U-739 adds one narrow
+   exception on that same UPDATE path only, and only for the scheduled pull
+   (connector flag `autocomplete_coded_drafts=True`): after header+line mirror,
+   a draft whose `StatusOrigin` is `qbo_pull` or `coding_backfill` (the U-486b
+   re-drafts, per Chris 2026-10-27) that is fully coded in staged QBO and
+   locally may call `ExpenseService.complete_expense` under `system_authz`
+   (normal Complete button path). Human/other-origin drafts and any expense not
+   meeting the eligibility gates are untouched; autocomplete failure never
+   fails the pull.
 3. The two Bill-side terminal-lock exemptions SURVIVE the removal. They sat on
    the same call as the dropped kwarg and read like part of the same idea; they
    are not. 20,219 of 20,223 QBO-linked bills are completed, so dropping the

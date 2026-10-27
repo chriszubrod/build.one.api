@@ -95,6 +95,75 @@ def classify_purchase_line_leftover_rebind(
     return None, False, None
 
 
+def local_line_is_holding_sub_cost_code(
+    sub_cost_code_id: Optional[int],
+    sub_cost_code_service,
+) -> bool:
+    """True when the line's SCC is suspense/holding (IsHoldingCode flag or Number 00.02)."""
+    if sub_cost_code_id is None:
+        return False
+    if sub_cost_code_service.is_holding_code(sub_cost_code_id):
+        return True
+    scc = sub_cost_code_service.read_by_id(sub_cost_code_id)
+    if scc is not None and scc.number is not None:
+        return str(scc.number).strip() == "00.02"
+    return False
+
+
+AUTOCOMPLETE_STATUS_ORIGINS = frozenset({"qbo_pull", "coding_backfill"})
+
+def expense_autocomplete_skip_reason(
+    expense,
+    qbo_purchase_lines: List[QboPurchaseLine],
+    local_lines,
+    sub_cost_code_service,
+) -> Optional[str]:
+    """
+    U-739: when None, an existing pull-born draft may auto-complete after a pull UPDATE.
+    Otherwise returns a short skip token (no PII) for logging / backfill CSV.
+    """
+    if getattr(expense, "status", None) != "draft":
+        return "not_draft"
+    # Pull-born drafts, and pull-born rows the U-486b coding backfill re-drafted for
+    # coding (Chris 2026-10-27). Manual / other-origin drafts are never auto-completed.
+    if getattr(expense, "status_origin", None) not in AUTOCOMPLETE_STATUS_ORIGINS:
+        return "status_origin_not_eligible"
+    if any(
+        PurchaseExpenseConnector._qbo_purchase_line_is_uncoded_58999_placeholder(line)
+        for line in (qbo_purchase_lines or [])
+    ):
+        return "staged_uncoded_line"
+    if not local_lines:
+        return "zero_lines"
+    from integrations.intuit.qbo.base.ids import normalize_qbo_id
+
+    staged = list(qbo_purchase_lines or [])
+    local = list(local_lines or [])
+    staged_norm: list = []
+    for line in staged:
+        nid = normalize_qbo_id(getattr(line, "qbo_line_id", None))
+        if nid is None:
+            return "line_qbo_id_mismatch"
+        staged_norm.append(nid)
+    local_norm: list = []
+    for li in local:
+        nid = normalize_qbo_id(getattr(li, "qbo_id", None))
+        if nid is None:
+            return "line_qbo_id_mismatch"
+        local_norm.append(nid)
+    live_ids = frozenset(staged_norm)
+    local_ids = frozenset(local_norm)
+    if len(local) != len(local_ids) or len(staged) != len(live_ids) or live_ids != local_ids:
+        return "line_qbo_id_mismatch"
+    for li in local_lines:
+        scc_id = getattr(li, "sub_cost_code_id", None)
+        if scc_id is None:
+            return "missing_sub_cost_code"
+        if local_line_is_holding_sub_cost_code(scc_id, sub_cost_code_service):
+            return "holding_sub_cost_code"
+    return None
+
+
 class VendorNotResolvedError(RuntimeError):
     """
     A Purchase whose QBO vendor has no dbo.Vendor even after an on-demand pull.
@@ -160,6 +229,7 @@ class PurchaseExpenseConnector:
         reconciliation_repo: Optional[ReconciliationIssueRepository] = None,
         sub_cost_code_service: Optional[SubCostCodeService] = None,
         vendor_on_demand_resolver=None,
+        autocomplete_coded_drafts: bool = False,
     ):
         """Initialize the PurchaseExpenseConnector."""
         self.expense_service = expense_service or ExpenseService()
@@ -193,6 +263,8 @@ class PurchaseExpenseConnector:
         # payees). Checked before the resolver so a second purchase paying the
         # same non-vendor in one tick does not re-issue the GET.
         self._vendor_not_found: set = set()
+        # U-739: only the scheduled purchase pull may auto-complete coded drafts on UPDATE.
+        self.autocomplete_coded_drafts = autocomplete_coded_drafts
         # Single line connector shared across all purchases so _sub_cost_code_cache and
         # _project_cache persist for the entire sync run, not just per-purchase.
         from integrations.intuit.qbo.purchase.connector.expense_line_item.business.service import PurchaseLineExpenseLineItemConnector
@@ -318,7 +390,10 @@ class PurchaseExpenseConnector:
                         f"resolved to suspense/holding sub cost code 00.02; status unchanged."
                     ),
                 )
-            return updated
+            refreshed = self._try_autocomplete_expense_after_pull_update(
+                updated, qbo_purchase_lines
+            )
+            return refreshed if refreshed is not None else updated
 
         outcome = run_identity_fastpath_dbo_only(
             qbo_id=qbo_purchase.qbo_id,
@@ -688,6 +763,86 @@ class PurchaseExpenseConnector:
                 f"Expense {expense_id}: {len(failed_line_ids)} of {len(qbo_purchase_lines)} "
                 f"line item(s) failed to project: {failed_line_ids}"
             )
+
+    def _try_autocomplete_expense_after_pull_update(
+        self,
+        expense: Expense,
+        qbo_purchase_lines: List[QboPurchaseLine],
+    ) -> Optional[Expense]:
+        """
+        U-739 (LS-01d exception): after mirroring an existing expense on the pull UPDATE
+        path, complete pull-born drafts that are fully coded in QBO and locally. Failure-
+        isolated — never fails the pull.
+        """
+        expense_id = coerce_id(expense.id)
+        if getattr(expense, "status", None) != "draft":
+            return None
+        if getattr(expense, "status_origin", None) not in AUTOCOMPLETE_STATUS_ORIGINS:
+            return None
+        if not self.autocomplete_coded_drafts:
+            return None
+        try:
+            eli_svc = getattr(self._line_connector, "expense_line_item_service", None)
+            if eli_svc is None:
+                from entities.expense_line_item.business.service import ExpenseLineItemService
+
+                eli_svc = ExpenseLineItemService()
+            local_lines = eli_svc.read_by_expense_id(expense_id=expense_id)
+            if not isinstance(local_lines, (list, tuple)):
+                local_lines = []
+            scc_svc = self.sub_cost_code_service or SubCostCodeService()
+            skip = expense_autocomplete_skip_reason(
+                expense, qbo_purchase_lines, local_lines, scc_svc
+            )
+            if skip:
+                return None
+            public_id = str(expense.public_id) if expense.public_id else None
+            if not public_id:
+                logger.warning(
+                    "qbo.purchase.expense_autocomplete_failed",
+                    extra={"expense_id": expense_id, "reason": "missing_public_id"},
+                )
+                return None
+            from shared.authz.context import system_authz
+
+            with system_authz():
+                result = self.expense_service.complete_expense(public_id)
+            if not result.get("expense_finalized"):
+                reason = str(result.get("message") or "complete_not_finalized")
+                if len(reason) > 120:
+                    reason = reason[:120]
+                logger.warning(
+                    "qbo.purchase.expense_autocomplete_failed",
+                    extra={"expense_id": expense_id, "reason": reason},
+                )
+                return None
+            errors = result.get("errors") or []
+            if errors:
+                step_names = [
+                    str(err.get("step", "unspecified"))
+                    for err in errors
+                    if isinstance(err, dict)
+                ]
+                logger.warning(
+                    "qbo.purchase.expense_autocompleted_with_errors",
+                    extra={
+                        "expense_id": expense_id,
+                        "error_count": len(errors),
+                        "steps": step_names,
+                    },
+                )
+            else:
+                logger.info(
+                    "qbo.purchase.expense_autocompleted",
+                    extra={"expense_id": expense_id},
+                )
+            return self.expense_service.read_by_public_id(public_id)
+        except Exception as exc:
+            logger.warning(
+                "qbo.purchase.expense_autocomplete_failed",
+                extra={"expense_id": expense_id, "reason": type(exc).__name__},
+            )
+            return None
 
     def recode_purchase_line(
         self,

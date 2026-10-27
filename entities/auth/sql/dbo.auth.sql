@@ -250,6 +250,15 @@ BEGIN
     WHERE [AuthId] = @AuthId
       AND [RevokedDatetime] IS NULL;
 
+    -- U-736: bulk revoke must end rotation grace on still-revoked predecessors; otherwise
+    -- presenting an old rotated token within the 15 s grace mints a new session after password change.
+    UPDATE dbo.AuthRefreshToken
+    SET [ReplacedByTokenJti] = NULL
+    WHERE [AuthId] = @AuthId
+      AND [RevokedDatetime] IS NOT NULL
+      AND [ReplacedByTokenJti] IS NOT NULL
+      AND [RevokedDatetime] >= DATEADD(SECOND, -60, @RevokedDatetime);
+
     COMMIT TRANSACTION;
 END;
 GO

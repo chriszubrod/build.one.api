@@ -806,7 +806,7 @@ class AuthService:
             token_hash = self._hash_refresh_token(refresh_token)
             stored = self.token_repo.read_by_hash(token_hash)
             now = datetime.now(timezone.utc)
-            # Grace period for revoked token: another tab may have just rotated; allow this token once
+            # Grace period for rotation-revoked tokens only: another tab may have just rotated.
             REVOKED_GRACE_SECONDS = 15
             revoked_in_grace = False
 
@@ -814,6 +814,8 @@ class AuthService:
                 # Stored timestamps are DATETIME2, read back naive UTC; compare like with like (U-677).
                 db_now = _as_naive_utc(now)
                 if stored.revoked_datetime:
+                    if not stored.replaced_by_token_jti:
+                        raise ValueError("Refresh token has been revoked.")
                     delta = (db_now - _as_naive_utc(stored.revoked_datetime)).total_seconds()
                     if delta > REVOKED_GRACE_SECONDS:
                         raise ValueError("Refresh token has been revoked.")

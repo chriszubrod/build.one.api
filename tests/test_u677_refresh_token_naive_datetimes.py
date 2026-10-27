@@ -61,7 +61,8 @@ def _record(*, expires: datetime, revoked: datetime | None = None) -> AuthRefres
         issued_datetime=_naive_utc_now() - timedelta(days=1),
         expires_datetime=expires,
         revoked_datetime=revoked,
-        replaced_by_token_jti=None,
+        # A revoked row here models multi-tab ROTATION (the only case U-736 grants grace).
+        replaced_by_token_jti="prior-rotation-jti" if revoked is not None else None,
     )
 
 

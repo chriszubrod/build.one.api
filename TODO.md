@@ -2,6 +2,14 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-739 follow-ups (booked 2026-10-27)
+
+- [ ] **`_get_or_create_subfolder` KeyError when it CREATES a folder** (entities/expense/business/service.py ~2146): reads `create_result["item"]["id"]`; the listing path uses `item_id`. Folder is created, then the receipt copy to 520 - Current Receipts/yyyy/mm fails. Hit expenses 10904 and 19618 (MR2-MAIN) during the U-739 backfill - re-run their general-receipts upload after the fix.
+- [ ] **WR (project 203) has no SharePoint DETAILS workbook mapping** (ms.DriveItemProjectExcel) - only a Box workbook. Every WR completion reports a mapping-missing error; map it or mark WR Box-only.
+- [ ] **The pull fan-out writes DRAFT (possibly uncoded) expense lines into SharePoint DETAILS workbooks** before they are coded/approved (all 82 SharePoint-mapped lines of the 86 auto-completed drafts were already there). Check against the 00.02 / no-sync-before-approval rule (Chris 2026-10-23).
+- [ ] **Auto-complete runs synchronous workbook work inside the 15-min purchase pull** while the purchase lock is held - watch pull duration.
+
+
 ## U-738 / U-740 follow-ups - expense <-> QBO coding (booked 2026-10-27)
 
 - [ ] **24 leftover expense lines need manual review** (U-738 RESULT CSV in Downloads): 12 leftover already in a SharePoint DETAILS workbook (workbook row cleanup + merge), 7 with no live replacement line (QBO line deleted?), 2 with different receipts on both lines, 2 ambiguous pairs, 1 amount mismatch.

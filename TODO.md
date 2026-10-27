@@ -2,6 +2,16 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-736 / U-737 follow-ups - auth hardening (booked 2026-10-27)
+
+- [ ] **Refresh racing a bulk revoke stores one live successor** (P2): refresh_access_token revokes the old token, then stores the new one unconditionally; a password change / sign-out-all landing between them leaves the new token live. Make the successor store conditional and atomic in one procedure (lock the predecessor row; insert only if it is still the rotation-revoked predecessor), used by rotation and grace; SQL test: revoke predecessor -> bulk revoke -> store must refuse.
+- [ ] **Single logout across tabs still grants the rotation grace** (P3): logout revokes only B; a rotated A in another tab can mint for 15 s. Chain walk to the tip (refuse if any link was revoked without a replacement) - needs ReadAuthRefreshTokenByJti.
+- [ ] **Grace path can mint repeatedly within 15 s** (P3): the grace branch never re-marks A; each use stores a new unlinked token.
+- [ ] **set-credentials lacks company scoping** (P2, U-585 gate): POST /admin/auth/set-credentials/{user_public_id} is gated by Users can_update + the system-admin ceiling, but UserService.read_by_public_id is not company-scoped - a Users editor in one company could take over a user in another. Assert a shared company (UserCompany vs actor cid) or require system admin.
+- [ ] **POST /create/auth** (P3): any signed-in user can create an unlinked login (bypasses the signup registration code). Gate with require_system_admin or remove.
+- [ ] **set-credentials cannot adopt a signup Auth by username** (P3): an unlinked signup Auth blocks the same username ("Username already exists.").
+
+
 ## U-733 follow-ups (booked 2026-10-26)
 
 - [ ] **U-735 (re-diagnosed): one broken endpoint logs a valid session out** - refresh works (Chris = auth 6 rotates hourly; the never-rotated auth 23 is the claude_agent service login). The web client (src/api/client.ts) calls redirectToLogin when a request is still 401 AFTER a successful refresh. Harden in the web client: error for that request; log out only when the refresh fails or /auth/me is 401. Web work; Gate 1.
@@ -3965,7 +3975,7 @@ The Gate-1 audit established the two-layer contract: UPDATE sprocs are **full-ro
 - [ ] **Tolerant-`getattr` strictification campaign (masker class, U-052).** 26 repos map updatable columns via `getattr(row, 'X', None)` in `_from_db` — if a read sproc ever drops a column (stale-base re-apply), the merge wipes it SILENTLY instead of erroring. Ranked by blast radius: contract_labor (26 cols), invoice_line_item (14), bill_line_item (12), expense_line_item (12), bill_credit_line_item (11), attachment (10), vendor_compliance_document (9), bill (8, incl. VendorId/TotalAmount), invoice (8), vendor_insurance_policy (8), expense (7), bill_credit (6), +14 smaller. Strictify per-entity (row.Col direct → loud AttributeError) — behavior-changing, own unit(s), pair naturally with each single-source conversion.
 - [ ] **Base-vs-LIVE read-sproc column drift — 16 sprocs (stale-base landmine, U-037/U-089 class).** Live is AHEAD of base on: ReadVendorById/ByPublicId (`HourlyRate`,`Markup`,`TrackCompliance`), ReadUserById/ByPublicId (7 cols incl. `IsSystemAdmin`,`IsAgent`), ReadCompanyById/ByPublicId (`OrganizationId`,+audit), ReadOrganizationById/ByPublicId, ReadUserCompany/UserModule/UserProject/UserRole ById+ByPublicId (audit + `RoleId`/`RoleName`/`CompanyId`). Re-applying any of these base files would regress prod reads and CREATE the U-052 wipe condition. Fold into the single-source campaign — reconcile base to live before any re-apply.
 - [ ] **Dormant CL status sprocs foot-gun.** `UpdateContractLaborStatusByIds` + `UpdateContractLaborStatusAndLink` have zero callers; their repo methods default `bill_line_item_id=None` while the sprocs SET `[BillLineItemId]` unguarded — a future status-only caller silently wipes bill links. Guard-or-remove when a caller appears (the parity test does not cover non-`*ById` sprocs).
-- [ ] **`Auth.UserId` defense-in-depth note.** `UpdateAuthById` SETs `UserId` unguarded; today defended only by `AuthUpdate.user_id: int` being schema-required. If that field ever goes Optional, a partial PUT unlinks the login from its User. Consider a COALESCE guard (no legit clear path exists — relink uses `update_user_id_by_public_id`) next time `dbo.auth.sql` is touched for another reason.
+- [ ] **`Auth.UserId` defense-in-depth note.** `UpdateAuthById` SETs `UserId` unguarded. Since U-737 removed the self-service update/relink routes, `set_credentials_for_user` (admin) is the only remaining UserId writer. Consider a COALESCE guard next time `dbo.auth.sql` is touched.
 
 ## 🟢 U-063 follow-ups — Auth rate-limiting (2026-07-17) — SHIPPED (username-keyed, in-proc, `shared/rate_limit.py`), residuals below
 

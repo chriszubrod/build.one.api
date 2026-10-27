@@ -2,6 +2,16 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-738 / U-740 follow-ups - expense <-> QBO coding (booked 2026-10-27)
+
+- [ ] **24 leftover expense lines need manual review** (U-738 RESULT CSV in Downloads): 12 leftover already in a SharePoint DETAILS workbook (workbook row cleanup + merge), 7 with no live replacement line (QBO line deleted?), 2 with different receipts on both lines, 2 ambiguous pairs, 1 amount mismatch.
+- [ ] **Expenses still on 58999 in QBO that need coding first**: 32294 + 32315 (a line on holding 00.02), 32059 (no project), 32302 + 32357 (no coding). Then complete / re-drive.
+- [ ] **68 QBO purchases still on 58999 have no local expense** (TxnDate 2022-05 .. 2026-08) - classify (old/excluded vs missed import).
+- [ ] **Staging AccountRefName stays "NEED TO CATEGORIZE" on lines that became item-based** (59 lines) - reports must use `AccountRefName LIKE ... AND ItemRefValue IS NULL`; consider clearing AccountRef on item-based lines at upsert.
+- [ ] **One shared "genuinely uncoded staged line" predicate** - now in expense service, redrive script (x2), dbo.expense.sql, dbo.coding_suggestion.sql; coding_suggestion helpers use the name match only.
+- [ ] **A suggestion stuck at `enqueued` whose outbox row went dead is unrecoverable** (no redrive arm selects it).
+
+
 ## U-736 / U-737 follow-ups - auth hardening (booked 2026-10-27)
 
 - [ ] **Refresh racing a bulk revoke stores one live successor** (P2): refresh_access_token revokes the old token, then stores the new one unconditionally; a password change / sign-out-all landing between them leaves the new token live. Make the successor store conditional and atomic in one procedure (lock the predecessor row; insert only if it is still the rotation-revoked predecessor), used by rotation and grace; SQL test: revoke predecessor -> bulk revoke -> store must refuse.

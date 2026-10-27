@@ -10,13 +10,6 @@ class AuthCreate(BaseModel):
     password: str = Field(min_length=8, max_length=255)
 
 
-class AuthUpdate(BaseModel):
-    row_version: str = Field(description="The row version of the auth (base64 encoded).")
-    username: str = Field(min_length=1, max_length=255)
-    password: str = Field(min_length=8, max_length=255)
-    user_id: int = Field(description="The ID of the user.")
-
-
 class AuthLogin(BaseModel):
     """Credentials presented for authentication — NOT a place for password policy.
 

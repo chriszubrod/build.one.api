@@ -491,29 +491,6 @@ class AuthService:
         )
         return updated, access_token, refresh_token
 
-    def update_by_public_id(self, *, public_id: str, auth) -> Auth:
-        _auth = self.read_by_public_id(public_id=public_id)
-        if not _auth:
-            raise ValueError(f"Auth with public ID {public_id} not found.")
-        _auth.row_version = auth.row_version
-        _auth.username = auth.username
-        if getattr(auth, "password", None):
-            _auth.password_hash = _hash_password(auth.password)
-        _auth.user_id = auth.user_id
-
-        return self.repo.update_by_id(_auth)
-
-    def update_user_id_by_public_id(self, *, public_id: str, user_public_id: str) -> Auth:
-        _auth = self.read_by_public_id(public_id=public_id)
-        if not _auth:
-            raise ValueError(f"Auth with public ID {public_id} not found.")
-        _user = UserService().read_by_public_id(public_id=user_public_id)
-        if not _user:
-            raise ValueError(f"User with public ID {user_public_id} not found.")
-        _auth.user_id = _user.id
-        return self.repo.update_by_id(_auth)
-
-
     def delete_by_public_id(self, *, public_id: str) -> Auth:
         _auth = self.read_by_public_id(public_id=public_id)
         if not _auth:
@@ -768,9 +745,10 @@ class AuthService:
 
         auth = self.create(username=username, password=password)
         # Signup precedes any User row + UserCompany grants; tokens here
-        # carry no `uid` / `cid`. The caller must subsequently bind a
-        # User and grant Company access; the next refresh will pick up
-        # the new claims.
+        # carry no `uid` / `cid`. An ADMIN must then bind a User and grant
+        # Company access (self-serve relink was removed in U-737; note
+        # set-credentials cannot yet adopt this unlinked Auth by username -
+        # booked). The next refresh picks up the new claims.
         access_token = self.generate_auth_token(auth=auth)
         refresh_token, refresh_meta = self._issue_refresh_token(auth=auth)
         self._store_refresh_token(

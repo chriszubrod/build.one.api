@@ -6,10 +6,10 @@ Single-file spec for reproducing the existing Auth module exactly as implemented
 
 - **API (`entities/auth/api`)**
   - `router.py`: FastAPI `APIRouter(prefix="/api/v1", tags=["auth"])` with routes for CRUD, login, signup, and token refresh. Handlers return dictionaries produced from business models. Update/delete routes catch `ValueError` and return 404. Login/signup/refresh set HttpOnly cookies and return only the access token in the response body (refresh tokens are never exposed in JSON).
-  - `schemas.py`: Pydantic `BaseModel` classes — `AuthCreate`, `AuthUpdate`, `AuthLogin`, `AuthSignup`, `AuthRefreshRequest`.
+  - `schemas.py`: Pydantic `BaseModel` classes — `AuthCreate`, `AuthLogin`, `AuthSignup`, `AuthRefreshRequest`.
 - **Business (`entities/auth/business`)**
   - `model.py`: `@dataclass Auth` with fields `id` (int), `public_id`, `row_version` (base64), timestamps, `username`, `password_hash`, `user_id`. Stores `row_version` as base64 text and exposes `row_version_bytes`/`row_version_hex` helpers. `to_dict()` strips `password_hash`. Also defines `AuthToken`, `RefreshToken`, and `AuthRefreshTokenRecord` dataclasses.
-  - `service.py`: `AuthService` wrapping `AuthRepository` and `AuthRefreshTokenRepository`. Provides `create`, `read_by_public_id`, `read_by_username`, `update_by_public_id`, `update_user_id_by_public_id`, `delete_by_public_id`, `login`, `signup`, `refresh_access_token`, `revoke_refresh_token`, and token generation helpers. Update/delete methods raise `ValueError` when the record is not found. Also defines `get_current_user_api`, `get_current_user_web`, CSRF helpers, `WebAuthenticationRequired`, and `RefreshRequired` exceptions, and shared constants (`CSRF_COOKIE_NAME`, `CSRF_HEADER_NAME`, `UNSAFE_METHODS`).
+  - `service.py`: `AuthService` wrapping `AuthRepository` and `AuthRefreshTokenRepository`. Provides `create`, `read_by_public_id`, `read_by_username`, `delete_by_public_id`, `login`, `signup`, `refresh_access_token`, `revoke_refresh_token`, and token generation helpers. Update/delete methods raise `ValueError` when the record is not found. Also defines `get_current_user_api`, `get_current_user_web`, CSRF helpers, `WebAuthenticationRequired`, and `RefreshRequired` exceptions, and shared constants (`CSRF_COOKIE_NAME`, `CSRF_HEADER_NAME`, `UNSAFE_METHODS`).
 - **Persistence (`entities/auth/persistence`)**
   - `repo.py`: Uses `shared.database.get_connection`, `.call_procedure`, and `.map_database_error` with `pyodbc`. `_from_db` maps `pyodbc.Row` to `Auth`, base64-encoding `RowVersion`. Stored procedure names: `CreateAuth`, `ReadAuths`, `ReadAuthByPublicId`, `ReadAuthByUsername`, `UpdateAuthById`, `DeleteAuthById`.
   - `token_repo.py`: `AuthRefreshTokenRepository` for refresh token persistence — `CreateAuthRefreshToken`, `ReadAuthRefreshTokenByHash`, `RevokeAuthRefreshTokenByHash`.
@@ -31,19 +31,16 @@ Execution path: API/Web handler → `AuthService` → `AuthRepository`/`AuthRefr
 | --- | --- | --- | --- |
 | `POST` | `/api/v1/create/auth` | `AuthCreate` JSON | Requires auth. Creates a record and returns `auth.to_dict()`. |
 | `GET` | `/api/v1/get/auth/{public_id}` | None | Requires auth. Returns `auth.to_dict()` or 404. Only own record (sub == public_id). |
-| `PUT` | `/api/v1/update/auth/{public_id}` | `AuthUpdate` JSON | Requires auth. Updates record or returns 404. Only own record. |
-| `PUT` | `/api/v1/update/auth/{public_id}/user-public-id/{user_public_id}` | None | Requires auth. Links auth to user or returns 404. Only own record. |
 | `DELETE` | `/api/v1/delete/auth/{public_id}` | None | Requires auth. Hard deletes record or returns 404. Only own record. |
 | `POST` | `/api/v1/auth/login` | `AuthLogin` JSON | Public. Returns `{auth, token}` and sets HttpOnly cookies. |
 | `POST` | `/api/v1/signup/auth` | `AuthSignup` JSON | Public. Returns `{auth, token}` and sets HttpOnly cookies. |
 | `POST` | `/api/v1/auth/refresh` | `AuthRefreshRequest` JSON (optional) | Public. Returns `{token}` and rotates cookies. Reads refresh from cookie if not in body. |
 
-All CRUD routes enforce `current_user.sub == public_id` (403 Forbidden). Login/signup never return refresh tokens in JSON — only via HttpOnly cookies.
+Read/delete-by-public-id routes enforce `current_user.sub == public_id` (403 Forbidden); `POST /create/auth` does not (booked, U-737 follow-up). Login/signup never return refresh tokens in JSON — only via HttpOnly cookies.
 
 ## 3. Business Rules
 
 - Row versions are stored as base64 strings in the dataclass. The helper properties decode/encode as needed for persistence and UI display.
-- `AuthService.update_by_public_id` raises `ValueError` if the record is not found. Mutates the retrieved dataclass in place before calling `repo.update_by_id`. Caller must provide `row_version` (base64) in the update payload.
 - `AuthService.delete_by_public_id` raises `ValueError` if the record is not found. Deletes by internal `id`; there is no concurrency check on delete.
 - `AuthService.create` checks for duplicate usernames and hashes the password with bcrypt before persisting.
 - `AuthService.login` verifies credentials using bcrypt, with a legacy SHA-256 fallback that auto-upgrades the hash on success.
@@ -111,3 +108,5 @@ All CRUD routes enforce `current_user.sub == public_id` (403 Forbidden). Login/s
 - Module relies on shared infrastructure (`shared.database`, global logging setup, and template directory rooted at `templates/`).
 - No runtime configuration is injected directly into this module; the repository depends on ambient environment variables read by `shared.database`.
 - JWT settings (`secret_key`, `algorithm`, `access_token_expire_seconds`, `refresh_token_expire_seconds`) come from `config.Settings`.
+
+- U-737 (2026-10-27): `PUT /update/auth/{public_id}` and `PUT /update/auth/{public_id}/user-public-id/{user_public_id}` were REMOVED - any signed-in user could relink their own login to another User (privilege escalation) and set a password without the current one or a session revoke. Password changes go through change_password; relinking a login is an admin operation.

@@ -15,7 +15,6 @@ from config import Settings
 from entities.auth.api.schemas import (
     AdminSetCredentials,
     AuthCreate,
-    AuthUpdate,
     AuthLogin,
     AuthSignup,
     AuthRefreshRequest,
@@ -202,34 +201,6 @@ def get_auth_by_public_id_router(public_id: str, current_user: dict = Depends(ge
     if not auth:
         raise_not_found("Auth")
     return item_response(auth.to_dict())
-
-
-@router.put("/update/auth/{public_id}")
-def update_auth_by_id_router(public_id: str, body: AuthUpdate, current_user: dict = Depends(get_current_user_api)):
-    """
-    Update an auth by public ID.
-    """
-    if current_user.get("sub") != public_id:
-        raise HTTPException(status_code=403, detail="Forbidden")
-    try:
-        auth = service.update_by_public_id(public_id=public_id, auth=body)
-        return item_response(auth.to_dict())
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-
-
-@router.put("/update/auth/{public_id}/user-public-id/{user_public_id}")
-def update_auth_user_id_router(public_id: str, user_public_id: str, current_user: dict = Depends(get_current_user_api)):
-    """
-    Update an auth user ID by public ID.
-    """
-    if current_user.get("sub") != public_id:
-        raise HTTPException(status_code=403, detail="Forbidden")
-    try:
-        auth = service.update_user_id_by_public_id(public_id=public_id, user_public_id=user_public_id)
-        return item_response(auth.to_dict())
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
 
 
 @router.delete("/delete/auth/{public_id}")

@@ -38,6 +38,14 @@ _ELIGIBLE_EXPENSE_STATUSES = (
 )
 _STATUS_FILTER = f"AND e.[Status] IN ({', '.join(_ELIGIBLE_EXPENSE_STATUSES)})\n"
 
+_REVIEW_SUBMITTED_PREDICATE = """
+AND EXISTS (
+    SELECT 1
+    FROM dbo.[Review] r
+    WHERE r.[ExpenseId] = e.[Id]
+)
+"""
+
 _CANDIDATE_SELECT_BODY = """
     e.[Id],
     e.[Status],
@@ -55,11 +63,8 @@ _CANDIDATE_SELECT_BODY = """
     ) AS [UncategorizedLineCount],
     N'{source_arm}' AS [SourceArm]
 FROM dbo.[Expense] e
-WHERE EXISTS (
-    SELECT 1
-    FROM dbo.[Review] r
-    WHERE r.[ExpenseId] = e.[Id]
-)
+WHERE 1=1
+{review_required_predicate}
 """ + _STATUS_FILTER + """{arm_specific_predicate}
 AND EXISTS (
     SELECT 1
@@ -116,26 +121,83 @@ AND EXISTS (
 )
 """
 
-CANDIDATE_SQL = (
-    "SELECT\n"
-    + _CANDIDATE_SELECT_BODY.format(
-        source_arm="missing",
-        arm_specific_predicate=_ARM_MISSING_PREDICATE,
-        expense_id_filter="",
+_ARM_UNCONFIRMED_PREDICATE = f"""
+AND EXISTS (
+    SELECT 1
+    FROM dbo.[CodingSuggestion] cs
+    WHERE (
+        cs.[ExpenseId] = e.[Id]
+        OR (
+            cs.[ExpenseId] IS NULL
+            AND cs.[QboPurchaseQboId] = e.[QboId]
+            AND cs.[RealmId] = e.[RealmId]
+        )
     )
-    + "\n{expense_id_filter_outer}\n"
-    + "ORDER BY [Id]\n"
+      AND cs.[Status] IN (N'suggested', N'pending')
+      AND cs.[ConfirmedAt] IS NULL
+      AND (
+          cs.[ClaimedByUserId] IS NULL
+          OR cs.[ClaimedAt] < DATEADD(SECOND, -{_CLAIM_LEASE_SECONDS}, SYSUTCDATETIME())
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM qbo.[Outbox] o
+          WHERE o.[EntityPublicId] = cs.[PublicId]
+            AND o.[Kind] = N'recode_purchase_line'
+      )
+)
+"""
+
+_ARM_COMPLETED_UNSUBMITTED_PREDICATE = """
+AND e.[Status] = N'completed'
+AND NOT EXISTS (
+    SELECT 1
+    FROM dbo.[Review] r
+    WHERE r.[ExpenseId] = e.[Id]
+)
+"""
+
+def _format_candidate_sql(
+    *,
+    source_arm: str,
+    arm_specific_predicate: str,
+    review_required_predicate: str,
+) -> str:
+    return (
+        "SELECT\n"
+        + _CANDIDATE_SELECT_BODY.format(
+            source_arm=source_arm,
+            review_required_predicate=review_required_predicate,
+            arm_specific_predicate=arm_specific_predicate,
+            expense_id_filter="",
+        )
+        + "\n{expense_id_filter_outer}\n"
+        + "ORDER BY [Id]\n"
+    )
+
+
+CANDIDATE_SQL = _format_candidate_sql(
+    source_arm="missing",
+    arm_specific_predicate=_ARM_MISSING_PREDICATE,
+    review_required_predicate=_REVIEW_SUBMITTED_PREDICATE,
 )
 
-SEEDED_CANDIDATE_SQL = (
-    "SELECT\n"
-    + _CANDIDATE_SELECT_BODY.format(
-        source_arm="seeded-not-enqueued",
-        arm_specific_predicate=_ARM_SEEDED_PREDICATE,
-        expense_id_filter="",
-    )
-    + "\n{expense_id_filter_outer}\n"
-    + "ORDER BY [Id]\n"
+SEEDED_CANDIDATE_SQL = _format_candidate_sql(
+    source_arm="seeded-not-enqueued",
+    arm_specific_predicate=_ARM_SEEDED_PREDICATE,
+    review_required_predicate=_REVIEW_SUBMITTED_PREDICATE,
+)
+
+UNCONFIRMED_CANDIDATE_SQL = _format_candidate_sql(
+    source_arm="unconfirmed-suggested",
+    arm_specific_predicate=_ARM_UNCONFIRMED_PREDICATE,
+    review_required_predicate=_REVIEW_SUBMITTED_PREDICATE,
+)
+
+COMPLETED_UNSUBMITTED_CANDIDATE_SQL = _format_candidate_sql(
+    source_arm="completed-unsubmitted",
+    arm_specific_predicate=_ARM_COMPLETED_UNSUBMITTED_PREDICATE,
+    review_required_predicate="",
 )
 
 
@@ -165,6 +227,8 @@ def fetch_candidates(
     *,
     expense_ids: Optional[list[int]] = None,
     resume_expense_ids: Optional[list[int]] = None,
+    include_unconfirmed: bool = False,
+    include_completed_unsubmitted: bool = False,
 ) -> list[Any]:
     """Read-only candidate list (parameterized)."""
     rows = _execute_candidate_query(CANDIDATE_SQL, expense_ids=expense_ids)
@@ -174,7 +238,30 @@ def fetch_candidates(
             expense_ids=list(resume_expense_ids),
         )
         rows.extend(seeded)
-        rows.sort(key=lambda r: int(r.Id))
+    if include_unconfirmed:
+        rows.extend(
+            _execute_candidate_query(
+                UNCONFIRMED_CANDIDATE_SQL,
+                expense_ids=expense_ids,
+            )
+        )
+    if include_completed_unsubmitted:
+        rows.extend(
+            _execute_candidate_query(
+                COMPLETED_UNSUBMITTED_CANDIDATE_SQL,
+                expense_ids=expense_ids,
+            )
+        )
+    if rows:
+        seen: set[int] = set()
+        deduped: list[Any] = []
+        for row in sorted(rows, key=lambda r: int(r.Id)):
+            eid = int(row.Id)
+            if eid in seen:
+                continue
+            seen.add(eid)
+            deduped.append(row)
+        return deduped
     return rows
 
 
@@ -264,16 +351,37 @@ def main(argv: list[str] | None = None) -> int:
         help="User id passed as created_by when seeding CodingSuggestion (default: 17).",
     )
     ap.add_argument("--apply", action="store_true", help="Enqueue recodes (default: dry-run).")
+    ap.add_argument(
+        "--include-unconfirmed",
+        action="store_true",
+        help=(
+            "Also select review-submitted expenses with suggested/pending CodingSuggestion "
+            "rows that were never confirmed or enqueued."
+        ),
+    )
+    ap.add_argument(
+        "--include-completed-unsubmitted",
+        action="store_true",
+        help=(
+            "Also select completed expenses with no Review row (never submitted for review) "
+            "that still have uncategorized QBO purchase lines."
+        ),
+    )
     args = ap.parse_args(argv)
 
     gate_reason = recode_write_gate_reason()
     gates_on = gate_reason is None
 
     resume_ids = args.resume_expense_ids or []
-    candidates = fetch_candidates(
-        expense_ids=args.expense_ids,
-        resume_expense_ids=resume_ids or None,
-    )
+    fetch_kwargs: dict[str, Any] = {
+        "expense_ids": args.expense_ids,
+        "resume_expense_ids": resume_ids or None,
+    }
+    if args.include_unconfirmed:
+        fetch_kwargs["include_unconfirmed"] = True
+    if args.include_completed_unsubmitted:
+        fetch_kwargs["include_completed_unsubmitted"] = True
+    candidates = fetch_candidates(**fetch_kwargs)
     if resume_ids:
         seeded_matched = {
             int(r.Id)
@@ -315,6 +423,16 @@ def main(argv: list[str] | None = None) -> int:
                 still = fetch_candidates(
                     expense_ids=[expense_id],
                     resume_expense_ids=[expense_id],
+                )
+            elif source_arm == "unconfirmed-suggested":
+                still = fetch_candidates(
+                    expense_ids=[expense_id],
+                    include_unconfirmed=True,
+                )
+            elif source_arm == "completed-unsubmitted":
+                still = fetch_candidates(
+                    expense_ids=[expense_id],
+                    include_completed_unsubmitted=True,
                 )
             else:
                 still = fetch_candidates(expense_ids=[expense_id])

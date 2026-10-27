@@ -48,6 +48,9 @@ from entities.project.business.service import ProjectService
 from shared.access import EntityNotAccessibleError, assert_can_access_expense, can_access_expense
 from shared.api.money import details_ledger_amount
 from shared.authz import current_user_id, current_is_system_admin
+
+# System actor for writes with no user in context (house default; same as dbo.Attachment).
+_SYSTEM_ACTOR_USER_ID = 17
 from shared.authz.delegation import assert_may_act_as
 from entities.vendor.business.service import VendorService
 from entities.sub_cost_code.business.holding_lines import (
@@ -686,6 +689,86 @@ class ExpenseService:
         dominant["confirmed_mixed_codes"] = len(unique_codes) > 1
         return dominant
 
+    def _expense_has_genuine_uncoded_staged_lines(self, *, expense_id: int) -> bool:
+        """True when staging still has a 58999 account line with no QBO Item ref (U-740)."""
+        from shared.database import get_connection
+
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT CASE WHEN EXISTS (
+                        SELECT 1
+                        FROM dbo.[Expense] e
+                        INNER JOIN qbo.[Purchase] p
+                            ON p.[QboId] = e.[QboId]
+                           AND p.[RealmId] = e.[RealmId]
+                        INNER JOIN qbo.[PurchaseLine] pl
+                            ON pl.[QboPurchaseId] = p.[Id]
+                        WHERE e.[Id] = ?
+                          AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
+                          AND pl.[ItemRefValue] IS NULL
+                    ) THEN 1 ELSE 0 END
+                    """,
+                    expense_id,
+                )
+                row = cursor.fetchone()
+                return bool(row and row[0])
+        except Exception as exc:
+            logger.warning(
+                "Could not check uncoded staged lines for expense_id=%s: %s",
+                expense_id,
+                type(exc).__name__,
+            )
+            return False
+
+    _RECODE_ENQUEUE_NOTHING_TO_DO_REASONS = frozenset(
+        {
+            "no_uncoded_staged_lines",
+            "no_coding_items",
+            "terminal_status",
+            "already_enqueued",
+            "written",
+        }
+    )
+
+    @staticmethod
+    def _recode_enqueue_skip_reason(summary: dict) -> Optional[str]:
+        if int(summary.get("enqueued") or 0) > 0:
+            return None
+        if int(summary.get("writes_disabled") or 0) > 0:
+            return "writes_disabled"
+        for item in summary.get("items") or []:
+            reason = item.get("reason")
+            if reason:
+                return str(reason)
+            outcome = item.get("outcome")
+            if outcome and outcome not in ("enqueued",):
+                return str(outcome)
+            confirm = item.get("confirm") or {}
+            confirm_status = confirm.get("status")
+            if confirm_status and confirm_status not in ("enqueued",):
+                return str(confirm_status)
+        if int(summary.get("skipped") or 0) > 0:
+            return "skipped"
+        return None
+
+    @classmethod
+    def _recode_enqueue_skip_log_level(cls, skip_reason: Optional[str]) -> int:
+        if skip_reason in cls._RECODE_ENQUEUE_NOTHING_TO_DO_REASONS:
+            return logging.INFO
+        return logging.WARNING
+
+    def _log_recode_enqueue_skipped(self, *, expense_id: int, skip_reason: str) -> None:
+        level = self._recode_enqueue_skip_log_level(skip_reason)
+        logger.log(
+            level,
+            "expense.complete.recode_enqueue_skipped expense_id=%s reason=%s",
+            expense_id,
+            skip_reason,
+        )
+
     def enqueue_coding_recode_on_submit(self, *, expense_id: int, user_id: int) -> dict:
         """Enqueue one QBO recode per Expense CodingSuggestion (U-486 C2 / U-652)."""
         from entities.expense.api.router import EXPENSE_CODING_TERMINAL_STATUSES
@@ -780,6 +863,13 @@ class ExpenseService:
                 summary["items"].append(item_result)
                 continue
 
+            if status == "enqueued":
+                summary["skipped"] += 1
+                item_result["outcome"] = "skipped"
+                item_result["reason"] = "already_enqueued"
+                summary["items"].append(item_result)
+                continue
+
             if dominant is None:
                 summary["skipped"] += 1
                 item_result["outcome"] = "skipped"
@@ -835,6 +925,70 @@ class ExpenseService:
             summary["items"].append(item_result)
 
         return summary
+
+    def _enqueue_coding_recode_on_complete(self, *, expense_id: int, qbo_linked: bool = True) -> dict:
+        """Failure-isolated QBO recode enqueue at expense completion (U-740).
+
+        `qbo_linked=False` (no QboId/RealmId on the expense) skips the staging probe.
+        """
+        if not qbo_linked or not self._expense_has_genuine_uncoded_staged_lines(expense_id=expense_id):
+            self._log_recode_enqueue_skipped(
+                expense_id=expense_id,
+                skip_reason="no_uncoded_staged_lines",
+            )
+            return {
+                "success": True,
+                "message": "No uncoded QBO purchase lines to recode",
+                "enqueued": 0,
+                "skipped": True,
+                "skip_reason": "no_uncoded_staged_lines",
+                "errors": [],
+            }
+
+        actor_user_id = current_user_id.get() or _SYSTEM_ACTOR_USER_ID
+        try:
+            summary = self.enqueue_coding_recode_on_submit(
+                expense_id=expense_id,
+                user_id=actor_user_id,
+            )
+        except Exception as exc:
+            self._log_recode_enqueue_skipped(
+                expense_id=expense_id,
+                skip_reason=type(exc).__name__,
+            )
+            return {
+                "success": True,
+                "message": "Recode enqueue failed (failure-isolated)",
+                "enqueued": 0,
+                "skipped": True,
+                "skip_reason": type(exc).__name__,
+                "errors": [],
+            }
+
+        enqueued = int(summary.get("enqueued") or 0)
+        skip_reason = self._recode_enqueue_skip_reason(summary)
+        if skip_reason:
+            self._log_recode_enqueue_skipped(
+                expense_id=expense_id,
+                skip_reason=skip_reason,
+            )
+        if enqueued > 0:
+            return {
+                "success": True,
+                "message": "Purchase line recode enqueued",
+                "enqueued": enqueued,
+                "summary": summary,
+                "errors": [],
+            }
+        return {
+            "success": True,
+            "message": "Recode not enqueued",
+            "enqueued": 0,
+            "skipped": True,
+            "skip_reason": skip_reason or "skipped",
+            "summary": summary,
+            "errors": [],
+        }
 
     def read_by_reference_number_and_vendor_public_id(self, reference_number: str, vendor_public_id: str) -> Optional[Expense]:
         """
@@ -1346,8 +1500,11 @@ class ExpenseService:
         if receipts_upload_result.get("errors"):
             all_errors.extend(receipts_upload_result["errors"])
 
-        # Step 4: QBO push disabled (no reverse sync at this time)
-        qbo_sync_result = {"success": True, "message": "Skipped (reverse sync disabled)", "qbo_purchase_id": None, "errors": []}
+        # Step 4: Enqueue QBO purchase-line recode when staging is still uncoded (U-740).
+        qbo_sync_result = self._enqueue_coding_recode_on_complete(
+            expense_id=expense.id,
+            qbo_linked=bool(getattr(expense, "qbo_id", None) and getattr(expense, "realm_id", None)),
+        )
 
         # Step 5: Box mirror — enqueue line-item attachments to each mapped
         # project's Box folder. Additive + failure-isolated. One pass covers

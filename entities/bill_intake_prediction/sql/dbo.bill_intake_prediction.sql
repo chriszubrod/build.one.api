@@ -97,6 +97,102 @@ BEGIN
         ALTER TABLE dbo.[BillIntakePrediction]
             ADD [SimilarConfidence] DECIMAL(5,4) NULL;
     END
+
+    IF COL_LENGTH('dbo.BillIntakePrediction', 'CodingSource') IS NULL
+    BEGIN
+        ALTER TABLE dbo.[BillIntakePrediction]
+            ADD [CodingSource] NVARCHAR(20) NULL;
+    END
+
+    IF COL_LENGTH('dbo.BillIntakePrediction', 'CodingEscalation') IS NULL
+    BEGIN
+        ALTER TABLE dbo.[BillIntakePrediction]
+            ADD [CodingEscalation] NVARCHAR(20) NULL;
+    END
+
+    IF COL_LENGTH('dbo.BillIntakePrediction', 'PrimaryModel') IS NULL
+    BEGIN
+        ALTER TABLE dbo.[BillIntakePrediction]
+            ADD [PrimaryModel] NVARCHAR(100) NULL;
+    END
+
+    IF COL_LENGTH('dbo.BillIntakePrediction', 'PrimarySubCostCodeId') IS NULL
+    BEGIN
+        ALTER TABLE dbo.[BillIntakePrediction]
+            ADD [PrimarySubCostCodeId] BIGINT NULL;
+    END
+
+    IF COL_LENGTH('dbo.BillIntakePrediction', 'PrimaryProjectId') IS NULL
+    BEGIN
+        ALTER TABLE dbo.[BillIntakePrediction]
+            ADD [PrimaryProjectId] BIGINT NULL;
+    END
+
+    IF COL_LENGTH('dbo.BillIntakePrediction', 'PrimaryConfidence') IS NULL
+    BEGIN
+        ALTER TABLE dbo.[BillIntakePrediction]
+            ADD [PrimaryConfidence] DECIMAL(5,4) NULL;
+    END
+
+    IF COL_LENGTH('dbo.BillIntakePrediction', 'PrimaryError') IS NULL
+    BEGIN
+        ALTER TABLE dbo.[BillIntakePrediction]
+            ADD [PrimaryError] NVARCHAR(50) NULL;
+    END
+
+    IF COL_LENGTH('dbo.BillIntakePrediction', 'FallbackModel') IS NULL
+    BEGIN
+        ALTER TABLE dbo.[BillIntakePrediction]
+            ADD [FallbackModel] NVARCHAR(100) NULL;
+    END
+
+    IF COL_LENGTH('dbo.BillIntakePrediction', 'FallbackSubCostCodeId') IS NULL
+    BEGIN
+        ALTER TABLE dbo.[BillIntakePrediction]
+            ADD [FallbackSubCostCodeId] BIGINT NULL;
+    END
+
+    IF COL_LENGTH('dbo.BillIntakePrediction', 'FallbackConfidence') IS NULL
+    BEGIN
+        ALTER TABLE dbo.[BillIntakePrediction]
+            ADD [FallbackConfidence] DECIMAL(5,4) NULL;
+    END
+
+    IF COL_LENGTH('dbo.BillIntakePrediction', 'SimilarNeighbourCount') IS NULL
+    BEGIN
+        ALTER TABLE dbo.[BillIntakePrediction]
+            ADD [SimilarNeighbourCount] TINYINT NULL;
+    END
+END
+GO
+
+IF OBJECT_ID('dbo.BillIntakePrediction', 'U') IS NOT NULL
+   AND NOT EXISTS (
+       SELECT 1 FROM sys.check_constraints
+       WHERE name = 'CK_BillIntakePrediction_CodingSource'
+         AND parent_object_id = OBJECT_ID('dbo.BillIntakePrediction')
+   )
+BEGIN
+    ALTER TABLE dbo.[BillIntakePrediction]
+        ADD CONSTRAINT [CK_BillIntakePrediction_CodingSource]
+        CHECK ([CodingSource] IS NULL OR [CodingSource] IN (
+            'history', 'primary', 'fallback', 'similar_vote', 'none'
+        ));
+END
+GO
+
+IF OBJECT_ID('dbo.BillIntakePrediction', 'U') IS NOT NULL
+   AND NOT EXISTS (
+       SELECT 1 FROM sys.check_constraints
+       WHERE name = 'CK_BillIntakePrediction_CodingEscalation'
+         AND parent_object_id = OBJECT_ID('dbo.BillIntakePrediction')
+   )
+BEGIN
+    ALTER TABLE dbo.[BillIntakePrediction]
+        ADD CONSTRAINT [CK_BillIntakePrediction_CodingEscalation]
+        CHECK ([CodingEscalation] IS NULL OR [CodingEscalation] IN (
+            'low_confidence', 'claude_unavailable'
+        ));
 END
 GO
 
@@ -136,7 +232,20 @@ CREATE OR ALTER PROCEDURE UpsertBillIntakePrediction
     @InputTokens INT = NULL,
     @OutputTokens INT = NULL,
     @CostUsd DECIMAL(12,6) = NULL,
-    @CreatedByUserId BIGINT = NULL
+    @CreatedByUserId BIGINT = NULL,
+    @CodingSource NVARCHAR(20) = NULL,
+    @CodingEscalation NVARCHAR(20) = NULL,
+    @PrimaryModel NVARCHAR(100) = NULL,
+    @PrimarySubCostCodeId BIGINT = NULL,
+    @PrimaryProjectId BIGINT = NULL,
+    @PrimaryConfidence DECIMAL(5,4) = NULL,
+    @PrimaryError NVARCHAR(50) = NULL,
+    @FallbackModel NVARCHAR(100) = NULL,
+    @FallbackSubCostCodeId BIGINT = NULL,
+    @FallbackConfidence DECIMAL(5,4) = NULL,
+    @SimilarPredSubCostCodeId BIGINT = NULL,
+    @SimilarConfidence DECIMAL(5,4) = NULL,
+    @SimilarNeighbourCount TINYINT = NULL
 )
 AS
 BEGIN
@@ -193,7 +302,20 @@ BEGIN
             CAST(NULL AS BIGINT) AS [FinalSubCostCodeId],
             CAST(NULL AS BIGINT) AS [FinalProjectId],
             CAST(NULL AS DATETIME2(3)) AS [FinalizedDatetime],
-            CAST(NULL AS NVARCHAR(500)) AS [RejectReason];
+            CAST(NULL AS NVARCHAR(500)) AS [RejectReason],
+            CAST(NULL AS BIGINT) AS [SimilarPredSubCostCodeId],
+            CAST(NULL AS DECIMAL(5,4)) AS [SimilarConfidence],
+            CAST(NULL AS NVARCHAR(20)) AS [CodingSource],
+            CAST(NULL AS NVARCHAR(20)) AS [CodingEscalation],
+            CAST(NULL AS NVARCHAR(100)) AS [PrimaryModel],
+            CAST(NULL AS BIGINT) AS [PrimarySubCostCodeId],
+            CAST(NULL AS BIGINT) AS [PrimaryProjectId],
+            CAST(NULL AS DECIMAL(5,4)) AS [PrimaryConfidence],
+            CAST(NULL AS NVARCHAR(50)) AS [PrimaryError],
+            CAST(NULL AS NVARCHAR(100)) AS [FallbackModel],
+            CAST(NULL AS BIGINT) AS [FallbackSubCostCodeId],
+            CAST(NULL AS DECIMAL(5,4)) AS [FallbackConfidence],
+            CAST(NULL AS TINYINT) AS [SimilarNeighbourCount];
         RETURN;
     END
 
@@ -237,8 +359,19 @@ BEGIN
             [InputTokens] = @InputTokens,
             [OutputTokens] = @OutputTokens,
             [CostUsd] = @CostUsd,
-            [SimilarPredSubCostCodeId] = NULL,
-            [SimilarConfidence] = NULL
+            [CodingSource] = @CodingSource,
+            [CodingEscalation] = @CodingEscalation,
+            [PrimaryModel] = @PrimaryModel,
+            [PrimarySubCostCodeId] = @PrimarySubCostCodeId,
+            [PrimaryProjectId] = @PrimaryProjectId,
+            [PrimaryConfidence] = @PrimaryConfidence,
+            [PrimaryError] = @PrimaryError,
+            [FallbackModel] = @FallbackModel,
+            [FallbackSubCostCodeId] = @FallbackSubCostCodeId,
+            [FallbackConfidence] = @FallbackConfidence,
+            [SimilarPredSubCostCodeId] = @SimilarPredSubCostCodeId,
+            [SimilarConfidence] = @SimilarConfidence,
+            [SimilarNeighbourCount] = @SimilarNeighbourCount
     WHEN NOT MATCHED THEN
         INSERT
             ([CreatedDatetime], [ModifiedDatetime], [CreatedByUserId], [AttachmentId],
@@ -248,7 +381,10 @@ BEGIN
              [CodingMode], [CodingChosenProjectId], [HeaderConfidence], [HeaderModel],
              [CodingConfidence], [CodingModel], [LatencyMsTotal], [TimingJson],
              [InputTokens], [OutputTokens], [CostUsd],
-             [SimilarPredSubCostCodeId], [SimilarConfidence])
+             [CodingSource], [CodingEscalation], [PrimaryModel], [PrimarySubCostCodeId],
+             [PrimaryProjectId], [PrimaryConfidence], [PrimaryError], [FallbackModel],
+             [FallbackSubCostCodeId], [FallbackConfidence],
+             [SimilarPredSubCostCodeId], [SimilarConfidence], [SimilarNeighbourCount])
         VALUES
             (@Now, @Now, COALESCE(@CreatedByUserId, 17), @AttachmentId,
              @LinkedBillId, @ExtractedDatetime, @IntakeSource, @ModelVersion, @Status,
@@ -257,7 +393,10 @@ BEGIN
              @CodingMode, @CodingChosenProjectId, @HeaderConfidence, @HeaderModel,
              @CodingConfidence, @CodingModel, @LatencyMsTotal, @TimingJson,
              @InputTokens, @OutputTokens, @CostUsd,
-             NULL, NULL)
+             @CodingSource, @CodingEscalation, @PrimaryModel, @PrimarySubCostCodeId,
+             @PrimaryProjectId, @PrimaryConfidence, @PrimaryError, @FallbackModel,
+             @FallbackSubCostCodeId, @FallbackConfidence,
+             @SimilarPredSubCostCodeId, @SimilarConfidence, @SimilarNeighbourCount)
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -297,7 +436,20 @@ BEGIN
         INSERTED.[FinalSubCostCodeId],
         INSERTED.[FinalProjectId],
         INSERTED.[FinalizedDatetime],
-        INSERTED.[RejectReason];
+        INSERTED.[RejectReason],
+        INSERTED.[SimilarPredSubCostCodeId],
+        INSERTED.[SimilarConfidence],
+        INSERTED.[CodingSource],
+        INSERTED.[CodingEscalation],
+        INSERTED.[PrimaryModel],
+        INSERTED.[PrimarySubCostCodeId],
+        INSERTED.[PrimaryProjectId],
+        INSERTED.[PrimaryConfidence],
+        INSERTED.[PrimaryError],
+        INSERTED.[FallbackModel],
+        INSERTED.[FallbackSubCostCodeId],
+        INSERTED.[FallbackConfidence],
+        INSERTED.[SimilarNeighbourCount];
 
     -- Re-bind after the MERGE (U-676p): a link that committed between the lookup above and
     -- the MERGE would otherwise leave BillId NULL for good (the create path's
@@ -348,7 +500,10 @@ BEGIN
         [ModifiedDatetime] = @Now
     WHERE [AttachmentId] = @AttachmentId
       AND [BillId] IS NULL
-      AND [FinalizedDatetime] IS NULL;
+      AND [FinalizedDatetime] IS NULL
+      -- U-701b3: a V2 row already holds the FILTERED vote from its own upsert; the raw
+      -- U-701a shadow must never overwrite it.
+      AND [CodingSource] IS NULL;
 
     SET @RowsUpdated = @@ROWCOUNT;
 
@@ -505,7 +660,20 @@ BEGIN
         p.[FinalSubCostCodeId],
         p.[FinalProjectId],
         p.[FinalizedDatetime],
-        p.[RejectReason]
+        p.[RejectReason],
+        p.[SimilarPredSubCostCodeId],
+        p.[SimilarConfidence],
+        p.[CodingSource],
+        p.[CodingEscalation],
+        p.[PrimaryModel],
+        p.[PrimarySubCostCodeId],
+        p.[PrimaryProjectId],
+        p.[PrimaryConfidence],
+        p.[PrimaryError],
+        p.[FallbackModel],
+        p.[FallbackSubCostCodeId],
+        p.[FallbackConfidence],
+        p.[SimilarNeighbourCount]
     FROM dbo.[BillIntakePrediction] p
     WHERE p.[BillId] = @BillId
     ORDER BY p.[Id] DESC;
@@ -559,7 +727,20 @@ BEGIN
         p.[FinalSubCostCodeId],
         p.[FinalProjectId],
         p.[FinalizedDatetime],
-        p.[RejectReason]
+        p.[RejectReason],
+        p.[SimilarPredSubCostCodeId],
+        p.[SimilarConfidence],
+        p.[CodingSource],
+        p.[CodingEscalation],
+        p.[PrimaryModel],
+        p.[PrimarySubCostCodeId],
+        p.[PrimaryProjectId],
+        p.[PrimaryConfidence],
+        p.[PrimaryError],
+        p.[FallbackModel],
+        p.[FallbackSubCostCodeId],
+        p.[FallbackConfidence],
+        p.[SimilarNeighbourCount]
     FROM dbo.[BillIntakePrediction] p
     WHERE p.[AttachmentId] = @AttachmentId;
 END;
@@ -589,6 +770,19 @@ BEGIN
         p.[FinalProjectId],
         p.[CostUsd],
         p.[LatencyMsTotal],
+        p.[SimilarPredSubCostCodeId],
+        p.[SimilarConfidence],
+        p.[CodingSource],
+        p.[CodingEscalation],
+        p.[PrimaryModel],
+        p.[PrimarySubCostCodeId],
+        p.[PrimaryProjectId],
+        p.[PrimaryConfidence],
+        p.[PrimaryError],
+        p.[FallbackModel],
+        p.[FallbackSubCostCodeId],
+        p.[FallbackConfidence],
+        p.[SimilarNeighbourCount],
         v.[Name] AS [VendorName]
     FROM dbo.[BillIntakePrediction] p
     LEFT JOIN dbo.[Vendor] v ON v.[Id] = p.[FinalVendorId]

@@ -249,6 +249,8 @@ class Settings(BaseSettings):
     # U-676r: live text-tier SCC candidate list — "narrowed" (vendor-wide history
     # families) or "full" (pre-U-676r catalog slice; rollback without deploy).
     bill_coding_candidate_sccs: str = "narrowed"
+    # U-701b3: Haiku→Sonnet ladder V2 + similar-evidence payload (drop/tick). Default off.
+    bill_coding_ladder_v2_enabled: bool = False
 
     # Bill create drop-to-prefill synchronous read (U-676b). Default off.
     bill_drop_prefill_enabled: bool = False

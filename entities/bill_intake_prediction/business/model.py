@@ -43,3 +43,16 @@ class BillIntakePrediction:
     final_sub_cost_code_id: Optional[int] = None
     final_project_id: Optional[int] = None
     finalized_datetime: Optional[datetime] = None
+    similar_pred_sub_cost_code_id: Optional[int] = None
+    similar_confidence: Optional[Decimal] = None
+    coding_source: Optional[str] = None
+    coding_escalation: Optional[str] = None
+    primary_model: Optional[str] = None
+    primary_sub_cost_code_id: Optional[int] = None
+    primary_project_id: Optional[int] = None
+    primary_confidence: Optional[Decimal] = None
+    primary_error: Optional[str] = None
+    fallback_model: Optional[str] = None
+    fallback_sub_cost_code_id: Optional[int] = None
+    fallback_confidence: Optional[Decimal] = None
+    similar_neighbour_count: Optional[int] = None

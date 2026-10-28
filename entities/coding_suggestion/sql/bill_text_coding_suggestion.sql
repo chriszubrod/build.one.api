@@ -53,6 +53,70 @@ BEGIN
 END
 GO
 
+IF COL_LENGTH('dbo.BillTextCodingSuggestion', 'DecisionSource') IS NULL
+BEGIN
+    ALTER TABLE dbo.[BillTextCodingSuggestion]
+        ADD [DecisionSource] NVARCHAR(20) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.BillTextCodingSuggestion', 'PrimaryModel') IS NULL
+BEGIN
+    ALTER TABLE dbo.[BillTextCodingSuggestion]
+        ADD [PrimaryModel] NVARCHAR(100) NULL,
+            [PrimarySubCostCodeId] BIGINT NULL,
+            [PrimaryProjectId] BIGINT NULL,
+            [PrimaryConfidence] DECIMAL(5,4) NULL,
+            [PrimaryError] NVARCHAR(50) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.BillTextCodingSuggestion', 'EscalateModel') IS NULL
+BEGIN
+    ALTER TABLE dbo.[BillTextCodingSuggestion]
+        ADD [EscalateModel] NVARCHAR(100) NULL,
+            [EscalateSubCostCodeId] BIGINT NULL,
+            [EscalateProjectId] BIGINT NULL,
+            [EscalateConfidence] DECIMAL(5,4) NULL,
+            [EscalateError] NVARCHAR(50) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.BillTextCodingSuggestion', 'FallbackModel') IS NULL
+BEGIN
+    ALTER TABLE dbo.[BillTextCodingSuggestion]
+        ADD [FallbackModel] NVARCHAR(100) NULL,
+            [FallbackSubCostCodeId] BIGINT NULL,
+            [FallbackConfidence] DECIMAL(5,4) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.BillTextCodingSuggestion', 'SimilarVoteSubCostCodeId') IS NULL
+BEGIN
+    ALTER TABLE dbo.[BillTextCodingSuggestion]
+        ADD [SimilarVoteSubCostCodeId] BIGINT NULL,
+            [SimilarVoteConfidence] DECIMAL(5,4) NULL,
+            [SimilarNeighbourCount] TINYINT NULL,
+            [PrimaryFromIntake] BIT NULL,
+            [CostUsd] DECIMAL(12,6) NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.BillTextCodingSuggestion', 'U') IS NOT NULL
+   AND NOT EXISTS (
+       SELECT 1 FROM sys.check_constraints
+       WHERE name = 'CK_BillTextCodingSuggestion_DecisionSource'
+         AND parent_object_id = OBJECT_ID('dbo.BillTextCodingSuggestion')
+   )
+BEGIN
+    ALTER TABLE dbo.[BillTextCodingSuggestion]
+        ADD CONSTRAINT [CK_BillTextCodingSuggestion_DecisionSource]
+        CHECK ([DecisionSource] IS NULL OR [DecisionSource] IN (
+            'history', 'primary', 'escalate', 'fallback', 'similar_vote', 'reused_intake', 'none'
+        ));
+END
+GO
+
 -- Contract: top-N vendor (× optional project) SCC counts from non-draft bill history; holding codes excluded.
 CREATE OR ALTER PROCEDURE ReadVendorSccCountsForBills
 (
@@ -145,7 +209,26 @@ BEGIN
         bt.[ModelVersion],
         bt.[FailureReason],
         bt.[CreatedDatetime],
-        bt.[ModifiedDatetime]
+        bt.[ModifiedDatetime],
+        bt.[DecisionSource],
+        bt.[PrimaryModel],
+        bt.[PrimarySubCostCodeId],
+        bt.[PrimaryProjectId],
+        bt.[PrimaryConfidence],
+        bt.[PrimaryError],
+        bt.[EscalateModel],
+        bt.[EscalateSubCostCodeId],
+        bt.[EscalateProjectId],
+        bt.[EscalateConfidence],
+        bt.[EscalateError],
+        bt.[FallbackModel],
+        bt.[FallbackSubCostCodeId],
+        bt.[FallbackConfidence],
+        bt.[SimilarVoteSubCostCodeId],
+        bt.[SimilarVoteConfidence],
+        bt.[SimilarNeighbourCount],
+        bt.[PrimaryFromIntake],
+        bt.[CostUsd]
     FROM dbo.[BillTextCodingSuggestion] bt
     WHERE bt.[BillId] = @BillId;
 END;
@@ -164,7 +247,26 @@ CREATE OR ALTER PROCEDURE CompleteBillTextCodingSuggestion
     @WinningModel NVARCHAR(100) = NULL,
     @ModelVersion NVARCHAR(50),
     @FailureReason NVARCHAR(50) = NULL,
-    @RecordCall BIT = 0
+    @RecordCall BIT = 0,
+    @DecisionSource NVARCHAR(20) = NULL,
+    @PrimaryModel NVARCHAR(100) = NULL,
+    @PrimarySubCostCodeId BIGINT = NULL,
+    @PrimaryProjectId BIGINT = NULL,
+    @PrimaryConfidence DECIMAL(5,4) = NULL,
+    @PrimaryError NVARCHAR(50) = NULL,
+    @EscalateModel NVARCHAR(100) = NULL,
+    @EscalateSubCostCodeId BIGINT = NULL,
+    @EscalateProjectId BIGINT = NULL,
+    @EscalateConfidence DECIMAL(5,4) = NULL,
+    @EscalateError NVARCHAR(50) = NULL,
+    @FallbackModel NVARCHAR(100) = NULL,
+    @FallbackSubCostCodeId BIGINT = NULL,
+    @FallbackConfidence DECIMAL(5,4) = NULL,
+    @SimilarVoteSubCostCodeId BIGINT = NULL,
+    @SimilarVoteConfidence DECIMAL(5,4) = NULL,
+    @SimilarNeighbourCount TINYINT = NULL,
+    @PrimaryFromIntake BIT = NULL,
+    @CostUsd DECIMAL(12,6) = NULL
 )
 AS
 BEGIN
@@ -199,7 +301,26 @@ BEGIN
             CAST(NULL AS NVARCHAR(50)) AS [ModelVersion],
             CAST(NULL AS NVARCHAR(50)) AS [FailureReason],
             CAST(NULL AS DATETIME2(3)) AS [CreatedDatetime],
-            CAST(NULL AS DATETIME2(3)) AS [ModifiedDatetime]
+            CAST(NULL AS DATETIME2(3)) AS [ModifiedDatetime],
+            CAST(NULL AS NVARCHAR(20)) AS [DecisionSource],
+            CAST(NULL AS NVARCHAR(100)) AS [PrimaryModel],
+            CAST(NULL AS BIGINT) AS [PrimarySubCostCodeId],
+            CAST(NULL AS BIGINT) AS [PrimaryProjectId],
+            CAST(NULL AS DECIMAL(5,4)) AS [PrimaryConfidence],
+            CAST(NULL AS NVARCHAR(50)) AS [PrimaryError],
+            CAST(NULL AS NVARCHAR(100)) AS [EscalateModel],
+            CAST(NULL AS BIGINT) AS [EscalateSubCostCodeId],
+            CAST(NULL AS BIGINT) AS [EscalateProjectId],
+            CAST(NULL AS DECIMAL(5,4)) AS [EscalateConfidence],
+            CAST(NULL AS NVARCHAR(50)) AS [EscalateError],
+            CAST(NULL AS NVARCHAR(100)) AS [FallbackModel],
+            CAST(NULL AS BIGINT) AS [FallbackSubCostCodeId],
+            CAST(NULL AS DECIMAL(5,4)) AS [FallbackConfidence],
+            CAST(NULL AS BIGINT) AS [SimilarVoteSubCostCodeId],
+            CAST(NULL AS DECIMAL(5,4)) AS [SimilarVoteConfidence],
+            CAST(NULL AS TINYINT) AS [SimilarNeighbourCount],
+            CAST(NULL AS BIT) AS [PrimaryFromIntake],
+            CAST(NULL AS DECIMAL(12,6)) AS [CostUsd]
         WHERE 1 = 0;
         RETURN;
     END;
@@ -215,7 +336,26 @@ BEGIN
         [ModelVersion] = @ModelVersion,
         [FailureReason] = @FailureReason,
         [ModifiedDatetime] = @Now,
-        [CallDatetime] = CASE WHEN @RecordCall = 1 THEN @Now ELSE [CallDatetime] END
+        [CallDatetime] = CASE WHEN @RecordCall = 1 THEN @Now ELSE [CallDatetime] END,
+        [DecisionSource] = @DecisionSource,
+        [PrimaryModel] = @PrimaryModel,
+        [PrimarySubCostCodeId] = @PrimarySubCostCodeId,
+        [PrimaryProjectId] = @PrimaryProjectId,
+        [PrimaryConfidence] = @PrimaryConfidence,
+        [PrimaryError] = @PrimaryError,
+        [EscalateModel] = @EscalateModel,
+        [EscalateSubCostCodeId] = @EscalateSubCostCodeId,
+        [EscalateProjectId] = @EscalateProjectId,
+        [EscalateConfidence] = @EscalateConfidence,
+        [EscalateError] = @EscalateError,
+        [FallbackModel] = @FallbackModel,
+        [FallbackSubCostCodeId] = @FallbackSubCostCodeId,
+        [FallbackConfidence] = @FallbackConfidence,
+        [SimilarVoteSubCostCodeId] = @SimilarVoteSubCostCodeId,
+        [SimilarVoteConfidence] = @SimilarVoteConfidence,
+        [SimilarNeighbourCount] = @SimilarNeighbourCount,
+        [PrimaryFromIntake] = @PrimaryFromIntake,
+        [CostUsd] = @CostUsd
     WHERE [Id] = @RowId;
 
     COMMIT TRANSACTION;
@@ -356,6 +496,25 @@ BEGIN
                     [Mode] = NULL,
                     [WinningModel] = NULL,
                     [FailureReason] = NULL,
+                    [DecisionSource] = NULL,
+                    [PrimaryModel] = NULL,
+                    [PrimarySubCostCodeId] = NULL,
+                    [PrimaryProjectId] = NULL,
+                    [PrimaryConfidence] = NULL,
+                    [PrimaryError] = NULL,
+                    [EscalateModel] = NULL,
+                    [EscalateSubCostCodeId] = NULL,
+                    [EscalateProjectId] = NULL,
+                    [EscalateConfidence] = NULL,
+                    [EscalateError] = NULL,
+                    [FallbackModel] = NULL,
+                    [FallbackSubCostCodeId] = NULL,
+                    [FallbackConfidence] = NULL,
+                    [SimilarVoteSubCostCodeId] = NULL,
+                    [SimilarVoteConfidence] = NULL,
+                    [SimilarNeighbourCount] = NULL,
+                    [PrimaryFromIntake] = NULL,
+                    [CostUsd] = NULL,
                     [ModifiedDatetime] = @Now
             WHEN NOT MATCHED THEN
                 INSERT (
@@ -392,6 +551,26 @@ BEGIN
         CAST(NULL AS DATETIME2(3)) AS [BillDate],
         CAST(NULL AS DATETIME2(3)) AS [CreatedDatetime]
     WHERE 1 = 0;
+END;
+GO
+
+-- Contract: the bill's creator (similar-bills scope for the V2 tick, U-701b3), company and total; no row when the bill is gone.
+CREATE OR ALTER PROCEDURE ReadBillCodingActorByBillId
+(
+    @BillId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        b.[CreatedByUserId] AS [CreatedByUserId],
+        ISNULL(u.[IsSystemAdmin], 0) AS [IsSystemAdmin],
+        b.[CompanyId] AS [CompanyId],
+        b.[TotalAmount] AS [TotalAmount]
+    FROM dbo.[Bill] b
+    LEFT JOIN dbo.[User] u ON u.[Id] = b.[CreatedByUserId]
+    WHERE b.[Id] = @BillId;
 END;
 GO
 

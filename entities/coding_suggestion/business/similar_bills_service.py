@@ -31,6 +31,7 @@ from entities.coding_suggestion.business.similar_bills import (
     DEFAULT_NEIGHBOUR_DISPLAY_K,
     DEFAULT_TOP_K,
     BillTokenProfile,
+    Neighbour,
     SimilarBillsMatchResult,
     SimilarNeighbourResult,
     VisibilityFilter,
@@ -487,6 +488,70 @@ class SimilarBillsService:
             neighbours=display,
             predicted_scc_id=vote.predicted_scc_id,
             confidence=vote.confidence,
+        )
+
+    def neighbours_for(
+        self,
+        *,
+        bill_text_hashes: frozenset[int],
+        amount: Decimal,
+        vendor_id: Optional[int] = None,
+        exclude_bill_id: Optional[int] = None,
+        as_of: datetime,
+        visible: Optional[VisibilityFilter] = None,
+    ) -> list[Neighbour]:
+        """Raw scored neighbours (top DEFAULT_TOP_K), same scoring and filters as
+        similar_bills_for, for callers that build the block / union / filtered vote (U-701b3)."""
+        if not feature_enabled(self._settings):
+            warn_once_if_disabled()
+            return []
+        self._schedule_refresh_if_needed()
+        with self._state_lock:
+            snapshot = self._snapshot
+        if snapshot is None or not snapshot.profiles_by_bill:
+            return []
+
+        query_tokens = cap_tokens_by_idf(
+            bill_text_hashes, snapshot.idf, self._max_tokens_per_bill()
+        )
+        amount_abs = abs(amount)
+        query_bill = _CorpusBill(
+            bill_id=exclude_bill_id or -1,
+            attachment_id=0,
+            vendor_id=int(vendor_id) if vendor_id is not None else -1,
+            created=as_of,
+            label_scc_id=0,
+            total_abs_amount=amount_abs,
+        )
+        query_prof = BillTokenProfile(
+            enriched=_EnrichedStub(bill=query_bill),
+            tokens=query_tokens,
+            idf_weight_sum=sum(snapshot.idf.get(t, 0.0) for t in query_tokens),
+            log_abs_amount=_log_abs_amount(amount_abs),
+        )
+
+        prior_filter: Optional[Callable[[object], bool]] = None
+        if visible is not None:
+            creator_by = snapshot.creator_by_bill
+            projects_by = snapshot.projects_by_bill
+
+            def prior_filter(prior_bill: object, _vf: VisibilityFilter = visible) -> bool:
+                bid = int(prior_bill.bill_id)
+                return prior_bill_visible(
+                    created_by_user_id=creator_by.get(bid, 0),
+                    project_ids=projects_by.get(bid, ()),
+                    visible=_vf,
+                )
+
+        return top_neighbours_any_vendor(
+            query_prof,
+            snapshot.idf,
+            top_k=DEFAULT_TOP_K,
+            band_pct=DEFAULT_AMOUNT_BAND_PCT,
+            cap_ratio=DEFAULT_AMOUNT_BAND_CAP_RATIO,
+            token_index=snapshot.token_index,
+            prior_by_id=snapshot.profiles_by_bill,
+            prior_filter=prior_filter,
         )
 
     def shadow_predict_with_budget(

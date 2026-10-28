@@ -24,7 +24,7 @@ import json
 import logging
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any, Callable, Literal, Optional, Sequence, get_args
+from typing import TYPE_CHECKING, Any, Callable, Literal, Optional, Sequence, get_args
 
 from entities.bill.business.model import Bill
 from entities.bill_intake_prediction.business.model import BillIntakePrediction
@@ -32,13 +32,19 @@ from entities.bill_intake_prediction.persistence.repo import BillIntakePredictio
 from entities.bill_line_item.business.model import BillLineItem
 from entities.bill_line_item_attachment.business.model import BillLineItemAttachment
 from entities.coding_suggestion.business.bill_suggestion_service import BillSuggestion
-from entities.coding_suggestion.business.bill_text_suggestion_service import MODEL_VERSION
+from entities.coding_suggestion.business.bill_text_suggestion_service import (
+    MODEL_VERSION,
+    MODEL_VERSION_V2,
+)
 from entities.project.business.service import ProjectService
 from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.vendor.business.service import VendorService
 from intelligence.cascade.core import CascadeResult
 from intelligence.observability.cascade_telemetry import cascade_usage_totals
 from shared.authz import current_user_id
+
+if TYPE_CHECKING:
+    from entities.coding_suggestion.business.bill_coding_decision import BillCodingDecision
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +74,19 @@ def sum_cascade_cost_and_tokens(
     return input_tokens, output_tokens, total_cost
 
 
-def text_model_version_compatible(stored: str) -> bool:
-    return stored == TEXT_MODEL_VERSION
+def text_model_version_compatible(
+    stored: str,
+    *,
+    ladder_v2_enabled: bool = False,
+) -> bool:
+    if stored == MODEL_VERSION or stored == TEXT_MODEL_VERSION:
+        return True
+    if ladder_v2_enabled and stored == MODEL_VERSION_V2:
+        return True
+    return False
 
 
-def tick_can_reuse_prediction(
+def _intake_reuse_checks_pass(
     prediction: BillIntakePrediction,
     *,
     extracted_datetime: datetime,
@@ -80,8 +94,6 @@ def tick_can_reuse_prediction(
     vendor_id: int,
 ) -> bool:
     if prediction.status not in ("ok", "partial"):
-        return False
-    if not text_model_version_compatible(prediction.model_version):
         return False
     if prediction.pred_sub_cost_code_id is None:
         return False
@@ -101,6 +113,79 @@ def tick_can_reuse_prediction(
         if prediction.pred_project_id is None:
             return False
     return True
+
+
+def tick_can_reuse_prediction(
+    prediction: BillIntakePrediction,
+    *,
+    extracted_datetime: datetime,
+    chosen_project_id: Optional[int],
+    vendor_id: int,
+) -> bool:
+    if not text_model_version_compatible(prediction.model_version):
+        return False
+    return _intake_reuse_checks_pass(
+        prediction,
+        extracted_datetime=extracted_datetime,
+        chosen_project_id=chosen_project_id,
+        vendor_id=vendor_id,
+    )
+
+
+def tick_decision_for_intake(
+    prediction: BillIntakePrediction,
+    *,
+    extracted_datetime: datetime,
+    chosen_project_id: Optional[int],
+    vendor_id: int,
+    ladder_v2_enabled: bool,
+) -> Literal["reuse", "escalate", "full"]:
+    if not _intake_reuse_checks_pass(
+        prediction,
+        extracted_datetime=extracted_datetime,
+        chosen_project_id=chosen_project_id,
+        vendor_id=vendor_id,
+    ):
+        return "full"
+    if not text_model_version_compatible(
+        prediction.model_version,
+        ladder_v2_enabled=ladder_v2_enabled,
+    ):
+        return "full"
+    if not ladder_v2_enabled:
+        return "reuse"
+    if prediction.model_version != MODEL_VERSION_V2:
+        # A legacy (u654b-text-v1) intake row has no per-rung answer: run the V2 ladder.
+        return "full"
+    if (
+        prediction.coding_escalation == "low_confidence"
+        and prediction.primary_sub_cost_code_id is not None
+    ):
+        return "escalate"
+    if prediction.coding_escalation is None:
+        return "reuse"
+    return "full"
+
+
+def _intake_decision_params(decision: "BillCodingDecision") -> dict[str, Any]:
+    """Per-rung intake columns from a V2 decision (U-701b3); the similar columns hold
+    the decision's FILTERED vote, never the raw one."""
+    primary, fallback = decision.primary, decision.fallback
+    return {
+        "CodingSource": decision.source,
+        "CodingEscalation": decision.escalation,
+        "PrimaryModel": primary.model if primary else None,
+        "PrimarySubCostCodeId": primary.sub_cost_code_id if primary else None,
+        "PrimaryProjectId": primary.project_id if primary else None,
+        "PrimaryConfidence": primary.confidence if primary else None,
+        "PrimaryError": primary.error if primary else None,
+        "FallbackModel": fallback.model if fallback else None,
+        "FallbackSubCostCodeId": fallback.sub_cost_code_id if fallback else None,
+        "FallbackConfidence": fallback.confidence if fallback else None,
+        "SimilarPredSubCostCodeId": decision.similar_vote_scc_id,
+        "SimilarConfidence": decision.similar_vote_confidence,
+        "SimilarNeighbourCount": decision.similar_neighbour_count,
+    }
 
 
 class BillIntakePredictionService:
@@ -146,8 +231,16 @@ class BillIntakePredictionService:
             attachment_id=attachment_id,
         )
 
-    def record_read(self, **build_kwargs: Any) -> None:
-        """Build upsert params and persist; never raises (failure-isolated)."""
+    def record_read(
+        self,
+        *,
+        coding_decision: Optional["BillCodingDecision"] = None,
+        **build_kwargs: Any,
+    ) -> None:
+        """Build upsert params and persist; never raises (failure-isolated).
+
+        With a V2 coding_decision the filtered similar vote goes in the same upsert and
+        the separate U-701a shadow write is skipped."""
         shadow_kwargs = {
             k: build_kwargs.pop(k)
             for k in (
@@ -159,13 +252,18 @@ class BillIntakePredictionService:
             if k in build_kwargs
         }
         try:
-            params = self.build_upsert_params_from_read(**build_kwargs)
+            params = self.build_upsert_params_from_read(
+                coding_decision=coding_decision,
+                **build_kwargs,
+            )
             self.repo.upsert(**params)
         except Exception as error:
             logger.warning(
                 "bill_intake_prediction.persist_failed err=%s",
                 type(error).__name__,
             )
+            return
+        if coding_decision is not None:
             return
         from entities.coding_suggestion.business.bill_text_token_hash import feature_enabled
 
@@ -264,7 +362,10 @@ class BillIntakePredictionService:
         header_model: Optional[str],
         vendor_id: Optional[int],
         vendor_extracted_name: Optional[str],
+        coding_decision: Optional["BillCodingDecision"] = None,
     ) -> dict[str, Any]:
+        if coding_cascade is None and coding_decision is not None and coding_decision.cascades:
+            coding_cascade = coding_decision.cascades[0]
         input_tokens, output_tokens, cost_usd = sum_cascade_cost_and_tokens(
             header_cascade,
             coding_cascade,
@@ -289,12 +390,19 @@ class BillIntakePredictionService:
         if coding_mode:
             coding_mode = coding_mode.upper()[0]
 
+        if coding_decision is not None:
+            coding_conf = coding_decision.confidence
+            coding_model = coding_decision.model
+            pred_scc = coding_decision.sub_cost_code_id
+            pred_project = coding_decision.project_id
+            coding_mode = coding_decision.mode
+
         timing_json = json.dumps(timing_ms, separators=(",", ":"))
 
-        return {
+        params = {
             "AttachmentId": attachment_id,
             "IntakeSource": intake_source,
-            "ModelVersion": TEXT_MODEL_VERSION,
+            "ModelVersion": TEXT_MODEL_VERSION if coding_decision is None else MODEL_VERSION_V2,
             "Status": status,
             "PredVendorId": vendor_id,
             "PredVendorExtractedName": vendor_extracted_name,
@@ -317,6 +425,9 @@ class BillIntakePredictionService:
             "CostUsd": cost_usd,
             "CreatedByUserId": current_user_id.get(),
         }
+        if coding_decision is not None:
+            params.update(_intake_decision_params(coding_decision))
+        return params
 
     def to_api_payload(self, prediction: BillIntakePrediction) -> dict[str, Any]:
         vendor_payload = None

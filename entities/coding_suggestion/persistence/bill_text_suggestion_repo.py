@@ -28,6 +28,38 @@ class BillTextCodingSuggestionRow:
     winning_model: Optional[str]
     model_version: str
     failure_reason: Optional[str]
+    # U-701b3 per-rung columns; None on rows written before they existed.
+    decision_source: Optional[str] = None
+    primary_sub_cost_code_id: Optional[int] = None
+    primary_confidence: Optional[Decimal] = None
+    escalate_sub_cost_code_id: Optional[int] = None
+    escalate_confidence: Optional[Decimal] = None
+    escalate_error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class BillCodingActor:
+    """The bill's creator, company and total (V2 tick similar-bills scope)."""
+
+    created_by_user_id: Optional[int]
+    is_system_admin: bool
+    company_id: Optional[int]
+    total_amount: Optional[Decimal]
+
+
+def _opt_int(row: Any, column: str) -> Optional[int]:
+    value = getattr(row, column, None)
+    return int(value) if value is not None else None
+
+
+def _opt_decimal(row: Any, column: str) -> Optional[Decimal]:
+    value = getattr(row, column, None)
+    return Decimal(str(value)) if value is not None else None
+
+
+def _opt_str(row: Any, column: str) -> Optional[str]:
+    value = getattr(row, column, None)
+    return str(value) if value is not None else None
 
 
 @dataclass(frozen=True)
@@ -155,6 +187,12 @@ class BillTextCodingSuggestionRepository:
                         if getattr(row, "FailureReason", None) is not None
                         else None
                     ),
+                    decision_source=_opt_str(row, "DecisionSource"),
+                    primary_sub_cost_code_id=_opt_int(row, "PrimarySubCostCodeId"),
+                    primary_confidence=_opt_decimal(row, "PrimaryConfidence"),
+                    escalate_sub_cost_code_id=_opt_int(row, "EscalateSubCostCodeId"),
+                    escalate_confidence=_opt_decimal(row, "EscalateConfidence"),
+                    escalate_error=_opt_str(row, "EscalateError"),
                 )
         except Exception as error:
             logger.error(
@@ -228,6 +266,32 @@ class BillTextCodingSuggestionRepository:
             )
             raise map_database_error(error)
 
+    def read_bill_coding_actor(self, bill_id: int) -> Optional[BillCodingActor]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadBillCodingActorByBillId",
+                    params={"BillId": bill_id},
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                return BillCodingActor(
+                    created_by_user_id=_opt_int(row, "CreatedByUserId"),
+                    is_system_admin=bool(getattr(row, "IsSystemAdmin", 0)),
+                    company_id=_opt_int(row, "CompanyId"),
+                    total_amount=_opt_decimal(row, "TotalAmount"),
+                )
+        except Exception as error:
+            logger.error(
+                "ReadBillCodingActorByBillId failed bill=%s: %s",
+                bill_id,
+                type(error).__name__,
+            )
+            raise map_database_error(error)
+
     def complete(
         self,
         *,
@@ -243,27 +307,30 @@ class BillTextCodingSuggestionRepository:
         winning_model: Optional[str] = None,
         failure_reason: Optional[str] = None,
         record_call: bool = False,
+        **extra: Any,
     ) -> Optional[pyodbc.Row]:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
+                params: dict[str, Any] = {
+                    "BillId": bill_id,
+                    "AttachmentId": attachment_id,
+                    "ExtractedDatetime": extracted_datetime,
+                    "Status": status,
+                    "SubCostCodeId": sub_cost_code_id,
+                    "ProjectId": project_id,
+                    "Confidence": confidence,
+                    "Mode": mode,
+                    "WinningModel": winning_model,
+                    "ModelVersion": model_version,
+                    "FailureReason": failure_reason,
+                    "RecordCall": 1 if record_call else 0,
+                }
+                params.update(extra)
                 call_procedure(
                     cursor=cursor,
                     name="CompleteBillTextCodingSuggestion",
-                    params={
-                        "BillId": bill_id,
-                        "AttachmentId": attachment_id,
-                        "ExtractedDatetime": extracted_datetime,
-                        "Status": status,
-                        "SubCostCodeId": sub_cost_code_id,
-                        "ProjectId": project_id,
-                        "Confidence": confidence,
-                        "Mode": mode,
-                        "WinningModel": winning_model,
-                        "ModelVersion": model_version,
-                        "FailureReason": failure_reason,
-                        "RecordCall": 1 if record_call else 0,
-                    },
+                    params=params,
                 )
                 return cursor.fetchone()
         except Exception as error:

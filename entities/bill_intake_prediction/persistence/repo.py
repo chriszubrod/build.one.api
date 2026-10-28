@@ -97,6 +97,29 @@ class BillIntakePredictionRepository:
             if getattr(row, "FinalProjectId", None) is not None
             else None,
             finalized_datetime=parse_db_datetime(getattr(row, "FinalizedDatetime", None)),
+            similar_pred_sub_cost_code_id=int(row.SimilarPredSubCostCodeId)
+            if getattr(row, "SimilarPredSubCostCodeId", None) is not None
+            else None,
+            similar_confidence=to_decimal_or_none(getattr(row, "SimilarConfidence", None)),
+            coding_source=getattr(row, "CodingSource", None),
+            coding_escalation=getattr(row, "CodingEscalation", None),
+            primary_model=getattr(row, "PrimaryModel", None),
+            primary_sub_cost_code_id=int(row.PrimarySubCostCodeId)
+            if getattr(row, "PrimarySubCostCodeId", None) is not None
+            else None,
+            primary_project_id=int(row.PrimaryProjectId)
+            if getattr(row, "PrimaryProjectId", None) is not None
+            else None,
+            primary_confidence=to_decimal_or_none(getattr(row, "PrimaryConfidence", None)),
+            primary_error=getattr(row, "PrimaryError", None),
+            fallback_model=getattr(row, "FallbackModel", None),
+            fallback_sub_cost_code_id=int(row.FallbackSubCostCodeId)
+            if getattr(row, "FallbackSubCostCodeId", None) is not None
+            else None,
+            fallback_confidence=to_decimal_or_none(getattr(row, "FallbackConfidence", None)),
+            similar_neighbour_count=int(row.SimilarNeighbourCount)
+            if getattr(row, "SimilarNeighbourCount", None) is not None
+            else None,
         )
 
     def _run(

@@ -197,6 +197,16 @@ Harness-only (`scripts/u654a_text_backtest.py`); none of these touch the app. Lo
 - **Extra bills must be finalized** (`IsDraft = 0`, the U-653b load filter); an in-review bill passed via `--extra-bill-ids` is silently skipped (`extra_bills_selected` shows it).
 - **Quality, deferred from Pass 2:** collapse the five combined/override predictors into one gate (`combined_scc(history, fallback, override_row=None)`), simplify `compute_history_override_metrics` closures and `_history_override_outcome_counts`, reuse `prepare_scored_rows` for extras, single-assign `needs_human`, CSV cell formatters, reuse `_int` in `load_prior_text_results`.
 
+## U-701b3 deferred — coding decision + per-rung storage + background escalation (booked 2026-10-28; in build, flag `bill_coding_ladder_v2_enabled` off)
+
+- **Daily-cap stop skips Foundry.** `intelligence/cascade/core.py` skips `fallback_only` rungs once the Claude daily cap stops a ladder, so "Foundry when Claude is unavailable" covers credit/outage/no-key but not the daily cap; the drop also exits early on the cap (`read_attachment_service.py` ~:511). Lifting both is U-701c.
+- **The 200-calls/day count cap counts only background-pass calls.** `CountBillTextCodingCallsToday` reads `BillTextCodingSuggestion.CallDatetime`; drop-path coding calls never record one, so only the $ cap bounds them.
+- **Escalation can wait behind a backlog.** `ClaimNextBillForTextCodingSuggestion` claims oldest bills first (one per 2-minute tick), so after a backfill-like event a new drop's Sonnet escalation queues behind old unscored drafts.
+- **Rereads don't persist the escalation marker.** `UpsertBillIntakePrediction` only MERGE-matches rows with `BillId IS NULL`, so a U-704 reread on a bound attachment can't update the intake row; the background pass then runs the full ladder for it (acceptable, but not the cheap Sonnet-only path).
+- **System/agent-created bills use all projects for similar bills** (creator = user 17 or an admin agent; owner decision 2026-10-28 - users only see the suggested code). Revisit if a non-admin agent starts creating bills.
+- **Measure live vs the backtest.** The backtest used the unscoped corpus; restricted (non-admin) creators get fewer neighbours. Once the flag is on, compare per-rung intake/text columns against the final coded SCC weekly, split by creator IsSystemAdmin (U-701 requires a live-vs-measured check).
+- **iOS and MCP don't apply the Sonnet swap.** Only the web edit page replaces line 1's untouched prefill with the escalated code (U-701b4 web); iOS / MCP keep Haiku's prefill until a human changes it.
+
 ## U-701b2 deferred — similar-bills scoping (booked 2026-10-28, shipped `4962cc3a`)
 
 - **Access-set cache is not invalidated on UserProject changes.** `shared/access.py` caches each user's bill-access project set for 5 minutes and nothing clears it; the UserProject router publishes `publish_profile_changed` but does not touch `_accessible_projects_cache`. A removed membership keeps feeding that project's similar-bills evidence (codes, not bill contents) for up to 5 minutes per worker. Clear the user's entries from the UserProject router on every mutation.

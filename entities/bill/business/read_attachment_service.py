@@ -484,6 +484,11 @@ def _drop_coding_after_text_model(
 
 
 _LADDER_LLM_SOURCES = frozenset({"primary", "escalate", "fallback"})
+HISTORY_FOR_PROJECT_REASON = "Most prior bills from this vendor on this project used this code"
+# Drop coding sub-deadline (U-701b4): coding must finish this many seconds before the
+# outer read timeout, so a slow model yields "partial" WITH the header fields (and the
+# intake row) instead of the outer timeout discarding everything.
+CODING_DEADLINE_MARGIN_SECONDS = 3.0
 
 
 def _drop_amount(fields: dict[str, Any]) -> Optional[Decimal]:
@@ -517,24 +522,25 @@ def _suggestion_from_decision(
 
     source = getattr(decision, "source", None)
     project_service = engine.project_service
+    history_label: Optional[BillSuggestion] = None
     if source == "history":
+        # The decision's own code / project / confidence (Mode B history-for-P keys on
+        # the model's P, not the vendor-wide history); decision.history only labels it,
+        # and only when it is that same code.
         history = getattr(decision, "history", None)
-        if history is None or history.sub_cost_code_id is None:
-            return None
-        if chosen_project_id is not None:
-            out = _history_strong_for_project(
-                history, project_id=chosen_project_id, project_service=project_service
-            )
-        else:
-            out = _suggestion_from_history(history, project_service=project_service)
-        return replace(out, decision_source="history")
-
-    if source in _LADDER_LLM_SOURCES:
+        if history is not None and history.sub_cost_code_id == getattr(
+            decision, "sub_cost_code_id", None
+        ):
+            history_label = history
+        out_source = history_label.source if history_label else "vendor_project_history"
+        reason = history_label.reason if history_label else HISTORY_FOR_PROJECT_REASON
+    elif source in _LADDER_LLM_SOURCES:
         out_source, reason = "llm", TEXT_LLM_SUGGESTION_REASON
     elif source == "similar_vote":
         out_source, reason = SUGGESTION_SOURCE_SIMILAR_BILLS, SIMILAR_BILLS_SUGGESTION_REASON
     else:
         return None
+    is_history = source == "history"
 
     scc_id = getattr(decision, "sub_cost_code_id", None)
     if scc_id is None:
@@ -567,15 +573,15 @@ def _suggestion_from_decision(
         source=out_source,
         reason=reason,
         confidence=confidence,
-        raw_score=None,
-        top_count=None,
-        second_count=None,
-        total_count=None,
-        model_version=MODEL_VERSION_V2,
+        raw_score=confidence if is_history else None,
+        top_count=history_label.top_count if history_label else None,
+        second_count=history_label.second_count if history_label else None,
+        total_count=history_label.total_count if history_label else None,
+        model_version=history_label.model_version if history_label else MODEL_VERSION_V2,
         predicted_project=predicted,
         text_used=out_source == "llm",
-        text_mode=mode,
-        text_model=getattr(decision, "model", None),
+        text_mode=None if is_history else mode,
+        text_model=None if is_history else getattr(decision, "model", None),
         project_confidence=confidence if predicted else None,
         decision_source=source,
     )
@@ -701,11 +707,8 @@ async def run_bill_read_attachment(
 
     # Naive UTC, like the DB timestamps the tick compares against.
     as_of = datetime.now(timezone.utc).replace(tzinfo=None)
-    # Ladder V2 builds its own catalog inside run_bill_coding_decision.
-    catalog_task: Optional[asyncio.Task[CatalogSnapshot]] = (
-        None
-        if ladder_v2
-        else asyncio.create_task(asyncio.to_thread(load_catalog_from_db, as_of))
+    catalog_task: Optional[asyncio.Task[CatalogSnapshot]] = asyncio.create_task(
+        asyncio.to_thread(load_catalog_from_db, as_of)
     )
     project_task: Optional[asyncio.Task[Optional[int]]] = None
     if project_public_id is not None:
@@ -808,6 +811,7 @@ async def run_bill_read_attachment(
         async def _run_ladder_v2(
             engine: BillCodingSuggester,
             chosen: Optional[int],
+            history_suggestion: Optional[BillSuggestion] = None,
         ) -> tuple[Optional[BillSuggestion], bool]:
             """ONE drop-stage ladder call (Haiku + Foundry fallback); returns (prefill, error)."""
             nonlocal coding_decision, coding_cascade
@@ -815,10 +819,20 @@ async def run_bill_read_attachment(
                 run_bill_coding_decision,
             )
 
-            accessible = await asyncio.to_thread(resolve_accessible_project_ids)
+            nonlocal catalog_task
+            prefetched = catalog_task
+            catalog_task = None
             step_l = time.monotonic()
-            try:
-                decision = await run_bill_coding_decision(
+
+            async def _decide() -> Any:
+                catalog: Optional[CatalogSnapshot] = None
+                if prefetched is not None:
+                    try:
+                        catalog = await prefetched
+                    except Exception:
+                        catalog = None
+                accessible = await asyncio.to_thread(resolve_accessible_project_ids)
+                return await run_bill_coding_decision(
                     stage="drop",
                     bill_text=masked_text,
                     vendor_id=int(vendor_id),
@@ -832,7 +846,26 @@ async def run_bill_read_attachment(
                     accessible_project_ids=accessible,
                     transport_for=transport_for,
                     settings=cfg,
+                    catalog=catalog,
+                    history_suggestion=history_suggestion,
                 )
+
+            coding_budget = (
+                request_start
+                + max(1, int(cfg.bill_drop_prefill_timeout_seconds))
+                - CODING_DEADLINE_MARGIN_SECONDS
+                - time.monotonic()
+            )
+            try:
+                if coding_budget <= 0:
+                    raise asyncio.TimeoutError
+                decision = await asyncio.wait_for(_decide(), timeout=coding_budget)
+            except asyncio.TimeoutError:
+                if prefetched is not None and not prefetched.done():
+                    prefetched.cancel()
+                logger.warning("bill_read_attachment.coding_timeout")
+                timing_ms["coding_llm"] = int((time.monotonic() - step_l) * 1000)
+                return None, True
             except Exception as error:
                 logger.warning(
                     "bill_read_attachment.coding_failed err=%s",
@@ -848,12 +881,20 @@ async def run_bill_read_attachment(
             cascades = getattr(decision, "cascades", None) or ()
             if cascades:
                 coding_cascade = cascades[-1]
-            out = await asyncio.to_thread(
-                _suggestion_from_decision,
-                decision,
-                chosen_project_id=chosen,
-                engine=engine,
-            )
+            try:
+                out = await asyncio.to_thread(
+                    _suggestion_from_decision,
+                    decision,
+                    chosen_project_id=chosen,
+                    engine=engine,
+                )
+            except Exception as error:
+                # The decision is still recorded; the user just gets no prefill.
+                logger.warning(
+                    "bill_read_attachment.coding_present_failed err=%s",
+                    type(error).__name__,
+                )
+                return None, True
             # Claude capped/unavailable and nothing (Foundry, vote) answered: partial, as today.
             errored = out is None and getattr(decision, "stopped_reason", None) == "daily_cap"
             return out, errored
@@ -866,13 +907,15 @@ async def run_bill_read_attachment(
 
             if chosen_project_id is not None:
                 step = time.monotonic()
+                # Flag ON: the same exclude_bill_id as the ladder (a reread's own bill).
+                history_exclude = exclude_bill_id if ladder_v2 else None
                 history_suggestion = await asyncio.to_thread(
                     lambda: engine.suggest(
                         vendor_id=int(vendor_id),
                         project_id=chosen_project_id,
                         memo=None,
                         as_of=as_of,
-                        exclude_bill_id=None,
+                        exclude_bill_id=history_exclude,
                     )
                 )
                 timing_ms["history"] = int((time.monotonic() - step) * 1000)
@@ -882,7 +925,7 @@ async def run_bill_read_attachment(
                     vendor_id=int(vendor_id),
                     chosen_project_id=chosen_project_id,
                     as_of=as_of,
-                    exclude_bill_id=None,
+                    exclude_bill_id=history_exclude,
                     suggester=engine,
                     precomputed_suggestion=history_suggestion,
                 )
@@ -898,7 +941,9 @@ async def run_bill_read_attachment(
                         project_service=project_service,
                     )
                 elif eligible and ladder_v2:
-                    suggestion, coding_error = await _run_ladder_v2(engine, chosen_project_id)
+                    suggestion, coding_error = await _run_ladder_v2(
+                        engine, chosen_project_id, history_suggestion
+                    )
                 elif eligible:
                     step = time.monotonic()
                     prefetched_catalog: Optional[CatalogSnapshot] = None

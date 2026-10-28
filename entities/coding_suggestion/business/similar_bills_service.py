@@ -403,16 +403,18 @@ class SimilarBillsService:
             log_abs_amount=_log_abs_amount(bill.total_abs_amount),
         )
 
-    def similar_bills_for(
+    def _scored_neighbours(
         self,
         *,
         bill_text_hashes: frozenset[int],
         amount: Decimal,
-        vendor_id: Optional[int] = None,
-        exclude_bill_id: Optional[int] = None,
+        vendor_id: Optional[int],
+        exclude_bill_id: Optional[int],
         as_of: datetime,
-        visible: Optional[VisibilityFilter] = None,
-    ) -> Optional[SimilarBillsMatchResult]:
+        visible: Optional[VisibilityFilter],
+    ) -> Optional[list[Neighbour]]:
+        """Top DEFAULT_TOP_K scored neighbours; None when the feature is disabled or there
+        is no (non-empty) snapshot - distinct from an empty list (zero hits)."""
         if not feature_enabled(self._settings):
             warn_once_if_disabled()
             return None
@@ -421,95 +423,6 @@ class SimilarBillsService:
             snapshot = self._snapshot
         if snapshot is None or not snapshot.profiles_by_bill:
             return None
-
-        max_cap = self._max_tokens_per_bill()
-        query_tokens = cap_tokens_by_idf(bill_text_hashes, snapshot.idf, max_cap)
-
-        amount_abs = abs(amount)
-        query_bill = _CorpusBill(
-            bill_id=exclude_bill_id or -1,
-            attachment_id=0,
-            vendor_id=int(vendor_id) if vendor_id is not None else -1,
-            created=as_of,
-            label_scc_id=0,
-            total_abs_amount=amount_abs,
-        )
-        query_prof = BillTokenProfile(
-            enriched=_EnrichedStub(bill=query_bill),
-            tokens=query_tokens,
-            idf_weight_sum=sum(snapshot.idf.get(t, 0.0) for t in query_tokens),
-            log_abs_amount=_log_abs_amount(amount_abs),
-        )
-
-        prior_filter: Optional[Callable[[object], bool]] = None
-        if visible is not None:
-            creator_by = snapshot.creator_by_bill
-            projects_by = snapshot.projects_by_bill
-            vf = visible
-
-            def prior_filter(prior_bill: object, _vf: VisibilityFilter = vf) -> bool:
-                bid = int(prior_bill.bill_id)
-                return prior_bill_visible(
-                    created_by_user_id=creator_by.get(bid, 0),
-                    project_ids=projects_by.get(bid, ()),
-                    visible=_vf,
-                )
-
-        neighbours_all = top_neighbours_any_vendor(
-            query_prof,
-            snapshot.idf,
-            top_k=DEFAULT_TOP_K,
-            band_pct=DEFAULT_AMOUNT_BAND_PCT,
-            cap_ratio=DEFAULT_AMOUNT_BAND_CAP_RATIO,
-            token_index=snapshot.token_index,
-            prior_by_id=snapshot.profiles_by_bill,
-            prior_filter=prior_filter,
-        )
-        vote = vote_from_scored_neighbours(
-            [
-                (n.combined, n.prior.enriched.bill.bill_id, n.scc_id)
-                for n in neighbours_all
-            ],
-            DEFAULT_TOP_K,
-        )
-        neighbours = neighbours_all[:DEFAULT_NEIGHBOUR_DISPLAY_K]
-
-        display = tuple(
-            SimilarNeighbourResult(
-                scc_id=n.scc_id,
-                match=n.match,
-                amount_ratio=n.amount_ratio,
-                same_vendor=n.same_vendor,
-                combined=n.combined,
-            )
-            for n in neighbours
-        )
-        return SimilarBillsMatchResult(
-            neighbours=display,
-            predicted_scc_id=vote.predicted_scc_id,
-            confidence=vote.confidence,
-        )
-
-    def neighbours_for(
-        self,
-        *,
-        bill_text_hashes: frozenset[int],
-        amount: Decimal,
-        vendor_id: Optional[int] = None,
-        exclude_bill_id: Optional[int] = None,
-        as_of: datetime,
-        visible: Optional[VisibilityFilter] = None,
-    ) -> list[Neighbour]:
-        """Raw scored neighbours (top DEFAULT_TOP_K), same scoring and filters as
-        similar_bills_for, for callers that build the block / union / filtered vote (U-701b3)."""
-        if not feature_enabled(self._settings):
-            warn_once_if_disabled()
-            return []
-        self._schedule_refresh_if_needed()
-        with self._state_lock:
-            snapshot = self._snapshot
-        if snapshot is None or not snapshot.profiles_by_bill:
-            return []
 
         query_tokens = cap_tokens_by_idf(
             bill_text_hashes, snapshot.idf, self._max_tokens_per_bill()
@@ -553,6 +466,71 @@ class SimilarBillsService:
             prior_by_id=snapshot.profiles_by_bill,
             prior_filter=prior_filter,
         )
+
+    def similar_bills_for(
+        self,
+        *,
+        bill_text_hashes: frozenset[int],
+        amount: Decimal,
+        vendor_id: Optional[int] = None,
+        exclude_bill_id: Optional[int] = None,
+        as_of: datetime,
+        visible: Optional[VisibilityFilter] = None,
+    ) -> Optional[SimilarBillsMatchResult]:
+        neighbours_all = self._scored_neighbours(
+            bill_text_hashes=bill_text_hashes,
+            amount=amount,
+            vendor_id=vendor_id,
+            exclude_bill_id=exclude_bill_id,
+            as_of=as_of,
+            visible=visible,
+        )
+        if neighbours_all is None:
+            return None
+        vote = vote_from_scored_neighbours(
+            [
+                (n.combined, n.prior.enriched.bill.bill_id, n.scc_id)
+                for n in neighbours_all
+            ],
+            DEFAULT_TOP_K,
+        )
+        display = tuple(
+            SimilarNeighbourResult(
+                scc_id=n.scc_id,
+                match=n.match,
+                amount_ratio=n.amount_ratio,
+                same_vendor=n.same_vendor,
+                combined=n.combined,
+            )
+            for n in neighbours_all[:DEFAULT_NEIGHBOUR_DISPLAY_K]
+        )
+        return SimilarBillsMatchResult(
+            neighbours=display,
+            predicted_scc_id=vote.predicted_scc_id,
+            confidence=vote.confidence,
+        )
+
+    def neighbours_for(
+        self,
+        *,
+        bill_text_hashes: frozenset[int],
+        amount: Decimal,
+        vendor_id: Optional[int] = None,
+        exclude_bill_id: Optional[int] = None,
+        as_of: datetime,
+        visible: Optional[VisibilityFilter] = None,
+    ) -> list[Neighbour]:
+        """Raw scored neighbours (top DEFAULT_TOP_K), same scoring and filters as
+        similar_bills_for, for callers that build the block / union / filtered vote (U-701b3)."""
+        neighbours = self._scored_neighbours(
+            bill_text_hashes=bill_text_hashes,
+            amount=amount,
+            vendor_id=vendor_id,
+            exclude_bill_id=exclude_bill_id,
+            as_of=as_of,
+            visible=visible,
+        )
+        return [] if neighbours is None else neighbours
 
     def shadow_predict_with_budget(
         self,

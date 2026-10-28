@@ -125,4 +125,7 @@ async def reread_draft_bill_attachment(
         project_public_id=project_public_id,
         intake_source="reread",
         pre_gated=(attachment, is_taxpayer),
+        # The bill being reread is not its own history / neighbour (ladder V2; with the
+        # flag OFF the read ignores it).
+        exclude_bill_id=int(bill.id),
     )

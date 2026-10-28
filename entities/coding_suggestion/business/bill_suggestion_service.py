@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Literal, Mapping, Optional, Sequence
@@ -46,6 +47,8 @@ BillSuggestionSource = Literal[
     "vendor_project_history", "vendor_history", "memo", "llm", "similar_bills", "none"
 ]
 SIMILAR_BILLS_SUGGESTION_REASON = "Suggested from similar past bills"
+# A drop's escalation older than this has no tick answer coming: stop reporting pending.
+ESCALATION_PENDING_MAX_AGE = timedelta(hours=2)
 
 
 @dataclass
@@ -319,6 +322,19 @@ def _bill_suggestion_from_text_row(
     )
 
 
+def _text_row_terminal_for_current(
+    text_row: Optional[BillTextCodingSuggestionRow],
+    extraction: Optional[BillLatestTextExtractionState],
+) -> bool:
+    """A finished (non-pending) text row exists for the bill's current extraction."""
+    return (
+        text_row is not None
+        and text_row.status != "pending"
+        and extraction is not None
+        and _text_row_matches_current_extraction(text_row, extraction)
+    )
+
+
 def compute_text_tier_status(
     *,
     history_blocked: bool,
@@ -329,18 +345,19 @@ def compute_text_tier_status(
     """Status when the text result is NOT applied: "pending" while one may still arrive.
 
     escalation_pending (U-701b4, ladder V2): the bill's drop marked its coding for the
-    background tick (CodingEscalation set). Until a terminal text row exists for the
-    current extraction the tick's answer may still arrive, so an open editor keeps polling.
+    background tick (CodingEscalation set, recently). Until a terminal text row exists for
+    the current extraction the tick's answer may still arrive, so an open editor keeps
+    polling - but never when the bill has no current completed extraction (no tick row
+    can come).
     """
-    if escalation_pending and not history_blocked:
-        terminal_for_current = (
-            text_row is not None
-            and text_row.status != "pending"
-            and extraction is not None
-            and _text_row_matches_current_extraction(text_row, extraction)
-        )
-        if not terminal_for_current:
-            return "pending"
+    if (
+        escalation_pending
+        and not history_blocked
+        and extraction is not None
+        and extraction.latest_completed_extracted_datetime is not None
+        and not _text_row_terminal_for_current(text_row, extraction)
+    ):
+        return "pending"
     if text_row is None:
         incomplete = extraction is not None and extraction.has_incomplete_extraction
         return "pending" if incomplete and not history_blocked else "none"
@@ -414,7 +431,7 @@ def apply_bill_text_tier_to_suggestion(
         if v2:
             if history_blocked:
                 history_suggestion.decision_source = "history"
-            else:
+            elif not _text_row_terminal_for_current(text_row, extraction):
                 escalation_pending = _intake_escalation_pending(_intake(), extraction)
         return history_suggestion, compute_text_tier_status(
             history_blocked=history_blocked,
@@ -498,9 +515,23 @@ def _read_intake_for_bill(bill_id: int, intake_service: Any) -> Any:
 def _intake_escalation_pending(
     intake: Any,
     extraction: Optional[BillLatestTextExtractionState],
+    *,
+    now: Optional[datetime] = None,
 ) -> bool:
-    """The drop marked this bill for the tick, for the attachment that is current now."""
+    """The drop marked this bill for the tick, for the attachment that is current now,
+    and not longer ago than ESCALATION_PENDING_MAX_AGE (past that no tick row will come).
+
+    The intake model carries no write timestamp; its extracted_datetime (the extraction
+    the drop read, naive UTC like the DB) dates the escalation."""
     if intake is None or not getattr(intake, "coding_escalation", None):
+        return False
+    stamped = getattr(intake, "extracted_datetime", None)
+    if stamped is None and extraction is not None:
+        stamped = extraction.latest_completed_extracted_datetime
+    if stamped is None:
+        return False
+    current = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    if current - stamped > ESCALATION_PENDING_MAX_AGE:
         return False
     latest_att = extraction.latest_completed_attachment_id if extraction is not None else None
     intake_att = getattr(intake, "attachment_id", None)
@@ -524,10 +555,10 @@ def _apply_ladder_v2_presentation(
         return
     if decision_source != "escalate" or text_row.sub_cost_code_id is None:
         return
-    primary_id = getattr(text_row, "primary_sub_cost_code_id", None)
-    if primary_id is None:
-        intake_row = intake()
-        primary_id = getattr(intake_row, "primary_sub_cost_code_id", None) if intake_row else None
+    # Only the DROP's prefill can be superseded: the intake row's Primary (what the drop
+    # wrote), never a full tick's own primary (that never reached the draft).
+    intake_row = intake()
+    primary_id = getattr(intake_row, "primary_sub_cost_code_id", None) if intake_row else None
     if primary_id is None or int(primary_id) == int(text_row.sub_cost_code_id):
         return
     try:

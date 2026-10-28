@@ -151,7 +151,6 @@ class BillCodingDeps:
     history_suggestion: Optional[BillSuggestion]
     # The (possibly narrowed) payload candidate list; neighbours may add to it.
     candidate_sccs: list[dict[str, str]]
-    candidate_scc_narrowed: bool
     # Object with neighbours_for(...) (SimilarBillsService); None = no neighbours.
     similar_service: Optional[Any] = None
     # Mode B: history for the model's project P.
@@ -163,6 +162,28 @@ class BillCodingDeps:
         ]
     ] = None
     transport_for: Optional[Callable[[str], Any]] = None
+
+
+_RUNG_FIELDS = {
+    "Model": "model",
+    "SubCostCodeId": "sub_cost_code_id",
+    "ProjectId": "project_id",
+    "Confidence": "confidence",
+    "Error": "error",
+}
+
+
+def rung_columns(
+    prefix: str,
+    answer: Optional[RungAnswer],
+    fields: Sequence[str] = tuple(_RUNG_FIELDS),
+) -> dict[str, Any]:
+    """``{prefix+Field: value}`` for one rung answer (None values when absent) - the
+    shared shape of the intake and text-suggestion per-rung columns."""
+    return {
+        f"{prefix}{field}": getattr(answer, _RUNG_FIELDS[field]) if answer else None
+        for field in fields
+    }
 
 
 def history_is_strong(suggestion: Optional[BillSuggestion]) -> bool:
@@ -302,25 +323,33 @@ def _model_pick(
     return None
 
 
-def _model_project(
+def _answer_usable(answer: Optional[RungAnswer], *, fallback: bool = False) -> bool:
+    """An answer that carries a resolved code OR a project (V1 retain_accessible_project);
+    a Foundry answer only when accepted (>= threshold)."""
+    if answer is None or answer.error:
+        return False
+    if answer.sub_cost_code_id is None and answer.project_id is None:
+        return False
+    if fallback:
+        return answer.confidence is not None and float(answer.confidence) >= BILL_CODING_THRESHOLD
+    return True
+
+
+def mode_b_answer(
     primary: Optional[RungAnswer],
     escalate: Optional[RungAnswer],
     fallback: Optional[RungAnswer],
-) -> Optional[int]:
-    """The model's project P (U-676k): kept even when the answer's SCC did not resolve
-    (V1 retain_accessible_project). Sonnet's project first; a Sonnet answer with no
-    project keeps Haiku's; an accepted Foundry answer last."""
-    for answer in (escalate, primary):
-        if answer is not None and not answer.error and answer.project_id is not None:
-            return answer.project_id
-    if (
-        fallback is not None
-        and not fallback.error
-        and fallback.project_id is not None
-        and fallback.confidence is not None
-        and float(fallback.confidence) >= BILL_CODING_THRESHOLD
+) -> Optional[tuple[DecisionSource, RungAnswer]]:
+    """V1's single-answer rule: ONE rung answer (escalate > primary > accepted fallback,
+    the first with a code or a project) supplies BOTH the code and the project - never
+    one rung's code on another rung's project."""
+    for source, answer, is_fallback in (
+        ("escalate", escalate, False),
+        ("primary", primary, False),
+        ("fallback", fallback, True),
     ):
-        return fallback.project_id
+        if _answer_usable(answer, fallback=is_fallback):
+            return source, answer
     return None
 
 
@@ -331,8 +360,12 @@ def mode_b_text_project(
     *,
     project_accessible: Callable[[int], bool],
 ) -> Optional[int]:
-    """P after the access check; an inaccessible P is treated as no project (as V1)."""
-    project_id = _model_project(primary, escalate, fallback)
+    """The single answer's project P after the access check; an inaccessible P is treated
+    as no project (as V1)."""
+    picked = mode_b_answer(primary, escalate, fallback)
+    if picked is None:
+        return None
+    project_id = picked[1].project_id
     if project_id is None or not project_accessible(project_id):
         return None
     return project_id
@@ -394,6 +427,7 @@ def choose_final(
             src, ans = pick
             return src, ans.sub_cost_code_id, None, ans.confidence, ans.model
     else:
+        answer_pick = mode_b_answer(primary, escalate, fallback)
         text_project = mode_b_text_project(
             primary, escalate, fallback, project_accessible=project_accessible
         )
@@ -407,8 +441,9 @@ def choose_final(
                     history_p.confidence,
                     None,
                 )
-            if pick is not None:
-                src, ans = pick
+            # P came from answer_pick, so its code (if any) is the SAME answer's.
+            src, ans = answer_pick
+            if ans.sub_cost_code_id is not None:
                 return src, ans.sub_cost_code_id, text_project, ans.confidence, ans.model
         elif history_is_strong(history):
             history_project = history.project_id
@@ -421,8 +456,8 @@ def choose_final(
                 history.confidence,
                 None,
             )
-        elif pick is not None:
-            src, ans = pick
+        elif answer_pick is not None and answer_pick[1].sub_cost_code_id is not None:
+            src, ans = answer_pick
             return src, ans.sub_cost_code_id, None, ans.confidence, ans.model
     if similar_vote_scc_id is not None:
         return "similar_vote", similar_vote_scc_id, None, similar_vote_confidence, None

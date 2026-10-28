@@ -187,7 +187,6 @@ def _deps(transport: Optional[FakeTransport] = None, **overrides) -> BillCodingD
         history_rows=[],
         history_suggestion=None,
         candidate_sccs=list(NARROWED),
-        candidate_scc_narrowed=True,
         similar_service=None,
         history_for_project=None,
         transport_for=transport.transport_for if transport else None,
@@ -502,7 +501,6 @@ def test_run_bill_coding_decision_builds_deps():
     assert inputs.scope == SimilarScope(company_id=1, actor_user_id=42, accessible_project_ids=None)
     # Narrowed payload list, FULL as-of catalog for the similar filters.
     assert [r["number"] for r in deps.candidate_sccs] == ["43.10", "44.20", "50.00"]
-    assert deps.candidate_scc_narrowed is True
     assert {r["number"] for r in deps.catalog.as_of_catalog} == {r["number"] for r in FULL_CATALOG}
     assert deps.similar_service is similar
     deps.history_for_project(501)
@@ -790,7 +788,6 @@ def test_tick_legacy_intake_runs_the_full_ladder():
 
 def test_flag_off_model_version_unchanged():
     assert bts.MODEL_VERSION == "u654b-text-v1"
-    assert bts.active_model_version(SimpleNamespace(bill_coding_ladder_v2_enabled=False)) == "u654b-text-v1"
 
 
 # ---------------------------------------------------------------- final round: Mode B = V1
@@ -872,8 +869,10 @@ def test_decide_mode_b_access_checks_p_against_the_scope():
     [
         (_ok("44.20", 0.9, "P2"), True, ("history", 3, 502)),
         (_ok("44.20", 0.9, "P2"), False, ("escalate", 2, 502)),
-        (_ok("44.20", 0.9, None), True, ("history", 3, 501)),  # keeps Haiku's project
-        (_ok("44.20", 0.9, None), False, ("escalate", 2, 501)),
+        # U-701b4 fix 8: Sonnet's answer has no project -> it supplies code AND project
+        # (none); Haiku's project is never put under Sonnet's code.
+        (_ok("44.20", 0.9, None), True, ("escalate", 2, None)),
+        (_ok("44.20", 0.9, None), False, ("escalate", 2, None)),
     ],
 )
 def test_tick_escalate_mode_b_project_rules(sonnet_reply, history_strong, expected):
@@ -893,7 +892,7 @@ def test_tick_escalate_mode_b_project_rules(sonnet_reply, history_strong, expect
         _deps(transport, history_for_project=for_project),
     )
     assert (decision.source, decision.sub_cost_code_id, decision.project_id) == expected
-    assert asked == [expected[2]]
+    assert asked == ([expected[2]] if expected[2] is not None else [])
 
 
 def test_unknown_amount_means_no_similar_lookup():
@@ -917,12 +916,27 @@ def test_tick_bill_without_total_gets_no_neighbours():
     assert run.repo.complete.call_args.kwargs["status"] == "done"
 
 
-def test_tick_actor_read_error_fails_closed_and_keeps_coding():
+@pytest.mark.parametrize("claim_project", [None, 501])
+def test_tick_actor_read_error_leaves_row_pending(claim_project):
+    """U-701b4 fix 7 (Mode A and Mode B): a transient actor-read error must not finish
+    the row with an empty scope - nothing paid, nothing finalized, re-claimed later."""
+    similar = FakeSimilar([_neighbour(11, 2)])
+    transport = FakeTransport({HAIKU: _ok("43.10", 0.9)})
+    run = _run_tick(transport=transport, similar=similar, actor=RuntimeError("db down"),
+                    claim=_claim(chosen_project_id=claim_project))
+    assert run.out["status"] == "deferred"
+    assert run.out["failure_reason"] == "actor_read"
+    run.repo.complete.assert_not_called()
+    assert transport.calls == []
+    run.access.assert_not_called()
+    assert similar.calls == []
+
+
+def test_tick_missing_creator_still_fails_closed_and_codes():
     similar = FakeSimilar([_neighbour(11, 2)])
     run = _run_tick(transport=FakeTransport({HAIKU: _ok("43.10", 0.9)}), similar=similar,
-                    actor=RuntimeError("db down"))
+                    actor=None)
     run.access.assert_not_called()
-    run.for_company.assert_not_called()
     assert similar.calls == []
     kw = run.repo.complete.call_args.kwargs
     assert (kw["status"], kw["sub_cost_code_id"]) == ("done", 1)

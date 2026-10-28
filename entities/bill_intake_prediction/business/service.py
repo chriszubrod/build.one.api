@@ -79,11 +79,9 @@ def text_model_version_compatible(
     *,
     ladder_v2_enabled: bool = False,
 ) -> bool:
-    if stored == MODEL_VERSION or stored == TEXT_MODEL_VERSION:
+    if stored == MODEL_VERSION:
         return True
-    if ladder_v2_enabled and stored == MODEL_VERSION_V2:
-        return True
-    return False
+    return ladder_v2_enabled and stored == MODEL_VERSION_V2
 
 
 def _intake_reuse_checks_pass(
@@ -147,13 +145,8 @@ def tick_decision_for_intake(
         vendor_id=vendor_id,
     ):
         return "full"
-    if not text_model_version_compatible(
-        prediction.model_version,
-        ladder_v2_enabled=ladder_v2_enabled,
-    ):
-        return "full"
     if not ladder_v2_enabled:
-        return "reuse"
+        return "reuse" if text_model_version_compatible(prediction.model_version) else "full"
     if prediction.model_version != MODEL_VERSION_V2:
         # A legacy (u654b-text-v1) intake row has no per-rung answer: run the V2 ladder.
         return "full"
@@ -170,18 +163,13 @@ def tick_decision_for_intake(
 def _intake_decision_params(decision: "BillCodingDecision") -> dict[str, Any]:
     """Per-rung intake columns from a V2 decision (U-701b3); the similar columns hold
     the decision's FILTERED vote, never the raw one."""
-    primary, fallback = decision.primary, decision.fallback
+    from entities.coding_suggestion.business.bill_coding_decision import rung_columns
+
     return {
         "CodingSource": decision.source,
         "CodingEscalation": decision.escalation,
-        "PrimaryModel": primary.model if primary else None,
-        "PrimarySubCostCodeId": primary.sub_cost_code_id if primary else None,
-        "PrimaryProjectId": primary.project_id if primary else None,
-        "PrimaryConfidence": primary.confidence if primary else None,
-        "PrimaryError": primary.error if primary else None,
-        "FallbackModel": fallback.model if fallback else None,
-        "FallbackSubCostCodeId": fallback.sub_cost_code_id if fallback else None,
-        "FallbackConfidence": fallback.confidence if fallback else None,
+        **rung_columns("Primary", decision.primary),
+        **rung_columns("Fallback", decision.fallback, ("Model", "SubCostCodeId", "Confidence")),
         "SimilarPredSubCostCodeId": decision.similar_vote_scc_id,
         "SimilarConfidence": decision.similar_vote_confidence,
         "SimilarNeighbourCount": decision.similar_neighbour_count,

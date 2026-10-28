@@ -22,6 +22,7 @@ from entities.coding_suggestion.business.bill_coding_decision import (
     RungAnswer,
     SimilarScope,
     decide_bill_coding,
+    rung_columns,
 )
 from entities.coding_suggestion.business.bill_suggestion_service import (
     _HISTORY_SOURCES,
@@ -67,11 +68,6 @@ logger = logging.getLogger(__name__)
 MODEL_VERSION = "u654b-text-v1"
 MODEL_VERSION_V2 = "u701b-text-v2"
 
-
-def active_model_version(settings: config.Settings) -> str:
-    if settings.bill_coding_ladder_v2_enabled is True:
-        return MODEL_VERSION_V2
-    return MODEL_VERSION
 
 VENDOR_WIDE_SCC_HISTORY_TOP = 1000
 
@@ -304,25 +300,14 @@ def _decision_complete_kwargs(
     primary_from_intake: bool = False,
 ) -> dict[str, Any]:
     """Per-rung CompleteBillTextCodingSuggestion params from a V2 decision."""
-    p, e, f = decision.primary, decision.escalate, decision.fallback
     cost_usd = None
     if decision.cascades:
         _i, _o, cost_usd = cascade_usage_totals(decision.cascades[0])
     return {
         "DecisionSource": decision.source,
-        "PrimaryModel": p.model if p else None,
-        "PrimarySubCostCodeId": p.sub_cost_code_id if p else None,
-        "PrimaryProjectId": p.project_id if p else None,
-        "PrimaryConfidence": p.confidence if p else None,
-        "PrimaryError": p.error if p else None,
-        "EscalateModel": e.model if e else None,
-        "EscalateSubCostCodeId": e.sub_cost_code_id if e else None,
-        "EscalateProjectId": e.project_id if e else None,
-        "EscalateConfidence": e.confidence if e else None,
-        "EscalateError": e.error if e else None,
-        "FallbackModel": f.model if f else None,
-        "FallbackSubCostCodeId": f.sub_cost_code_id if f else None,
-        "FallbackConfidence": f.confidence if f else None,
+        **rung_columns("Primary", decision.primary),
+        **rung_columns("Escalate", decision.escalate),
+        **rung_columns("Fallback", decision.fallback, ("Model", "SubCostCodeId", "Confidence")),
         "SimilarVoteSubCostCodeId": decision.similar_vote_scc_id,
         "SimilarVoteConfidence": decision.similar_vote_confidence,
         "SimilarNeighbourCount": decision.similar_neighbour_count,
@@ -379,6 +364,7 @@ async def run_bill_coding_decision(
     suggester: Optional[BillCodingSuggester] = None,
     catalog: Optional[CatalogSnapshot] = None,
     similar_service: Optional[Any] = None,
+    history_suggestion: Optional[BillSuggestion] = None,
 ) -> BillCodingDecision:
     """V2 ladder decision for the drop and the tick (U-701b3): the ONE place that builds
     the catalog, history, candidate SCCs and the scoped similar-bills service.
@@ -386,37 +372,15 @@ async def run_bill_coding_decision(
     bill_text is the extraction CONTENT. accessible_project_ids None = all projects; an
     empty frozenset = no neighbours; it is also the access check on the model's Mode B
     project. amount None (no total read) = no neighbours. The similar-bills part is best-effort (no key, no
-    company or any lookup error -> no neighbours, a warning). DB reads run off the loop.
+    company or any lookup error -> no neighbours, a warning). The independent DB reads
+    (catalog when not passed, vendor SCC counts, narrowing history, history) run
+    concurrently off the loop. history_suggestion: a precomputed engine.suggest for
+    (vendor, chosen_project_id, as_of, exclude_bill_id) - pass it only when computed with
+    the SAME exclude_bill_id.
     """
     settings = settings or config.Settings()
     repository = repository or BillTextCodingSuggestionRepository()
     engine = suggester or BillCodingSuggester()
-
-    if catalog is None:
-        catalog = await asyncio.to_thread(load_catalog_from_db, as_of)
-    history_rows = await asyncio.to_thread(
-        repository.read_vendor_scc_counts,
-        vendor_id,
-        project_id=chosen_project_id,
-        as_of=as_of,
-        exclude_bill_id=exclude_bill_id,
-    )
-    narrowing_numbers = await asyncio.to_thread(
-        load_narrowing_history_scc_numbers,
-        settings,
-        repository,
-        vendor_id=vendor_id,
-        as_of=as_of,
-        exclude_bill_id=exclude_bill_id,
-    )
-    built = build_runtime_payload(
-        bill_text=bill_text,
-        catalog=catalog,
-        history_rows=history_rows,
-        chosen_project_id=chosen_project_id,
-        as_of=as_of,
-        narrowing_history_scc_numbers=narrowing_numbers,
-    )
 
     def _history(project_id: Optional[int]) -> Optional[BillSuggestion]:
         return engine.suggest(
@@ -427,7 +391,44 @@ async def run_bill_coding_decision(
             exclude_bill_id=exclude_bill_id,
         )
 
-    history_suggestion = await asyncio.to_thread(_history, chosen_project_id)
+    async def _given(value: Any) -> Any:
+        return value
+
+    catalog, history_rows, narrowing_numbers, history_suggestion = await asyncio.gather(
+        _given(catalog)
+        if catalog is not None
+        else asyncio.to_thread(load_catalog_from_db, as_of),
+        asyncio.to_thread(
+            repository.read_vendor_scc_counts,
+            vendor_id,
+            project_id=chosen_project_id,
+            as_of=as_of,
+            exclude_bill_id=exclude_bill_id,
+        ),
+        asyncio.to_thread(
+            load_narrowing_history_scc_numbers,
+            settings,
+            repository,
+            vendor_id=vendor_id,
+            as_of=as_of,
+            exclude_bill_id=exclude_bill_id,
+        ),
+        _given(history_suggestion)
+        if history_suggestion is not None
+        else asyncio.to_thread(_history, chosen_project_id),
+    )
+    # The FULL as-of catalog (holding codes already excluded by the loader), built once:
+    # neighbours filter against it, and the payload's (possibly narrowed) list derives
+    # from it.
+    as_of_catalog = build_candidate_sccs_for_bill(
+        catalog.scc_by_id,
+        as_of=as_of,
+        ambiguous_numbers=catalog.ambiguous_scc_numbers,
+    )
+    if narrowing_numbers is not None:
+        candidate_sccs, _narrowed = narrow_candidate_sccs(as_of_catalog, narrowing_numbers)
+    else:
+        candidate_sccs = list(as_of_catalog)
 
     if similar_service is None:
         similar_service = _similar_service_for(company_id, settings)
@@ -457,18 +458,11 @@ async def run_bill_coding_decision(
             proj_abbrev_to_id=catalog.proj_abbrev_to_id,
             ambiguous_project_abbrevs=catalog.ambiguous_project_abbrevs,
             candidate_projects=catalog.candidate_projects,
-            # The FULL as-of catalog (holding codes already excluded by the loader),
-            # not the narrowed payload list - as the measured arm passes it.
-            as_of_catalog=build_candidate_sccs_for_bill(
-                catalog.scc_by_id,
-                as_of=as_of,
-                ambiguous_numbers=catalog.ambiguous_scc_numbers,
-            ),
+            as_of_catalog=as_of_catalog,
         ),
         history_rows=history_rows,
         history_suggestion=history_suggestion,
-        candidate_sccs=built.payload["candidate_sccs"],
-        candidate_scc_narrowed=built.candidate_scc_narrowed,
+        candidate_sccs=candidate_sccs,
         similar_service=similar_service,
         history_for_project=_history,
         transport_for=transport_for,
@@ -571,12 +565,23 @@ async def _process_one_claim_v2(
         return _tick_result(status="skipped", bill_id=claim.bill_id, skipped_reason=reason)
 
     try:
+        engine = suggester or BillCodingSuggester()
+        # Computed once: the eligibility check and the ladder use the same history
+        # (same vendor / project / as_of / exclude_bill_id).
+        tick_history = engine.suggest(
+            vendor_id=claim.vendor_id,
+            project_id=claim.chosen_project_id,
+            memo=None,
+            as_of=as_of,
+            exclude_bill_id=claim.bill_id,
+        )
         eligible, skip_reason = history_eligible_for_text(
             vendor_id=claim.vendor_id,
             chosen_project_id=claim.chosen_project_id,
             as_of=as_of,
             exclude_bill_id=claim.bill_id,
-            suggester=suggester,
+            suggester=engine,
+            precomputed_suggestion=tick_history,
         )
         if not eligible:
             return _finish_skipped(skip_reason)
@@ -637,15 +642,23 @@ async def _process_one_claim_v2(
         if not bill_text.strip():
             return _finish_skipped(STALE_REDACTION)
 
-        actor: Optional[BillCodingActor] = None
         try:
-            actor = repository.read_bill_coding_actor(claim.bill_id)
+            actor: Optional[BillCodingActor] = repository.read_bill_coding_actor(claim.bill_id)
         except Exception as error:
-            # Fail closed and keep coding: no actor -> no neighbours, company unknown.
+            # A transient read error must not finish the row with an empty scope (that
+            # would permanently drop the Mode B project): leave it pending, nothing paid
+            # or finalized, so a later tick re-claims it. A MISSING creator (None) still
+            # fails closed below.
             logger.warning(
                 "bill_text_coding_tick actor_read_failed bill_id=%s err=%s",
                 claim.bill_id,
                 type(error).__name__,
+            )
+            return _tick_result(
+                status="deferred",
+                bill_id=claim.bill_id,
+                failure_reason="actor_read",
+                error=type(error).__name__,
             )
         actor_user_id, accessible = _creator_scope(actor)
         amount = actor.total_amount if actor is not None else None
@@ -674,8 +687,9 @@ async def _process_one_claim_v2(
             transport_for=transport_for,
             settings=settings,
             repository=repository,
-            suggester=suggester,
+            suggester=engine,
             catalog=catalog,
+            history_suggestion=tick_history,
         )
         made_call = bool(decision.cascades)
         cascade_ran = made_call

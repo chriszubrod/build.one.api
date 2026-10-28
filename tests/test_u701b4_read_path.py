@@ -1,7 +1,7 @@
 """U-701b4 (API): suggest read path - decision_source, supersedes, similar_bills, pending."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -16,7 +16,8 @@ from entities.coding_suggestion.persistence.bill_text_suggestion_repo import (
     BillLatestTextExtractionState,
 )
 
-EXTRACTED = datetime(2026, 10, 28, 12, 0, 0)
+# Recent (naive UTC, like the DB): an escalation older than 2 h is no longer pending.
+EXTRACTED = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=5)
 PUB = {
     501: "11111111-1111-1111-1111-000000000501",
     502: "22222222-2222-2222-2222-000000000502",
@@ -52,18 +53,30 @@ def _row(**kw):
     return SimpleNamespace(**base)
 
 
-def _extraction(incomplete=False):
+def _extraction(incomplete=False, latest=EXTRACTED):
     return BillLatestTextExtractionState(
-        latest_completed_attachment_id=5,
-        latest_completed_extracted_datetime=EXTRACTED,
+        latest_completed_attachment_id=5 if latest is not None else None,
+        latest_completed_extracted_datetime=latest,
         has_incomplete_extraction=incomplete,
     )
 
 
-def _repo(row):
+def _intake(primary=501, escalation=None, attachment_id=5, extracted=EXTRACTED):
+    return SimpleNamespace(
+        attachment_id=attachment_id,
+        coding_escalation=escalation,
+        primary_sub_cost_code_id=primary,
+        extracted_datetime=extracted,
+    )
+
+
+DROP_INTAKE = _intake()
+
+
+def _repo(row, extraction=None):
     repo = MagicMock()
     repo.read_by_bill_id.return_value = row
-    repo.read_latest_text_extraction_state.return_value = _extraction()
+    repo.read_latest_text_extraction_state.return_value = extraction or _extraction()
     return repo
 
 
@@ -76,14 +89,14 @@ def _scc_svc():
     return svc
 
 
-def _apply(row, *, v2=True, intake=None, history=None):
+def _apply(row, *, v2=True, intake=DROP_INTAKE, history=None, extraction=None):
     intake_svc = MagicMock()
     intake_svc.read_by_bill_id.return_value = intake
     out, status = apply_bill_text_tier_to_suggestion(
         history or _weak_history(),
         bill_id=1,
         request_project_id=100,
-        text_repo=_repo(row),
+        text_repo=_repo(row, extraction),
         sub_cost_code_service=_scc_svc(),
         project_service=MagicMock(),
         text_enabled=True,
@@ -108,7 +121,7 @@ def test_escalate_differing_code_carries_supersedes_and_decision_source():
 
 
 def test_escalate_same_code_has_no_supersedes():
-    out, _, _ = _apply(_row(primary_sub_cost_code_id=502))
+    out, _, _ = _apply(_row(), intake=_intake(primary=502))
     p = _payload(out)
     assert "supersedes_sub_cost_code_public_id" not in p
     assert p["decision_source"] == "escalate"
@@ -131,10 +144,22 @@ def test_flag_off_emits_no_new_fields():
     intake_svc.read_by_bill_id.assert_not_called()
 
 
-def test_primary_falls_back_to_the_intake_row():
-    intake = SimpleNamespace(attachment_id=5, coding_escalation=None, primary_sub_cost_code_id=501)
-    out, _, _ = _apply(_row(primary_sub_cost_code_id=None), intake=intake)
+def test_supersedes_is_the_drops_prefill_not_the_rows_own_primary():
+    # the row's own primary (501) differs, but the drop wrote 502 == the escalate code
+    out, _, _ = _apply(_row(primary_sub_cost_code_id=501), intake=_intake(primary=502))
+    assert "supersedes_sub_cost_code_public_id" not in _payload(out)
+    out, _, _ = _apply(_row(primary_sub_cost_code_id=None), intake=_intake(primary=501))
     assert _payload(out)["supersedes_sub_cost_code_public_id"] == PUB[501]
+
+
+def test_full_tick_escalate_without_a_drop_emits_no_supersedes():
+    """A full tick (no drop intake row): its own Haiku primary never reached a draft."""
+    out, _, _ = _apply(_row(primary_sub_cost_code_id=501), intake=None)
+    p = _payload(out)
+    assert "supersedes_sub_cost_code_public_id" not in p
+    assert p["decision_source"] == "escalate"
+    out, _, _ = _apply(_row(primary_sub_cost_code_id=501), intake=_intake(primary=None))
+    assert "supersedes_sub_cost_code_public_id" not in _payload(out)
 
 
 def test_similar_vote_presented_as_similar_bills():
@@ -153,7 +178,7 @@ def test_strong_history_reports_decision_source_history_only_when_v2():
 
 
 def test_text_status_pending_while_escalation_pending():
-    intake = SimpleNamespace(attachment_id=5, coding_escalation="low_confidence", primary_sub_cost_code_id=501)
+    intake = _intake(escalation="low_confidence")
     out, status, _ = _apply(None, intake=intake)
     assert status == "pending"
     # flag OFF: same input is "none" (today's status)
@@ -165,13 +190,26 @@ def test_text_status_pending_while_escalation_pending():
 
 
 def test_terminal_row_for_current_extraction_ends_pending():
-    intake = SimpleNamespace(attachment_id=5, coding_escalation="low_confidence", primary_sub_cost_code_id=501)
-    _, status, _ = _apply(_row(status="done", sub_cost_code_id=None), intake=intake)
+    intake = _intake(escalation="low_confidence")
+    _, status, intake_svc = _apply(_row(status="done", sub_cost_code_id=None), intake=intake)
+    assert status == "none"
+    intake_svc.read_by_bill_id.assert_not_called()  # terminal row -> no intake read
+
+
+def test_no_current_completed_extraction_is_not_pending():
+    intake = _intake(escalation="low_confidence")
+    _, status, _ = _apply(None, intake=intake, extraction=_extraction(latest=None))
+    assert status == "none"
+
+
+def test_escalation_older_than_two_hours_is_not_pending():
+    old = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(hours=3)
+    _, status, _ = _apply(None, intake=_intake(escalation="low_confidence", extracted=old))
     assert status == "none"
 
 
 def test_escalation_for_an_older_attachment_is_not_pending():
-    intake = SimpleNamespace(attachment_id=4, coding_escalation="low_confidence", primary_sub_cost_code_id=501)
+    intake = _intake(escalation="low_confidence", attachment_id=4)
     _, status, _ = _apply(None, intake=intake)
     assert status == "none"
 

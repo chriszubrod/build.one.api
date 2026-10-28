@@ -33,6 +33,7 @@ class Rung:
     # unparseable or a parsed-but-invalid reply all count as no answer; U-676n) AND
     # the daily Claude spend cap has not stopped the cascade (cash fallback).
     fallback_only: bool = False
+    accept_threshold: Optional[float] = None
 
 
 # Cheapest-first by blended $/MTok ((input + output) / 2) per
@@ -198,7 +199,12 @@ async def run_ladder(
         validated, vreason = validate(parsed)
         if validated:
             had_valid_result = True
-        accepted = validated and confidence is not None and confidence >= threshold
+        tau = (
+            rung.accept_threshold
+            if rung.accept_threshold is not None
+            else threshold
+        )
+        accepted = validated and confidence is not None and confidence >= tau
         accepted_via = "threshold" if accepted else None
 
         # Consensus: count agreement among validated rungs on consensus_key.
@@ -220,7 +226,7 @@ async def run_ladder(
             "cascade[%s] rung %s/%s -> %s (validated=%s, conf=%s, τ=%.2f, %dms)",
             name, rung.provider, rung.model,
             (accepted_via.upper() if accepted_via else "escalate"),
-            validated, confidence, threshold, latency_ms,
+            validated, confidence, tau, latency_ms,
         )
         if accepted:
             outcome = CascadeResult(

@@ -32,12 +32,15 @@ from intelligence.cascade.bill_coding import (
     BILL_CODING_FOUNDRY_LADDER,
     BILL_CODING_SUGGESTION_TASK,
     BILL_TEXT_CHAR_BUDGET,
+    FULL_CONTENT_CHAR_CAP,
+    SIMILAR_BILLS_RULE_LINE,
     SUSPENSE_SCC_NUMBER,
     BACKTEST_LADDERS,
     ladder_by_name,
     normalize_project_abbreviation,
     normalize_scc_number,
     run_bill_coding_suggestion,
+    should_escalate,
     truncate_bill_text,
     validate_bill_coding_result,
 )
@@ -109,17 +112,11 @@ BILL_TEXT_MODE_ENVELOPE = "envelope_truncated"
 BILL_TEXT_MODE_FULL_CONTENT = "full_content"
 BILL_TEXT_MODES = (BILL_TEXT_MODE_ENVELOPE, BILL_TEXT_MODE_FULL_CONTENT)
 DEFAULT_BILL_TEXT_MODE = BILL_TEXT_MODE_ENVELOPE
-FULL_CONTENT_CHAR_CAP = 60_000
 BUDGET_BY_MODE: dict[str, int] = {
     BILL_TEXT_MODE_ENVELOPE: BILL_TEXT_CHAR_BUDGET,
     BILL_TEXT_MODE_FULL_CONTENT: FULL_CONTENT_CHAR_CAP,
 }
 SIMILAR_BILLS_TOP_K = 5
-SIMILAR_BILLS_RULE_LINE = (
-    "- similar_bills lists how the most similar earlier invoices were coded "
-    "(match = text overlap, amount_ratio = their total / this bill's total); "
-    "weigh it together with history_evidence and the bill text."
-)
 LINE_ITEMS_RULE_LINE = (
     "- Code the bill from what was actually purchased (the line items and item "
     "descriptions in the bill text). Vendor header text, boilerplate, "
@@ -827,11 +824,9 @@ def should_escalate_text_answer(
     *,
     escalate_below: float,
 ) -> bool:
-    if primary_scc_id is None:
-        return True
-    if primary_confidence is None:
-        return True
-    return primary_confidence < escalate_below
+    return should_escalate(
+        primary_scc_id, primary_confidence, escalate_below=escalate_below,
+    )
 
 
 def parse_extra_bill_ids(raw: str | None) -> list[int]:
@@ -1553,7 +1548,7 @@ def resolve_bill_text_from_raw_blob(
 def bill_text_for_user_message(payload: dict[str, Any], bill_text_mode: str) -> str:
     raw = payload.get("bill_text") or ""
     if bill_text_mode == BILL_TEXT_MODE_FULL_CONTENT:
-        return raw
+        return truncate_bill_text(raw, budget=FULL_CONTENT_CHAR_CAP)
     return truncate_bill_text(raw, budget=BUDGET_BY_MODE[BILL_TEXT_MODE_ENVELOPE])
 
 

@@ -28,6 +28,12 @@ from intelligence.cascade.ladder_config import (
 )
 
 BILL_TEXT_CHAR_BUDGET = 6000
+FULL_CONTENT_CHAR_CAP = 60_000
+SIMILAR_BILLS_RULE_LINE = (
+    "- similar_bills lists how the most similar earlier invoices were coded "
+    "(match = text overlap, amount_ratio = their total / this bill's total); "
+    "weigh it together with history_evidence and the bill text."
+)
 SUSPENSE_SCC_NUMBER = "00.02"
 BILL_CODING_THRESHOLD = DEFAULT_BILL_CODING_SUGGESTION_THRESHOLD
 
@@ -62,6 +68,8 @@ ALLOWED_PAYLOAD_KEYS = frozenset({
     "candidate_sccs",
     "candidate_projects",
 })
+
+ALLOWED_PAYLOAD_KEYS_V2 = ALLOWED_PAYLOAD_KEYS | frozenset({"similar_bills"})
 
 _bill_coding_payload: ContextVar[dict[str, Any] | None] = ContextVar(
     "_bill_coding_payload", default=None
@@ -99,6 +107,39 @@ def truncate_bill_text(text: str, budget: int = BILL_TEXT_CHAR_BUDGET) -> str:
     if len(text) <= budget:
         return text
     return text[:budget] + "\n…(truncated)"
+
+
+def should_escalate(
+    scc_id: Any,
+    confidence: Any,
+    *,
+    escalate_below: float = 0.70,
+) -> bool:
+    """Pure predicate: escalate when SCC or confidence is missing or conf < bar."""
+    if scc_id is None:
+        return True
+    if confidence is None:
+        return True
+    return float(confidence) < escalate_below
+
+
+def _build_user_message_v2(payload: dict[str, Any]) -> str:
+    extra = set(payload.keys()) - ALLOWED_PAYLOAD_KEYS_V2
+    if extra:
+        raise ValueError(f"unexpected payload keys: {sorted(extra)}")
+    _bill_coding_payload.set(payload)
+    safe = {
+        "vendor_name": payload.get("vendor_name", ""),
+        "bill_text": truncate_bill_text(
+            payload.get("bill_text") or "",
+            budget=FULL_CONTENT_CHAR_CAP,
+        ),
+        "history_evidence": payload.get("history_evidence") or [],
+        "candidate_sccs": payload.get("candidate_sccs") or [],
+        "candidate_projects": payload.get("candidate_projects"),
+        "similar_bills": payload.get("similar_bills") or [],
+    }
+    return json.dumps(safe, ensure_ascii=False, indent=2)
 
 
 def _build_user_message(payload: dict[str, Any]) -> str:
@@ -178,6 +219,15 @@ BILL_CODING_SUGGESTION_TASK = StructuredTask(
     system_prompt=_SYSTEM_PROMPT,
     threshold=BILL_CODING_THRESHOLD,
     build_user_message=_build_user_message,
+    validate=_validate,
+    ladder=DEFAULT_BILL_CODING_SUGGESTION_LADDER,
+)
+
+BILL_CODING_SUGGESTION_TASK_V2 = StructuredTask(
+    name="bill_coding_suggestion_v2",
+    system_prompt=_SYSTEM_PROMPT + "\n" + SIMILAR_BILLS_RULE_LINE,
+    threshold=BILL_CODING_THRESHOLD,
+    build_user_message=_build_user_message_v2,
     validate=_validate,
     ladder=DEFAULT_BILL_CODING_SUGGESTION_LADDER,
 )

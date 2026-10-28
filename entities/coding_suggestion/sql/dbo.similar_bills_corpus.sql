@@ -1,8 +1,10 @@
--- Contract: similar-bills completed-bill corpus (U-701a)
+-- Contract: similar-bills completed-bill corpus (U-701a, tenant scope U-701b2)
 -- Owns: ReadSimilarBillsCorpusRows — bill-grain rows for live similar-bills cache.
 -- Invariants: completed coded bills only; one row per bill; attachment = earliest BLIA link with a token-hash row
 --   of the CURRENT @TokenizerVersion (old-key hashes never pick a bill's attachment); a TaxpayerAttachment-linked
 --   attachment is never picked, even when it was hashed before the taxpayer link existed.
+--   Optional @CompanyId scopes to dbo.Bill.CompanyId (NULL = all companies).
+--   ProjectIdsCsv = distinct BillLineItem.ProjectId values per bill (comma-separated, sorted).
 -- Depends: dbo.BillDominantVoteForVendor label rule duplicated at bill grain (no vendor filter); dbo.AttachmentTextTokenHash.
 -- Sprocs: ReadSimilarBillsCorpusRows
 --
@@ -11,7 +13,8 @@
 GO
 
 CREATE OR ALTER PROCEDURE ReadSimilarBillsCorpusRows
-    @TokenizerVersion NVARCHAR(32)
+    @TokenizerVersion NVARCHAR(32),
+    @CompanyId BIGINT = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -81,21 +84,39 @@ BEGIN
         SELECT [BillId], [AttachmentId]
         FROM Linked
         WHERE [Rn] = 1
+    ),
+    DistinctBillProjects AS (
+        SELECT DISTINCT bli.[BillId], bli.[ProjectId]
+        FROM dbo.[BillLineItem] bli
+        INNER JOIN CodedBills cb ON cb.[BillId] = bli.[BillId]
+        WHERE bli.[ProjectId] IS NOT NULL
+    ),
+    BillProjects AS (
+        SELECT
+            dbp.[BillId],
+            STRING_AGG(CAST(dbp.[ProjectId] AS VARCHAR(20)), ',')
+                WITHIN GROUP (ORDER BY dbp.[ProjectId]) AS [ProjectIdsCsv]
+        FROM DistinctBillProjects dbp
+        GROUP BY dbp.[BillId]
     )
     SELECT
         ba.[AttachmentId],
         b.[Id] AS [BillId],
         b.[VendorId],
         b.[CreatedDatetime],
+        b.[CreatedByUserId],
         d.[DominantSubCostCodeId],
         d.[DominantProjectId],
+        bp.[ProjectIdsCsv],
         bt.[TotalAbsAmount]
     FROM CodedBills cb
     INNER JOIN dbo.[Bill] b ON b.[Id] = cb.[BillId]
     INNER JOIN Dominant d ON d.[BillId] = b.[Id]
     INNER JOIN BillTotal bt ON bt.[BillId] = b.[Id]
     INNER JOIN BillAttachment ba ON ba.[BillId] = b.[Id]
+    LEFT JOIN BillProjects bp ON bp.[BillId] = b.[Id]
     WHERE b.[IsDraft] = 0
-      AND b.[VendorId] IS NOT NULL;
+      AND b.[VendorId] IS NOT NULL
+      AND (@CompanyId IS NULL OR b.[CompanyId] = @CompanyId);
 END;
 GO

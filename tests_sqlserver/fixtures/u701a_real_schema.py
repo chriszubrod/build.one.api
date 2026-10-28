@@ -45,6 +45,19 @@ SQL_FILES_IN_ORDER: tuple[Path, ...] = (
     REPO_ROOT / "entities/coding_suggestion/sql/dbo.similar_bills_corpus.sql",
 )
 
+_SIMILAR_BILLS_CORPUS_SQL = REPO_ROOT / "entities/coding_suggestion/sql/dbo.similar_bills_corpus.sql"
+
+# Phase 5 tenant columns (scripts/migrations/phase5_company_id_*.sql) — absent from
+# entity base CREATE TABLE blocks but present on prod.
+_PHASE5_COMPANY_ID_TABLES: tuple[str, ...] = (
+    "Project",
+    "Bill",
+    "BillLineItem",
+    "Attachment",
+    "BillLineItemAttachment",
+)
+
+
 _U701A_TABLES_DROP_ORDER: tuple[str, ...] = (
     "dbo.AttachmentTextTokenHash",
     "dbo.BillIntakePrediction",
@@ -244,6 +257,84 @@ def drop_u701a_tables(cur) -> None:
         )
 
 
+def _ensure_company_stub(cur) -> None:
+    """Company id=1 matches phase-5 DEFAULT (1) / backfill target."""
+    cur.execute(
+        """
+        IF OBJECT_ID('dbo.Company', 'U') IS NULL
+        BEGIN
+            CREATE TABLE dbo.[Company] (
+                [Id] BIGINT NOT NULL PRIMARY KEY,
+                [PublicId] UNIQUEIDENTIFIER NOT NULL DEFAULT NEWID(),
+                [RowVersion] ROWVERSION NOT NULL,
+                [CreatedDatetime] DATETIME2(3) NOT NULL DEFAULT SYSUTCDATETIME(),
+                [ModifiedDatetime] DATETIME2(3) NULL,
+                [Name] NVARCHAR(255) NOT NULL DEFAULT N'test-company'
+            );
+        END;
+        IF NOT EXISTS (SELECT 1 FROM dbo.[Company] WHERE [Id] = 1)
+            INSERT dbo.[Company]([Id], [Name]) VALUES (1, N'Rogers Build, Inc.');
+        IF NOT EXISTS (SELECT 1 FROM dbo.[Company] WHERE [Id] = 2)
+            INSERT dbo.[Company]([Id], [Name]) VALUES (2, N'other-company');
+        """
+    )
+
+
+def _apply_phase5_company_id_columns(cur) -> None:
+    """Mirror prod phase-5 CompanyId: BIGINT NOT NULL, DEFAULT (1), after repo DDL."""
+    _ensure_company_stub(cur)
+    for table in _PHASE5_COMPANY_ID_TABLES:
+        df_name = f"DF_{table}_CompanyId"
+        ix_name = f"IX_{table}_CompanyId"
+        # One statement per execute — SQL Server compiles whole batches and rejects
+        # UPDATE ... CompanyId before the ADD batch has run.
+        cur.execute(
+            f"""
+            IF OBJECT_ID('dbo.[{table}]', 'U') IS NOT NULL
+               AND COL_LENGTH('dbo.[{table}]', 'CompanyId') IS NULL
+                ALTER TABLE dbo.[{table}] ADD [CompanyId] BIGINT NULL;
+            """
+        )
+        cur.execute(
+            f"""
+            IF OBJECT_ID('dbo.[{table}]', 'U') IS NOT NULL
+               AND COL_LENGTH('dbo.[{table}]', 'CompanyId') IS NOT NULL
+                UPDATE dbo.[{table}] SET [CompanyId] = 1 WHERE [CompanyId] IS NULL;
+            """
+        )
+        cur.execute(
+            f"""
+            IF OBJECT_ID('dbo.[{table}]', 'U') IS NOT NULL
+               AND EXISTS (
+                    SELECT 1 FROM sys.columns
+                    WHERE object_id = OBJECT_ID('dbo.[{table}]')
+                      AND name = 'CompanyId' AND is_nullable = 1
+               )
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM sys.indexes
+                    WHERE name = '{ix_name}' AND object_id = OBJECT_ID('dbo.[{table}]')
+                )
+                    DROP INDEX [{ix_name}] ON dbo.[{table}];
+                ALTER TABLE dbo.[{table}] ALTER COLUMN [CompanyId] BIGINT NOT NULL;
+                IF NOT EXISTS (
+                    SELECT 1 FROM sys.indexes
+                    WHERE name = '{ix_name}' AND object_id = OBJECT_ID('dbo.[{table}]')
+                )
+                    CREATE INDEX [{ix_name}] ON dbo.[{table}] ([CompanyId]);
+            END;
+            """
+        )
+        cur.execute(
+            f"""
+            IF OBJECT_ID('dbo.[{table}]', 'U') IS NOT NULL
+               AND COL_LENGTH('dbo.[{table}]', 'CompanyId') IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM sys.default_constraints WHERE name = '{df_name}')
+                ALTER TABLE dbo.[{table}] ADD CONSTRAINT [{df_name}] DEFAULT (1) FOR [CompanyId];
+            """
+        )
+
+
 def _seed_reference_rows(cur) -> None:
     cur.execute(
         """
@@ -319,6 +410,8 @@ def install_u701a_real_schema(cur) -> None:
             extra = _ATTACHMENT_MIGRATIONS if path == attachment_sql else ()
             exec_table_ddl_only(cur, path, extra_migrations=extra)
         else:
+            if path == _SIMILAR_BILLS_CORPUS_SQL:
+                _apply_phase5_company_id_columns(cur)
             exec_sql_file(cur, path)
     _seed_reference_rows(cur)
 

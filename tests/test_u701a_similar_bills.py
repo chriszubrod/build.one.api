@@ -30,7 +30,10 @@ from entities.coding_suggestion.business.bill_text_token_hash import (
     tokenizer_version_for_key,
     warn_once_if_disabled,
 )
-from entities.coding_suggestion.business.similar_bills_service import SimilarBillsService
+from entities.coding_suggestion.business.similar_bills_service import (
+    SimilarBillsService,
+    _tokens_frozenset,
+)
 from entities.attachment.business.text_token_hash_service import (
     AttachmentTextTokenHashService,
     persist_token_hashes_failure_isolated,
@@ -678,7 +681,7 @@ def test_recode_applied_after_refresh():
     ]
     svc.refresh_incremental()
     with svc._state_lock:
-        stored = svc._hash_by_attachment[10]
+        stored = _tokens_frozenset(svc._hash_by_attachment[10])
     assert stored != token_hashes_from_storage_int(" ".join(sorted(shared)))
 
 
@@ -701,7 +704,9 @@ def test_watermark_overlap_picks_late_row():
     ]
     svc.refresh_incremental()
     with svc._state_lock:
-        assert svc._hash_by_attachment[10] == token_hashes_from_storage_int(late_tok)
+        assert _tokens_frozenset(svc._hash_by_attachment[10]) == token_hashes_from_storage_int(
+            late_tok
+        )
 
 
 def test_shadow_abs_amount_and_no_vendor():

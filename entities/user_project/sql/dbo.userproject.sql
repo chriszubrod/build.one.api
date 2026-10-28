@@ -322,3 +322,20 @@ BEGIN
     ALTER TABLE [dbo].[UserProject] ADD CONSTRAINT [FK_UserProject_Project] FOREIGN KEY ([ProjectId]) REFERENCES [dbo].[Project]([Id]);
 END
 GO
+
+
+-- U-701b2: the projects through which @ActorUserId can open OTHER users' bills - the
+-- project branch of dbo.UserCanAccessBill (UserProject membership only; a project's
+-- creator without a UserProject row cannot open other users' bills on it). The bill's
+-- own-creator branch is applied by the caller. Used to scope similar-bills evidence.
+CREATE OR ALTER PROCEDURE ReadBillAccessProjectIdsForUser
+    @ActorUserId BIGINT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT DISTINCT up.[ProjectId]
+    FROM dbo.[UserProject] up
+    WHERE up.[UserId] = @ActorUserId;
+END;
+GO

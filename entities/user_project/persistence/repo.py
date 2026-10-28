@@ -89,6 +89,25 @@ class UserProjectRepository:
             logger.error(f"Error during create user project: {error}")
             raise map_database_error(error)
 
+    def read_bill_access_project_ids_for_user(self, actor_user_id: int) -> set[int]:
+        """Projects through which the actor can open other users' bills: UserProject
+        membership only (the project branch of dbo.UserCanAccessBill)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadBillAccessProjectIdsForUser",
+                    params={"ActorUserId": actor_user_id},
+                )
+                rows = cursor.fetchall()
+                return {int(row.ProjectId) for row in rows if row and row.ProjectId is not None}
+        except Exception as error:
+            logger.error(
+                "Error during read accessible project ids for user: %s", type(error).__name__
+            )
+            raise map_database_error(error)
+
     def read_all(self) -> list[UserProject]:
         """
         Read all user projects.

@@ -28,12 +28,24 @@ silent leak. Scheduler / system callers reach the admin bypass via the
 `shared/api/admin.py::_require_drain_secret`.
 """
 import logging
+import threading
+import time
 from typing import Optional
 
-from shared.authz import current_user_id, current_is_system_admin, current_can_view_team
+from shared.authz import (
+    current_company_id,
+    current_is_system_admin,
+    current_is_system_context,
+    current_user_id,
+    current_can_view_team,
+)
 from shared.database import get_connection
 
 logger = logging.getLogger(__name__)
+
+_ACCESSIBLE_PROJECTS_CACHE_TTL_SECONDS = 300
+_accessible_projects_cache: dict[tuple[int, Optional[int]], tuple[float, frozenset[int]]] = {}
+_accessible_projects_cache_lock = threading.Lock()
 
 
 class EntityNotAccessibleError(Exception):
@@ -47,6 +59,63 @@ class EntityNotAccessibleError(Exception):
         self.entity = entity
         self.entity_id = entity_id
         super().__init__(f"{entity} {entity_id} is not accessible to the current actor")
+
+
+def resolve_accessible_project_ids() -> Optional[frozenset[int]]:
+    """Projects through which the CURRENT actor can open other users' bills.
+
+    None = all (system admin / system context). Else the actor's UserProject projects
+    (the project branch of dbo.UserCanAccessBill); fail-closed to an empty set."""
+    if _should_bypass() or current_is_system_context.get():
+        return None
+    user_id = current_user_id.get()
+    if user_id is None:
+        logger.warning("resolve_accessible_project_ids: no current_user_id; fail-closed")
+        return frozenset()
+    return accessible_project_ids_for_user(
+        int(user_id),
+        is_system_admin=current_is_system_admin.get(),
+    )
+
+
+def accessible_project_ids_for_user(
+    user_id: int,
+    *,
+    is_system_admin: bool,
+) -> Optional[frozenset[int]]:
+    """Same set for an EXPLICIT actor (e.g. a bill's creator in a system tick).
+
+    Bypasses only on the actor's own is_system_admin - never on the ambient request or
+    system context, which would widen a non-admin actor's scope to every project."""
+    if is_system_admin:
+        return None
+    company_id = current_company_id.get()
+    cache_key = (int(user_id), company_id)
+    now = time.time()
+    with _accessible_projects_cache_lock:
+        cached = _accessible_projects_cache.get(cache_key)
+        if cached is not None and (now - cached[0]) < _ACCESSIBLE_PROJECTS_CACHE_TTL_SECONDS:
+            return cached[1]
+    try:
+        from entities.user_project.persistence.repo import UserProjectRepository
+
+        project_ids = UserProjectRepository().read_bill_access_project_ids_for_user(int(user_id))
+        frozen = frozenset(project_ids)
+    except Exception as exc:
+        logger.warning(
+            "accessible_project_ids_for_user failed user_id=%s: %s",
+            user_id,
+            type(exc).__name__,
+        )
+        return frozenset()
+    with _accessible_projects_cache_lock:
+        _accessible_projects_cache[cache_key] = (time.time(), frozen)
+    return frozen
+
+
+def _reset_accessible_projects_cache_for_tests() -> None:
+    with _accessible_projects_cache_lock:
+        _accessible_projects_cache.clear()
 
 
 def _should_bypass() -> bool:

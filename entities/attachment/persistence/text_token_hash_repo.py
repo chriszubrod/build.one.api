@@ -46,11 +46,17 @@ class AttachmentTextTokenHashRepository:
     def read_since(self, since: datetime) -> Sequence[pyodbc.Row]:
         return self._call("ReadAttachmentTextTokenHashesSince", {"Since": since}, fetch="all")
 
-    def read_corpus_rows(self, *, tokenizer_version: str) -> Sequence[pyodbc.Row]:
+    def read_corpus_rows(
+        self,
+        *,
+        tokenizer_version: str,
+        company_id: Optional[int] = None,
+    ) -> Sequence[pyodbc.Row]:
         """Completed-bill corpus; each bill's attachment must hold a hash row of this version."""
-        return self._call(
-            "ReadSimilarBillsCorpusRows", {"TokenizerVersion": tokenizer_version}, fetch="all"
-        )
+        params: dict[str, Any] = {"TokenizerVersion": tokenizer_version}
+        if company_id is not None:
+            params["CompanyId"] = company_id
+        return self._call("ReadSimilarBillsCorpusRows", params, fetch="all")
 
     def read_for_attachment_ids(
         self,

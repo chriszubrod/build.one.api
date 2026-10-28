@@ -13,7 +13,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Mapping, NamedTuple, Optional, Sequence, TypeVar
+from typing import Any, Callable, Mapping, NamedTuple, Optional, Sequence, TypeVar
 
 from entities.attachment.business.extraction_envelope import extraction_payload_is_current
 from intelligence.cascade.bill_coding import SUSPENSE_SCC_NUMBER, normalize_scc_number
@@ -303,6 +303,62 @@ class SimilarBillsMatchResult:
     confidence: Optional[Decimal]
 
 
+@dataclass(frozen=True)
+class VisibilityFilter:
+    """Scope similar-bill priors to bills the actor may see (None accessible = all)."""
+
+    actor_user_id: Optional[int]
+    accessible_project_ids: Optional[frozenset[int]]
+
+
+def prior_bill_visible(
+    *,
+    created_by_user_id: int,
+    project_ids: tuple[int, ...],
+    visible: VisibilityFilter,
+) -> bool:
+    if visible.accessible_project_ids is None:
+        return True
+    if (
+        visible.actor_user_id is not None
+        and created_by_user_id == visible.actor_user_id
+    ):
+        return True
+    if project_ids and visible.accessible_project_ids.intersection(project_ids):
+        return True
+    return False
+
+
+def filtered_vote(
+    neighbours: Sequence[Neighbour],
+    *,
+    as_of_catalog: Sequence[Mapping[str, str]],
+    scc_by_id: Mapping[int, Any],
+    ambiguous_numbers: frozenset[str],
+    top_k: int = DEFAULT_TOP_K,
+) -> tuple[Optional[int], Optional[Decimal]]:
+    """Vote only over neighbours that survive apply_similar_evidence catalog filters.
+
+    Never Suspense / out-of-catalog / ambiguous. Holding codes are excluded only through
+    ``as_of_catalog``: callers must pass a catalog that already drops IsHoldingCode rows
+    (the bill text-tier catalog query does). Use this - never the raw vote on
+    SimilarBillsMatchResult - for anything a user sees."""
+    _, _, _, filtered, _ = apply_similar_evidence(
+        neighbours,
+        [],
+        as_of_catalog=as_of_catalog,
+        scc_by_id=scc_by_id,
+        ambiguous_numbers=ambiguous_numbers,
+    )
+    if not filtered:
+        return None, None
+    scored = [
+        (n.combined, int(n.prior.enriched.bill.bill_id), n.scc_id) for n in filtered
+    ]
+    vote = vote_from_scored_neighbours(scored, top_k)
+    return vote.predicted_scc_id, vote.confidence
+
+
 def top_neighbours_any_vendor(
     query: BillTokenProfile,
     idf: dict[str, float],
@@ -312,6 +368,7 @@ def top_neighbours_any_vendor(
     cap_ratio: float = DEFAULT_AMOUNT_BAND_CAP_RATIO,
     token_index: dict[str, set[int] | tuple[int, ...]],
     prior_by_id: dict[int, BillTokenProfile],
+    prior_filter: Optional[Callable[[Any], bool]] = None,
 ) -> list[Neighbour]:
     """Top-K earlier bills (any vendor) by combined IDF Jaccard × amount band."""
     as_of = query.enriched.bill.created
@@ -328,6 +385,8 @@ def top_neighbours_any_vendor(
             continue
         pb = prior_prof.enriched.bill
         if not is_prior_eligible(pb, qbill, as_of=as_of):
+            continue
+        if prior_filter is not None and not prior_filter(pb):
             continue
         combined = text_similarity_profiles(
             query, prior_prof, idf, band_pct=band_pct, cap_ratio=cap_ratio

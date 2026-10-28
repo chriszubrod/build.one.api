@@ -10,10 +10,11 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from array import array as array_type
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Optional
+from typing import Callable, Optional
 
 from entities.attachment.persistence.text_token_hash_repo import AttachmentTextTokenHashRepository
 from entities.coding_suggestion.business.bill_text_token_hash import (
@@ -32,9 +33,11 @@ from entities.coding_suggestion.business.similar_bills import (
     BillTokenProfile,
     SimilarBillsMatchResult,
     SimilarNeighbourResult,
+    VisibilityFilter,
     _log_abs_amount,
     cap_tokens_by_idf,
     compute_idf_from_doc_token_sets,
+    prior_bill_visible,
     top_neighbours_any_vendor,
     vote_from_scored_neighbours,
 )
@@ -64,6 +67,21 @@ _FULL_HASH_REREAD_EVERY_N = 6
 _EPOCH = datetime(2000, 1, 1)  # naive UTC floor: "read every hash row"
 
 
+def _parse_project_ids_csv(raw: object) -> tuple[int, ...]:
+    if raw is None or not str(raw).strip():
+        return ()
+    return tuple(sorted(int(p) for p in str(raw).split(",") if p.strip()))
+
+
+def _compact_token_storage(tokens: frozenset[int]) -> array_type:
+    # Unsigned: HMAC truncations are 64-bit and may exceed signed int64 max.
+    return array_type("Q", sorted(tokens))
+
+
+def _tokens_frozenset(compact: array_type) -> frozenset[int]:
+    return frozenset(compact)
+
+
 @dataclass(frozen=True)
 class _CorpusBill:
     bill_id: int
@@ -72,6 +90,8 @@ class _CorpusBill:
     created: datetime
     label_scc_id: int
     total_abs_amount: Decimal
+    created_by_user_id: int = 0
+    project_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -84,43 +104,56 @@ class _CorpusSnapshot:
     idf: dict[int, float]
     profiles_by_bill: dict[int, BillTokenProfile]
     token_index: dict[int, tuple[int, ...]]
+    creator_by_bill: dict[int, int]
+    projects_by_bill: dict[int, tuple[int, ...]]
 
 
 class SimilarBillsService:
-    _instance: Optional["SimilarBillsService"] = None
+    _instances: dict[int, "SimilarBillsService"] = {}
     _instance_lock = threading.Lock()
 
     def __init__(
         self,
         *,
+        company_id: int = 1,
         token_repo: Optional[AttachmentTextTokenHashRepository] = None,
         settings: Optional[object] = None,
     ) -> None:
         import config
 
+        self._company_id = int(company_id)
         self._settings = settings or config.Settings()
         self._token_repo = token_repo or AttachmentTextTokenHashRepository()
         self._state_lock = threading.RLock()
         self._flight_lock = threading.Lock()
         self._refresh_running = False
         self._snapshot: Optional[_CorpusSnapshot] = None
-        self._hash_by_attachment: dict[int, frozenset[int]] = {}
+        self._hash_by_attachment: dict[int, array_type] = {}
+        self._skipped_malformed_attachment_ids: set[int] = set()
         self._since_watermark: datetime = _EPOCH
         self._last_refresh_mono: Optional[float] = None
         self._last_refresh_attempt_mono: Optional[float] = None
         self._refresh_count: int = 0
 
     @classmethod
-    def shared(cls) -> "SimilarBillsService":
+    def for_company(cls, company_id: int, **kwargs: object) -> "SimilarBillsService":
+        cid = int(company_id)
         with cls._instance_lock:
-            if cls._instance is None:
-                cls._instance = cls()
-            return cls._instance
+            existing = cls._instances.get(cid)
+            if existing is None:
+                existing = cls(company_id=cid, **kwargs)  # type: ignore[arg-type]
+                cls._instances[cid] = existing
+            return existing
+
+    @classmethod
+    def shared(cls) -> "SimilarBillsService":
+        # Deprecated: process-global alias for company 1; prefer for_company(tenant id).
+        return cls.for_company(1)
 
     @classmethod
     def _reset_shared_for_tests(cls) -> None:
         with cls._instance_lock:
-            cls._instance = None
+            cls._instances.clear()
 
     def _cache_ttl_seconds(self) -> float:
         ttl = getattr(self._settings, "similar_bills_refresh_seconds", 1800)
@@ -210,12 +243,17 @@ class SimilarBillsService:
         for row in hash_rows:
             if str(row.TokenizerVersion) != version:
                 continue
+            att_id = int(row.AttachmentId)
             try:
                 tokens = token_hashes_from_storage_int(str(row.TokenHashes))
-            except ValueError:
+                # OverflowError: a negative or >64-bit hex value parses but does not fit
+                # the unsigned compact array - malformed like any other bad row.
+                compact = _compact_token_storage(tokens)
+            except (ValueError, OverflowError):
                 skipped_hash_rows += 1
+                self._skipped_malformed_attachment_ids.add(att_id)
                 continue
-            self._hash_by_attachment[int(row.AttachmentId)] = tokens
+            self._hash_by_attachment[att_id] = compact
             mod = parse_db_datetime(row.ModifiedDatetime) or datetime.min
             if mod >= max_modified:
                 max_modified = mod
@@ -231,6 +269,7 @@ class SimilarBillsService:
             int(row.AttachmentId)
             for row in corpus_rows
             if int(row.AttachmentId) not in self._hash_by_attachment
+            and int(row.AttachmentId) not in self._skipped_malformed_attachment_ids
         }
         if not missing:
             return
@@ -257,7 +296,12 @@ class SimilarBillsService:
         self._refresh_count += 1
         full_hash_reread = self._refresh_count % _FULL_HASH_REREAD_EVERY_N == 0
         try:
-            corpus_rows = list(self._token_repo.read_corpus_rows(tokenizer_version=version))
+            corpus_rows = list(
+                self._token_repo.read_corpus_rows(
+                    tokenizer_version=version,
+                    company_id=self._company_id,
+                )
+            )
             since = self._since_watermark - _HASH_READ_OVERLAP
             if full_hash_reread or since < _EPOCH:
                 since = _EPOCH
@@ -279,12 +323,12 @@ class SimilarBillsService:
             }
 
             max_cap = self._max_tokens_per_bill()
-            raw_profiles: dict[int, tuple[_CorpusBill, frozenset[int]]] = {}
+            raw_profiles: dict[int, tuple[_CorpusBill, array_type]] = {}
             skipped_corpus_rows = 0
             for row in corpus_rows:
                 att_id = int(row.AttachmentId)
-                tokens = self._hash_by_attachment.get(att_id)
-                if not tokens:
+                compact = self._hash_by_attachment.get(att_id)
+                if not compact:
                     continue
                 try:
                     bill = _CorpusBill(
@@ -294,11 +338,13 @@ class SimilarBillsService:
                         created=parse_db_datetime(row.CreatedDatetime) or datetime.min,
                         label_scc_id=int(row.DominantSubCostCodeId),
                         total_abs_amount=to_decimal_or_none(row.TotalAbsAmount) or Decimal("0"),
+                        created_by_user_id=int(getattr(row, "CreatedByUserId", 0) or 0),
+                        project_ids=_parse_project_ids_csv(getattr(row, "ProjectIdsCsv", None)),
                     )
                 except (TypeError, ValueError, ArithmeticError):
                     skipped_corpus_rows += 1
                     continue
-                raw_profiles[bill.bill_id] = (bill, tokens)
+                raw_profiles[bill.bill_id] = (bill, compact)
 
             if skipped_corpus_rows:
                 logger.warning(
@@ -306,22 +352,33 @@ class SimilarBillsService:
                     skipped_corpus_rows,
                 )
 
-            doc_tokens = [toks for _bill, toks in raw_profiles.values()]
+            doc_tokens = [_tokens_frozenset(toks) for _bill, toks in raw_profiles.values()]
             idf = compute_idf_from_doc_token_sets(doc_tokens)
 
             profiles: dict[int, BillTokenProfile] = {}
+            creator_by_bill: dict[int, int] = {}
+            projects_by_bill: dict[int, tuple[int, ...]] = {}
             token_index_builder: dict[int, list[int]] = {}
-            for bid, (bill, tokens) in raw_profiles.items():
+            for bid, (bill, compact) in raw_profiles.items():
+                tokens = _tokens_frozenset(compact)
                 capped = cap_tokens_by_idf(tokens, idf, max_cap)
                 profile = self._profile_for_bill(bill, capped, idf_weights=idf)
                 profiles[bid] = profile
+                creator_by_bill[bid] = bill.created_by_user_id
+                projects_by_bill[bid] = bill.project_ids
                 for tok in capped:
                     token_index_builder.setdefault(tok, []).append(bid)
 
             frozen_index = {
                 tok: tuple(sorted(bids)) for tok, bids in token_index_builder.items()
             }
-            snapshot = _CorpusSnapshot(idf=idf, profiles_by_bill=profiles, token_index=frozen_index)
+            snapshot = _CorpusSnapshot(
+                idf=idf,
+                profiles_by_bill=profiles,
+                token_index=frozen_index,
+                creator_by_bill=creator_by_bill,
+                projects_by_bill=projects_by_bill,
+            )
 
             with self._state_lock:
                 self._snapshot = snapshot
@@ -353,6 +410,7 @@ class SimilarBillsService:
         vendor_id: Optional[int] = None,
         exclude_bill_id: Optional[int] = None,
         as_of: datetime,
+        visible: Optional[VisibilityFilter] = None,
     ) -> Optional[SimilarBillsMatchResult]:
         if not feature_enabled(self._settings):
             warn_once_if_disabled()
@@ -382,6 +440,20 @@ class SimilarBillsService:
             log_abs_amount=_log_abs_amount(amount_abs),
         )
 
+        prior_filter: Optional[Callable[[object], bool]] = None
+        if visible is not None:
+            creator_by = snapshot.creator_by_bill
+            projects_by = snapshot.projects_by_bill
+            vf = visible
+
+            def prior_filter(prior_bill: object, _vf: VisibilityFilter = vf) -> bool:
+                bid = int(prior_bill.bill_id)
+                return prior_bill_visible(
+                    created_by_user_id=creator_by.get(bid, 0),
+                    project_ids=projects_by.get(bid, ()),
+                    visible=_vf,
+                )
+
         neighbours_all = top_neighbours_any_vendor(
             query_prof,
             snapshot.idf,
@@ -390,6 +462,7 @@ class SimilarBillsService:
             cap_ratio=DEFAULT_AMOUNT_BAND_CAP_RATIO,
             token_index=snapshot.token_index,
             prior_by_id=snapshot.profiles_by_bill,
+            prior_filter=prior_filter,
         )
         vote = vote_from_scored_neighbours(
             [

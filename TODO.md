@@ -197,6 +197,15 @@ Harness-only (`scripts/u654a_text_backtest.py`); none of these touch the app. Lo
 - **Extra bills must be finalized** (`IsDraft = 0`, the U-653b load filter); an in-review bill passed via `--extra-bill-ids` is silently skipped (`extra_bills_selected` shows it).
 - **Quality, deferred from Pass 2:** collapse the five combined/override predictors into one gate (`combined_scc(history, fallback, override_row=None)`), simplify `compute_history_override_metrics` closures and `_history_override_outcome_counts`, reuse `prepare_scored_rows` for extras, single-assign `needs_human`, CSV cell formatters, reuse `_int` in `load_prior_text_results`.
 
+## U-701b4 deferred — drop + read path on the shared coding decision (booked 2026-10-28; in build, flag off)
+
+- **"Pending" age is dated by the extraction, not the intake write.** `_intake_escalation_pending` (bill_suggestion_service.py) measures the 2 h cut-off from `intake.extracted_datetime` (= `Attachment.ExtractedDatetime`), but a reread / list-drop / drop of an attachment OCR'd > 2 h earlier reuses that extraction, so the editor never polls and Sonnet's code shows only on the next open. Expose `BillIntakePrediction.ModifiedDatetime` on the intake model and use it.
+- **Coding deadline margin is thin.** The 3 s margin inside the 25 s drop budget must also cover the prefill build and anything before `request_start` (e.g. the day-cap check); a slow DB there still yields the bare outer "timeout" (no header fields, no record_read). A timed-out Haiku call that was already metered is paid again by the tick (same as before the deadline).
+- **An always-failing actor read is retried forever.** The tick leaves the row pending on a `read_bill_coding_actor` exception and re-claims it every 30 min indefinitely (no paid call before the read). Add an attempt cap / backoff.
+- **History label can describe the wrong project.** In Mode B, when the code came from history for P and the vendor-wide history happens to share the code, the prefill's source/reason/counts are the vendor-wide ones. Label only when the projects match.
+- **"Superseded" code may never have been shown.** If the drop's Haiku primary was a holding code or failed the SCC read, nothing was prefilled, yet a later escalate answer reports superseding it (harmless: the web only swaps a matching untouched line).
+- **Mode B difference from the old drop:** when the chosen answer has a project but no code and nothing else codes it, the filtered vote applies before blank (old drop: blank) - owner rule "vote -> blank"; flagged at Gate 2.
+
 ## U-701b3 deferred — coding decision + per-rung storage + background escalation (booked 2026-10-28; in build, flag `bill_coding_ladder_v2_enabled` off)
 
 - **Daily-cap stop skips Foundry.** `intelligence/cascade/core.py` skips `fallback_only` rungs once the Claude daily cap stops a ladder, so "Foundry when Claude is unavailable" covers credit/outage/no-key but not the daily cap; the drop also exits early on the cap (`read_attachment_service.py` ~:511). Lifting both is U-701c.

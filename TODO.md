@@ -5057,6 +5057,56 @@ Board: [U-370](../build.one.team/BOARD.md) (Ready). Review of the Address stack 
   no longer exists in `dbo.Attachment` at all.
 
 
+## Documented-Manual-line packet follow-ups (2026-10-28, from `298f2aa5`)
+
+Booked out of the unit that let a Manual invoice line into the packet when it carries its own
+`dbo.InvoiceLineItemAttachment` document (the QBO-Deposit refund and deleted-CL-bill labor shapes).
+Found by the three review passes on that unit; none is in the shipped change.
+
+- [ ] **SECURITY — gate `POST /api/v1/create/invoice-line-item-attachment`.** It is gated only on
+  `Modules.ATTACHMENTS, "can_create"`. `InvoiceLineItemAttachmentService.create` resolves the ILI through the
+  access-gated `InvoiceLineItemService.read_by_public_id` (so the actor needs UserProject access to THAT
+  invoice's project) but resolves the Attachment through `AttachmentService.read_by_public_id`, which has **no
+  access check** — and `dbo.Attachment` carries no project to check against. There is no same-project
+  assertion between the two, and the table has no ownership constraint. Before `298f2aa5` such a row was inert
+  for the packet; now the blob is downloaded and merged into the client-facing PDF that ships to the customer
+  and both drives. Insider-only (needs an authenticated user with that one permission), but the fix belongs at
+  the link site: also gate on `Modules.INVOICES`, and assert the Attachment is reachable from the same project.
+- [ ] **Documented Manual lines land in a BLANK cost-code category on the client-facing Draw Request.**
+  `manual_map` in `enrich_line_items` returns only `attachment_public_id`, so `cost_code_number` /
+  `cost_code_name` fall to `""` and every such line groups under `""` in `build_cover_rollup` and in
+  `_build_toc_expanded_pdf`'s `groupby`. MR2-MAIN-10 shipped with a `(blank) -$980.23` row. No crash
+  (`_cost_code_sort_key("")` sorts it last) and the total is right, but the breakdown cannot be lined up
+  against the G703's. The dbo-native seam already exists — `QboInvoiceService.cost_coded_lines_for_invoice`
+  (U-292), already used by `draw_financials._qbo_rollup` — and resolves a Manual line's cost code from its QBO
+  Item ref. MR2-MAIN-10's three labor lines carry `ItemRefValue` 537; the refund carries none, so expect a
+  partial fix plus a deliberate fallback.
+- [ ] **A document attached to a MARKUP Manual line would admit it and double-count.** `is_packet_row`'s
+  exclusion of markup siblings rests on "they carry no attachment" — a property of the data, not an invariant.
+  A markup line's value is already inside its sibling source's marked-up `billed_price`, so admitting it makes
+  the rollup exceed the invoice total; `_draw_fee_from_invoice` then computes `fee <= 0`, keeps the
+  Contract-rate fee, and the Draw Request prints a total that no longer equals the invoice — and unlike
+  `draw_financials._fee_from_invoice`, the router path logs nothing on that fallback. Consider refusing to
+  admit a line whose amount is already represented in a sibling's `billed_price`, or at minimum logging the
+  router's fee fallback.
+- [ ] **No index on `dbo.InvoiceLineItemAttachment.InvoiceLineItemId`** (only PK + the CreatedByUserId /
+  CompanyId indexes). The new enrichment lookup scans per packet generation. Negligible today — the table holds
+  5 rows — but a nonclustered `([InvoiceLineItemId]) INCLUDE ([AttachmentId])` in the entity base file mirrors
+  the existing `IX_BillLineItemAttachment_AttachmentId` shape and is behaviour-neutral.
+- [ ] **Two packet gates are narrower than they look for Manual lines.** (a) The pre-check
+  `read_source_lines_missing_readable_blob` is restricted to `SourceType IN ('BillLineItem','ExpenseLineItem',
+  'BillCreditLineItem')`, and `is_packet_row` admits a Manual line on the mere existence of an ILIA row with no
+  `BlobUrl IS NOT NULL` requirement — a NULL blob is caught only after generation (`skipped > 0` → `push_draw`
+  halts at `packet_incomplete`), so the money path stays gated but by the post-check alone. (b) The direct
+  route `POST /generate/invoice/{id}/packet` has no equivalent gate at all, and if an Attachment row vanishes
+  between enrichment and read-back the generator drops it WITHOUT incrementing `skipped`, so the TOC claims
+  evidence the merged pages do not contain. Both pre-existing and source-type-agnostic; now reachable one more
+  way.
+- [ ] **`manual_ids` is unbounded against the 2100-parameter limit.** Shared with the four sibling branches in
+  principle, but it bites harder here: the QBO invoice pull creates EVERY line as `SourceType='Manual'`, so for
+  a migrated/pulled invoice `manual_ids` is the whole line count rather than a subset. A >2100-line invoice
+  would raise where previously no query ran. Chunk or bound it.
+
 ## Invoice pull-sync follow-ups (2026-04-26)
 
 - [x] **✅ CLOSED — architecturally superseded; verified 2026-08-29.** Source-linking is now a **dedicated post-pull engine** (`entities/invoice/business/reconciliation.py:368` sets `bill_line_item_id`/`expense_line_item_id`), lineage U-177 → U-301c Tier 0c/0d provenance. The codebase deliberately keeps the QBO pull connector "dumb" (creates `Manual` ILIs) and does source-resolution in that separate engine — folding fingerprinting BACK into the pull connector would reverse that chosen separation. (The connector DID grow `_find_and_match_manual_by_fingerprint`, but that re-adopts orphan Manual ILIs to QBO lines, not to source Bill/Purchase lines.) ~~**Connector auto-linking of Manual ILIs.**~~ Original ask: Match keys: Description + Amount + ServiceDate=TxnDate + CustomerRefValue + RealmId. LineNum-align for ambiguous descriptions. Leave `Manual` only when both Bill and Purchase staging miss. **Doing this also closes the keyspace footgun from the OHR2-GUEST-09 incident** — the `qbo.Bill.Id` value would no longer surface to playbook callers, and Step 4 wouldn't need to query `qbo.*` in the first place.

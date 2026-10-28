@@ -8,6 +8,15 @@ logger = logging.getLogger(__name__)
 _KNOWN_SOURCE_TYPES = {"BillLineItem", "ExpenseLineItem", "BillCreditLineItem", "EmployeeLaborLineItem", "Manual"}
 
 
+def _is_manual(li) -> bool:
+    """A line with no source parent. ``None`` counts: legacy rows predate the
+    column being populated, and the resolution loop below already treats the two
+    identically. One definition — collection and resolution must not drift, or a
+    documented line is either looked up and never applied, or never collected and
+    silently dropped from the packet again."""
+    return getattr(li, "source_type", None) in (None, "Manual") and getattr(li, "id", None) is not None
+
+
 def enrich_line_items(line_items) -> list[dict]:
     """
     Batch-enrich invoice line items with parent number, vendor, cost code,
@@ -17,7 +26,16 @@ def enrich_line_items(line_items) -> list[dict]:
     expense_ids = []
     credit_ids = []
     employee_labor_ids = []
+    # Manual lines have no source parent to inherit a document from, so their
+    # evidence (when they have any) hangs off the invoice line itself. Collect
+    # them for the one extra lookup below.
+    manual_ids = []
+    manual_invoice_ids = set()
     for li in line_items:
+        if _is_manual(li):
+            manual_ids.append(li.id)
+            if getattr(li, "invoice_id", None) is not None:
+                manual_invoice_ids.add(li.invoice_id)
         if li.source_type and li.source_type not in _KNOWN_SOURCE_TYPES:
             logger.warning(
                 "enrich_line_items: unknown source_type '%s' on InvoiceLineItem id=%s — line will be dropped from PDF packet",
@@ -37,6 +55,7 @@ def enrich_line_items(line_items) -> list[dict]:
             employee_labor_ids.append(li.employee_labor_line_item_id)
 
     bill_map = {}
+    manual_map = {}
     expense_map = {}
     credit_map = {}
     employee_labor_map = {}
@@ -215,6 +234,30 @@ def enrich_line_items(line_items) -> list[dict]:
                     "attachment_public_id": "",
                 }
 
+        if manual_ids and manual_invoice_ids:
+            placeholders = ",".join("?" * len(manual_ids))
+            # Belt: re-assert the invoice, the house pattern for this table
+            # (`InvoiceService._collect_line_attachment_rows`). Redundant while the
+            # ids come from one invoice's lines, load-bearing the day they don't.
+            inv_placeholders = ",".join("?" * len(manual_invoice_ids))
+            cursor.execute(f"""
+                SELECT ila.InvoiceLineItemId AS Id, a.PublicId AS AttachmentPublicId
+                FROM dbo.InvoiceLineItemAttachment ila
+                JOIN dbo.Attachment a ON a.Id = ila.AttachmentId
+                JOIN dbo.InvoiceLineItem ili ON ili.Id = ila.InvoiceLineItemId
+                WHERE ila.InvoiceLineItemId IN ({placeholders})
+                  AND ili.InvoiceId IN ({inv_placeholders})
+                ORDER BY a.Id
+            """, manual_ids + sorted(manual_invoice_ids))
+            for row in cursor.fetchall():
+                # setdefault + ORDER BY a.Id = first-by-Id wins, the same tie-break
+                # the sibling branches pin with `TOP 1 ... ORDER BY a.Id`. The link
+                # table has no per-line uniqueness constraint, so without this the
+                # merged page for a twice-linked line varies between runs.
+                manual_map.setdefault(row.Id, {
+                    "attachment_public_id": str(row.AttachmentPublicId) if row.AttachmentPublicId else "",
+                })
+
         cursor.close()
 
     results = []
@@ -233,6 +276,10 @@ def enrich_line_items(line_items) -> list[dict]:
             enrichment = credit_map.get(li.bill_credit_line_item_id, {})
         elif li.source_type == "EmployeeLaborLineItem" and getattr(li, "employee_labor_line_item_id", None):
             enrichment = employee_labor_map.get(li.employee_labor_line_item_id, {})
+        elif _is_manual(li):
+            # Only the document — a Manual line has no parent to borrow a
+            # vendor, cost code or parent number from; those stay blank.
+            enrichment = manual_map.get(li.id, {})
 
         if li.source_type != "Manual" and li.source_type is not None:
             has_fk = (

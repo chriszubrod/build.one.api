@@ -129,8 +129,13 @@ class DrawFinancialsService:
         from entities.invoice.business.cover import build_cover_rollup
 
         line_items = self._line_items().read_by_invoice_id(invoice_id=invoice.id)
-        toc = [r for r in enrich_line_items(line_items) if r.get("source_type") != "Manual"]
-        rollup = build_cover_rollup(toc, fee_rate)
+        # No pre-filter: `build_cover_rollup` applies `is_packet_row` itself, and
+        # that is the ONE membership rule. This used to carry a third hand-copy of
+        # `source_type != "Manual"`, which silently contradicted the predicate the
+        # rollup applies — the Draw Request page footed to the invoice while this
+        # page's column for the same draw did not (MR2-MAIN-10: $45,491.31 vs
+        # $46,471.54, two figures for one draw inside one PDF).
+        rollup = build_cover_rollup(enrich_line_items(line_items), fee_rate)
         if not rollup.categories:
             return None
         # A rate of exactly 0 is "no usable rate", not a deliberate 0% fee:

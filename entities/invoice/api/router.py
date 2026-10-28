@@ -11,7 +11,7 @@ from decimal import Decimal, InvalidOperation
 
 # Local Imports
 from entities.invoice.api.schemas import InvoiceCreate, InvoiceUpdate
-from entities.invoice.business.cover import _signed_line_amount
+from entities.invoice.business.cover import _signed_line_amount, is_packet_row
 from entities.invoice.business.service import InvoiceService, QBO_DELETE_REFUSAL
 from shared.api.money import to_decimal_or_none
 from shared.api.responses import (
@@ -744,12 +744,11 @@ def _generate_invoice_packet(public_id: str):
     logger.info(f"Packet [{public_id}]: enriching {len(line_items)} line items")
     enriched_items = enrich_line_items(line_items)
 
-    # Manual lines (typed directly into the QBO invoice tray with no underlying transaction)
-    # are excluded from the customer-facing TOC. They're internal accounting adjustments
-    # (offsets, reversals, $0-net pairs) — the customer reads the TOC to verify each charge
-    # against a source document, and a Manual line has no source. The lines remain on the
-    # invoice in QBO and dbo for accounting integrity; they just don't surface here.
-    toc_items = [r for r in enriched_items if r.get("source_type") != "Manual"]
+    # Source-linked lines, plus Manual lines carrying their own supporting
+    # document. `is_packet_row` is the single definition, shared with
+    # `build_cover_rollup` below so the TOCs, the merged pages and the cover
+    # subtotal can never disagree about which lines are in the packet.
+    toc_items = [r for r in enriched_items if is_packet_row(r)]
 
     _type_order_map = {"BillLineItem": 0, "BillCreditLineItem": 1, "ExpenseLineItem": 2, "EmployeeLaborLineItem": 3}
 

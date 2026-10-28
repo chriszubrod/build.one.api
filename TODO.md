@@ -128,6 +128,18 @@ Shadow-only today (nothing user-facing reads it). Items before or with U-701b:
 - **Memory compaction (U-701b).** `_hash_by_attachment` keeps full frozensets of Python ints for IDF; store arrays / capped sets. Every 6th refresh re-reads the whole table's `TokenHashes`.
 - **Quality, deferred from Pass 2:** pass `shadow_amount`/`shadow_vendor_id` from `params["PredTotalAmount"]`/`["PredVendorId"]` instead of a second parse; one shared blob-read-with-timeout helper for `scripts/u701a_backfill_token_hashes.py` and `scripts/u691_similar_bills_backtest.py`; `feature_enabled()` builds `config.Settings()` per intake read and `warn_once_if_disabled` takes no settings; one canonical int form in `bill_text_token_hash.py` (hex only at storage, pin the stored string with a test).
 
+## U-701b deferred — backtest arm (booked 2026-10-28, shipped `1340539a`)
+
+Harness-only (`scripts/u654a_text_backtest.py`); none of these touch the app. Low priority unless the arm is reused:
+- **Two tests restate their rule instead of exercising it.** The `--extra-bill-ids` resume guard tests re-compute the stray-set formula in the test; the keep-valid test captures the argument to `run_backtest_bill_coding_suggestion`, not the task reaching `run_cascade`. Code was verified by review; pin both behaviourally.
+- **Resume undercounts rung usage.** `load_prior_text_results` rebuilds one cascade per row from `winning_rung`, so the primary (Haiku) call of every reloaded escalated row is missing from `rung_usage`. Dollars are unaffected (metered).
+- **Multi-rung escalate ladder, cap stop mid-ladder.** Spend `run_capped_cascade` metered before returning `None` is not added to `orphaned_usd` (only the primary is), so `unattributed_spend_usd` is non-zero. ~$0 with the single-rung Claude escalate ladders.
+- **Permanent escalate errors score as "no answer".** A 400 from an exhausted credit balance (auto-reload off) or a 401/404 counts as a finished escalation, so the run can report `complete` while the escalation arm was vacuous; the failures show only in `call_failures_by_kind`. Add an escalate permanent-failure count to the report or downgrade `run_status`.
+- **Override scoring appears on any `--similar-bills-evidence` run** (an existing flag), adding a metrics key and report section to U-696-style runs. Accepted; additive.
+- **Neighbour diagnostics** (`candidate_union_bills_with_additions`, `neighbour_filter_drops`) include up to the extra bills; report-only.
+- **Extra bills must be finalized** (`IsDraft = 0`, the U-653b load filter); an in-review bill passed via `--extra-bill-ids` is silently skipped (`extra_bills_selected` shows it).
+- **Quality, deferred from Pass 2:** collapse the five combined/override predictors into one gate (`combined_scc(history, fallback, override_row=None)`), simplify `compute_history_override_metrics` closures and `_history_override_outcome_counts`, reuse `prepare_scored_rows` for extras, single-assign `needs_human`, CSV cell formatters, reuse `_int` in `load_prior_text_results`.
+
 ## QBO external `update_*` clients are FULL-REPLACE by default — this is what wiped a vendor record (booked 2026-10-22, Vendor Agent run)
 
 Owner reported that a past vendor update "removed all else that was not updated — cleared each field

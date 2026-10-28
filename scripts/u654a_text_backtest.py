@@ -64,6 +64,10 @@ from intelligence.observability.pricing import compute_cost_usd
 from intelligence.transport.base import Usage
 from scripts.sync_helper import assert_cli_system_admin
 from intelligence.cascade.bill_coding_payload import PriorBillVote
+from entities.coding_suggestion.business.similar_bills import (
+    DEFAULT_TOP_K,
+    vote_from_scored_neighbours,
+)
 from scripts.u653b_backtest import (
     DEFAULT_CAL_SINCE,
     DEFAULT_CAL_UNTIL,
@@ -100,7 +104,6 @@ U696_RESUME_ARM_SUMMARY_KEYS = (
     "similar_bills_evidence",
     "arm_hash",
 )
-
 MODEL_VERSION = "u654a-text-backtest-v1"
 BILL_TEXT_MODE_ENVELOPE = "envelope_truncated"
 BILL_TEXT_MODE_FULL_CONTENT = "full_content"
@@ -116,6 +119,27 @@ SIMILAR_BILLS_RULE_LINE = (
     "- similar_bills lists how the most similar earlier invoices were coded "
     "(match = text overlap, amount_ratio = their total / this bill's total); "
     "weigh it together with history_evidence and the bill text."
+)
+LINE_ITEMS_RULE_LINE = (
+    "- Code the bill from what was actually purchased (the line items and item "
+    "descriptions in the bill text). Vendor header text, boilerplate, "
+    "history_evidence and similar_bills are priors: when the line items clearly "
+    "describe a different kind of work or material than the priors suggest, "
+    "follow the line items."
+)
+DEFAULT_ESCALATE_BELOW = 0.70
+HISTORY_OVERRIDE_NEIGHBOUR_MATCH = 0.5
+ESCALATION_DRY_RUN_ASSUMED_RATE = 1.0
+HARNESS_KEEP_VALID_CASCADE_THRESHOLD = 0.0
+ESCALATION_CSV_COLUMNS = (
+    "primary_scc_id",
+    "primary_confidence",
+    "escalated",
+    "escalate_valid",
+    "escalate_scc_id",
+    "escalate_confidence",
+    "primary_cost_usd",
+    "escalate_cost_usd",
 )
 BACKTEST_EXTRA_PAYLOAD_KEYS = frozenset({"similar_bills"})
 DEFAULT_SAMPLE_SIZE = 500
@@ -275,6 +299,16 @@ class TextAttemptResult:
     http_status: Optional[int] = None
     candidate_scc_count: Optional[int] = None
     candidate_scc_narrowed: Optional[bool] = None
+    primary_scc_id: Optional[int] = None
+    primary_confidence: Optional[float] = None
+    escalated: Optional[int] = None
+    escalate_valid: Optional[int] = None
+    escalate_scc_id: Optional[int] = None
+    escalate_confidence: Optional[float] = None
+    primary_cost_usd: Optional[float] = None
+    escalate_cost_usd: Optional[float] = None
+    primary_cascade: Optional[CascadeResult] = None
+    escalate_cascade: Optional[CascadeResult] = None
 
 
 @dataclass(frozen=True)
@@ -299,6 +333,10 @@ class ScoredTextBill:
     followed_top_neighbour: Optional[bool] = None
     bill_text_chars_capped: bool = False
     candidates_added_by_neighbours: int = 0
+    word_vote_scc_id: Optional[int] = None
+    word_vote_confidence: Optional[float] = None
+    filtered_neighbours: list[Any] = field(default_factory=list)
+    is_extra: bool = False
 
 
 def load_blob_urls_from_db() -> dict[int, str]:
@@ -592,6 +630,40 @@ def cascade_call_error_summary(cascade: CascadeResult) -> tuple[str, Optional[in
     return "none", None
 
 
+def escalate_leg_completed(cascade: CascadeResult, validated_scc_id: Optional[int]) -> bool:
+    """U-701b: an escalate call counts as finished when it produced a validated answer
+    or a model answer that failed validation/parsing; a call failure does not."""
+    if validated_scc_id is not None:
+        return True
+    # core.run_ladder records a model reply as Attempt.result (validated or not) and an
+    # unparseable reply as error "no parseable result". A permanent call error (400/401/
+    # 403/404/413) would fail identically on every resume, so it also counts as a finished
+    # escalation with no answer. Transient failures (429/overload/5xx/timeout/transport)
+    # and an attempt-less harness failure are retried on resume.
+    finished = False
+    for att in cascade.attempts:
+        if att.result is not None:
+            finished = True
+        elif att.error is not None:
+            if "no parseable" in att.error.lower():
+                finished = True
+                continue
+            kind, _status = error_kind_from_error_string(att.error)
+            if kind not in _PERMANENT_ERROR_KINDS:
+                # A transient failure on any rung: a later resume may still get an answer.
+                return False
+            finished = True
+    return finished
+
+
+_PERMANENT_ERROR_KINDS = frozenset({"bad_request", "auth", "not_found", "too_large"})
+
+
+def _record_orphaned_spend(cost_state: dict[str, Any], usd: float) -> None:
+    """Spend already in cost_state['usd'] that belongs to no scored row (U-701b)."""
+    cost_state["orphaned_usd"] = float(cost_state.get("orphaned_usd", 0.0)) + float(usd or 0.0)
+
+
 def budget_skip_token_from_cascade(cascade: CascadeResult) -> str | None:
     """First claude budget skip token on a finished cascade, if any."""
     for att in cascade.attempts:
@@ -695,6 +767,490 @@ def resolve_raw_text_prediction(
         proj_abbrev_to_id=proj_abbrev_to_id,
     )
     return scc_id, proj_id, cascade.confidence
+
+
+def uses_production_text_cascade_path(
+    *,
+    bill_text_mode: str,
+    similar_bills_evidence: bool,
+    line_items_rule: bool,
+    escalation_arm: bool = False,
+) -> bool:
+    return (
+        bill_text_mode == DEFAULT_BILL_TEXT_MODE
+        and not similar_bills_evidence
+        and not line_items_rule
+        and not escalation_arm
+    )
+
+
+def _best_validated_attempt(cascade: CascadeResult) -> Optional[Attempt]:
+    validated = [
+        a
+        for a in cascade.attempts
+        if a.validated and a.result is not None and a.confidence is not None
+    ]
+    if not validated:
+        return None
+    return max(validated, key=lambda a: a.confidence or 0.0)
+
+
+def cascade_best_validated_prediction(
+    cascade: CascadeResult,
+    *,
+    scc_number_to_id: dict[str, int],
+    proj_abbrev_to_id: dict[str, int],
+) -> tuple[Optional[int], Optional[int], Optional[float]]:
+    """Highest-confidence validated rung answer (ignores needs_human / τ)."""
+    best = _best_validated_attempt(cascade)
+    if best is None or best.result is None:
+        return None, None, None
+    shim = CascadeResult(
+        accepted=True,
+        needs_human=False,
+        result=best.result,
+        confidence=best.confidence,
+        winning_rung=best.rung,
+        attempts=[],
+    )
+    scc_id, proj_id = resolve_text_prediction(
+        shim,
+        scc_number_to_id=scc_number_to_id,
+        proj_abbrev_to_id=proj_abbrev_to_id,
+    )
+    return scc_id, proj_id, best.confidence
+
+
+def should_escalate_text_answer(
+    primary_scc_id: Optional[int],
+    primary_confidence: Optional[float],
+    *,
+    escalate_below: float,
+) -> bool:
+    if primary_scc_id is None:
+        return True
+    if primary_confidence is None:
+        return True
+    return primary_confidence < escalate_below
+
+
+def parse_extra_bill_ids(raw: str | None) -> list[int]:
+    return [int(p) for p in (raw or "").split(",") if p.strip()]
+
+
+def extra_bills_from_ids(
+    text_bills: Sequence[TextBillRow],
+    bill_ids: Sequence[int],
+    vendor_votes: dict[int, list[PriorBillVote]],
+) -> list[tuple[TextBillRow, str]]:
+    by_id = {b.bill_id: b for b in text_bills}
+    picked: list[tuple[TextBillRow, str]] = []
+    for bid in bill_ids:
+        bill = by_id.get(bid)
+        if bill is None:
+            continue
+        priors = priors_for_bill(vendor_votes, bill)
+        picked.append((bill, classify_stratum(priors, bill.mixed_code)))
+    return picked
+
+
+def word_matching_vote_from_neighbours(
+    neighbours: Sequence[Any],
+    *,
+    top_k: int = DEFAULT_TOP_K,
+) -> tuple[Optional[int], Optional[float]]:
+    """Production-parity vote: unfiltered top-K neighbours, weight=combined, list order."""
+    scored: list[tuple[float, int, int]] = []
+    for n in neighbours:
+        if hasattr(n, "combined") and hasattr(n, "scc_id"):
+            bid = int(n.prior.enriched.bill.bill_id)
+            scored.append((float(n.combined), bid, int(n.scc_id)))
+    if not scored:
+        return None, None
+    vote = vote_from_scored_neighbours(scored, top_k)
+    conf = float(vote.confidence) if vote.confidence is not None else None
+    return vote.predicted_scc_id, conf
+
+
+def similar_evidence_disagrees_with_history(
+    history_scc_id: Optional[int],
+    *,
+    vote_scc_id: Optional[int],
+    vote_confidence: Optional[float],
+    neighbours: Sequence[Any],
+    match_threshold: float = HISTORY_OVERRIDE_NEIGHBOUR_MATCH,
+) -> bool:
+    if history_scc_id is None:
+        return False
+    if (
+        vote_scc_id is not None
+        and vote_scc_id != history_scc_id
+        and vote_confidence is not None
+        and vote_confidence >= match_threshold
+    ):
+        return True
+    for n in neighbours:
+        if not hasattr(n, "match") or not hasattr(n, "scc_id"):
+            continue
+        if float(n.match) >= match_threshold and int(n.scc_id) != history_scc_id:
+            return True
+    return False
+
+
+def combined_mode_a_predicted_scc_with_override(
+    history: ModePrediction,
+    text: Optional[TextAttemptResult],
+    *,
+    vote_scc_id: Optional[int],
+    vote_confidence: Optional[float],
+    neighbours: Sequence[Any],
+) -> Optional[int]:
+    if (
+        history.predicted_scc_id is not None
+        and history.raw_score is not None
+        and history.raw_score >= COMBINED_HISTORY_RAW_SCORE_THRESHOLD
+    ):
+        if not similar_evidence_disagrees_with_history(
+            history.predicted_scc_id,
+            vote_scc_id=vote_scc_id,
+            vote_confidence=vote_confidence,
+            neighbours=neighbours,
+        ):
+            return history.predicted_scc_id
+    if text is None:
+        return None
+    return text.predicted_scc_id
+
+
+def combined_mode_b_predicted_scc_with_override(
+    history: ModePrediction,
+    text: Optional[TextAttemptResult],
+    *,
+    vote_scc_id: Optional[int],
+    vote_confidence: Optional[float],
+    neighbours: Sequence[Any],
+) -> Optional[int]:
+    if (
+        history.predicted_scc_id is not None
+        and history.raw_score is not None
+        and history.raw_score >= COMBINED_HISTORY_RAW_SCORE_THRESHOLD
+    ):
+        if not similar_evidence_disagrees_with_history(
+            history.predicted_scc_id,
+            vote_scc_id=vote_scc_id,
+            vote_confidence=vote_confidence,
+            neighbours=neighbours,
+        ):
+            return history.predicted_scc_id
+    if text is None:
+        return None
+    return text.predicted_scc_id
+
+
+def combined_vote_predicted_scc(
+    history: ModePrediction,
+    vote_scc_id: Optional[int],
+) -> Optional[int]:
+    if (
+        history.predicted_scc_id is not None
+        and history.raw_score is not None
+        and history.raw_score >= COMBINED_HISTORY_RAW_SCORE_THRESHOLD
+    ):
+        return history.predicted_scc_id
+    return vote_scc_id
+
+
+def combined_vote_predicted_scc_with_override(
+    history: ModePrediction,
+    vote_scc_id: Optional[int],
+    *,
+    vote_confidence: Optional[float],
+    neighbours: Sequence[Any],
+) -> Optional[int]:
+    if (
+        history.predicted_scc_id is not None
+        and history.raw_score is not None
+        and history.raw_score >= COMBINED_HISTORY_RAW_SCORE_THRESHOLD
+    ):
+        if not similar_evidence_disagrees_with_history(
+            history.predicted_scc_id,
+            vote_scc_id=vote_scc_id,
+            vote_confidence=vote_confidence,
+            neighbours=neighbours,
+        ):
+            return history.predicted_scc_id
+    return vote_scc_id
+
+
+def _top1_all_bills_from_predictor(
+    rows: Sequence[ScoredTextBill],
+    *,
+    mode: str,
+    predictor: Callable[[ScoredTextBill], Optional[int]],
+) -> Decimal:
+    pairs: list[tuple[bool, Decimal]] = []
+    for row in rows:
+        pred = predictor(row)
+        ok = pred is not None and pred == row.bill.label_scc_id
+        pairs.append((ok, row.bill.total_abs_amount))
+    return _weighted_accuracy(pairs) if pairs else Decimal("0")
+
+
+def _history_override_outcome_counts(
+    rows: Sequence[ScoredTextBill],
+    *,
+    mode: str,
+    use_vote_x: bool,
+) -> dict[str, int]:
+    fired = fixed = broke = 0
+    for row in rows:
+        hist = row.history_a if mode == "A" else row.history_b
+        text = row.text_a if mode == "A" else row.text_b
+        if (
+            hist.predicted_scc_id is None
+            or hist.raw_score is None
+            or hist.raw_score < COMBINED_HISTORY_RAW_SCORE_THRESHOLD
+        ):
+            continue
+        neighbours = row.filtered_neighbours
+        if not similar_evidence_disagrees_with_history(
+            hist.predicted_scc_id,
+            vote_scc_id=row.word_vote_scc_id,
+            vote_confidence=row.word_vote_confidence,
+            neighbours=neighbours,
+        ):
+            continue
+        fired += 1
+        if use_vote_x:
+            base = combined_vote_predicted_scc(hist, row.word_vote_scc_id)
+            over = combined_vote_predicted_scc_with_override(
+                hist,
+                row.word_vote_scc_id,
+                vote_confidence=row.word_vote_confidence,
+                neighbours=neighbours,
+            )
+        elif mode == "A":
+            base = combined_mode_a_predicted_scc(hist, text)
+            over = combined_mode_a_predicted_scc_with_override(
+                hist,
+                text,
+                vote_scc_id=row.word_vote_scc_id,
+                vote_confidence=row.word_vote_confidence,
+                neighbours=neighbours,
+            )
+        else:
+            base = combined_mode_b_predicted_scc(hist, text)
+            over = combined_mode_b_predicted_scc_with_override(
+                hist,
+                text,
+                vote_scc_id=row.word_vote_scc_id,
+                vote_confidence=row.word_vote_confidence,
+                neighbours=neighbours,
+            )
+        label = row.bill.label_scc_id
+        base_ok = base is not None and base == label
+        over_ok = over is not None and over == label
+        if not base_ok and over_ok:
+            fixed += 1
+        elif base_ok and not over_ok:
+            broke += 1
+    return {"fired": fired, "fixed": fixed, "broke": broke}
+
+
+def compute_history_override_metrics(
+    rows: Sequence[ScoredTextBill],
+    *,
+    similar_bills_evidence: bool,
+    cap_tripped: bool = False,
+    run_status: str = "complete",
+) -> dict[str, Any]:
+    sample_rows = [r for r in rows if not r.is_extra]
+    if not similar_bills_evidence:
+        return {"reported": False}
+    out: dict[str, Any] = {"reported": True}
+    restrict = cap_tripped or run_status != "complete"
+
+    def text_final(row: ScoredTextBill, mode: str) -> Optional[int]:
+        text = row.text_a if mode == "A" else row.text_b
+        return text.predicted_scc_id if text is not None else None
+
+    def vote_x(row: ScoredTextBill) -> Optional[int]:
+        return row.word_vote_scc_id
+
+    for mode in ("A", "B"):
+        mode_rows = metric_rows_for_mode(sample_rows, mode=mode, restrict=restrict)
+        base_text = _top1_all_bills_from_predictor(
+            mode_rows,
+            mode=mode,
+            predictor=lambda r, m=mode: text_final(r, m),
+        )
+        base_vote = _top1_all_bills_from_predictor(
+            mode_rows,
+            mode=mode,
+            predictor=lambda r: vote_x(r),
+        )
+
+        def _text_combined(row: ScoredTextBill, m: str) -> Optional[int]:
+            if m == "A":
+                return combined_mode_a_predicted_scc(row.history_a, row.text_a)
+            return combined_mode_b_predicted_scc(row.history_b, row.text_b)
+
+        def _text_combined_override(row: ScoredTextBill, m: str) -> Optional[int]:
+            if m == "A":
+                return combined_mode_a_predicted_scc_with_override(
+                    row.history_a,
+                    row.text_a,
+                    vote_scc_id=row.word_vote_scc_id,
+                    vote_confidence=row.word_vote_confidence,
+                    neighbours=row.filtered_neighbours,
+                )
+            return combined_mode_b_predicted_scc_with_override(
+                row.history_b,
+                row.text_b,
+                vote_scc_id=row.word_vote_scc_id,
+                vote_confidence=row.word_vote_confidence,
+                neighbours=row.filtered_neighbours,
+            )
+
+        def _vote_combined(row: ScoredTextBill, m: str) -> Optional[int]:
+            hist = row.history_a if m == "A" else row.history_b
+            return combined_vote_predicted_scc(hist, row.word_vote_scc_id)
+
+        def _vote_combined_override(row: ScoredTextBill, m: str) -> Optional[int]:
+            hist = row.history_a if m == "A" else row.history_b
+            return combined_vote_predicted_scc_with_override(
+                hist,
+                row.word_vote_scc_id,
+                vote_confidence=row.word_vote_confidence,
+                neighbours=row.filtered_neighbours,
+            )
+
+        base_text_combined = _top1_all_bills_from_predictor(
+            mode_rows,
+            mode=mode,
+            predictor=lambda r, m=mode: _text_combined(r, m),
+        )
+        ov_text = _top1_all_bills_from_predictor(
+            mode_rows,
+            mode=mode,
+            predictor=lambda r, m=mode: _text_combined_override(r, m),
+        )
+        base_vote_combined = _top1_all_bills_from_predictor(
+            mode_rows,
+            mode=mode,
+            predictor=lambda r, m=mode: _vote_combined(r, m),
+        )
+        ov_vote = _top1_all_bills_from_predictor(
+            mode_rows,
+            mode=mode,
+            predictor=lambda r, m=mode: _vote_combined_override(r, m),
+        )
+        out[f"mode_{mode.lower()}"] = {
+            "text_final_top1_all_bills": base_text,
+            "combined_text_top1_all_bills": base_text_combined,
+            "combined_text_with_override_top1_all_bills": ov_text,
+            "word_vote_top1_all_bills": base_vote,
+            "combined_vote_top1_all_bills": base_vote_combined,
+            "combined_vote_with_override_top1_all_bills": ov_vote,
+        }
+        text_counts = _history_override_outcome_counts(
+            mode_rows, mode=mode, use_vote_x=False
+        )
+        vote_counts = _history_override_outcome_counts(
+            mode_rows, mode=mode, use_vote_x=True
+        )
+        out[f"override_mode_{mode.lower()}_text"] = text_counts
+        out[f"override_mode_{mode.lower()}_vote"] = vote_counts
+    return out
+
+
+def compute_escalation_run_metrics(
+    rows: Sequence[ScoredTextBill],
+) -> dict[str, Any]:
+    sample_rows = [r for r in rows if not r.is_extra]
+    extra_rows = [r for r in rows if r.is_extra]
+
+    def _accumulate(
+        bill_rows: Sequence[ScoredTextBill],
+    ) -> tuple[int, int, int, float, float]:
+        primary_calls = 0
+        escalated_calls = 0
+        escalate_valid_calls = 0
+        primary_cost = 0.0
+        escalate_cost = 0.0
+        for row in bill_rows:
+            for text in (row.text_a, row.text_b):
+                if text is None or text.escalated is None:
+                    continue
+                primary_calls += 1
+                if text.primary_cost_usd:
+                    primary_cost += float(text.primary_cost_usd)
+                if text.escalated:
+                    escalated_calls += 1
+                    if text.escalate_cost_usd:
+                        escalate_cost += float(text.escalate_cost_usd)
+                    if text.escalate_valid:
+                        escalate_valid_calls += 1
+        return (
+            primary_calls,
+            escalated_calls,
+            escalate_valid_calls,
+            primary_cost,
+            escalate_cost,
+        )
+
+    p_calls, esc_calls, esc_valid, p_cost, e_cost = _accumulate(sample_rows)
+    _, _, _, extra_p_cost, extra_e_cost = _accumulate(extra_rows)
+    rate = (
+        Decimal(esc_calls) / Decimal(p_calls) if p_calls else None
+    )
+    sample_text_spend = round(p_cost + e_cost, 4)
+    return {
+        "primary_call_count": p_calls,
+        "escalated_call_count": esc_calls,
+        "escalate_valid_call_count": esc_valid,
+        "escalation_rate": rate,
+        "primary_cost_usd": round(p_cost, 4),
+        "escalate_cost_usd": round(e_cost, 4),
+        "sample_text_spend_usd": sample_text_spend,
+        "extra_text_spend_usd": round(extra_p_cost + extra_e_cost, 4),
+    }
+
+
+def reconcile_escalation_spend(
+    escalation_metrics: dict[str, Any],
+    *,
+    total_spend_usd: float,
+    orphaned_spend_usd: float,
+) -> None:
+    """Check row-attributed spend against the run's metered total (U-701b).
+
+    unattributed = total - sample rows - extra rows - orphaned (paid calls whose row was
+    left unscored). Non-zero on a resumed run when the prior run orphaned spend."""
+    if not escalation_metrics:
+        return
+    attributed = float(escalation_metrics.get("sample_text_spend_usd") or 0.0) + float(
+        escalation_metrics.get("extra_text_spend_usd") or 0.0
+    )
+    unattributed = round(float(total_spend_usd) - attributed - float(orphaned_spend_usd), 4)
+    escalation_metrics["orphaned_spend_usd"] = round(float(orphaned_spend_usd), 4)
+    escalation_metrics["unattributed_spend_usd"] = unattributed
+    escalation_metrics["spend_reconciled"] = abs(unattributed) < 0.01
+
+
+def iter_text_cascades_for_usage(
+    rows: Sequence[ScoredTextBill],
+) -> Iterable[CascadeResult]:
+    for row in rows:
+        for text in (row.text_a, row.text_b):
+            if text is None:
+                continue
+            if text.primary_cascade is not None:
+                yield text.primary_cascade
+                if text.escalate_cascade is not None:
+                    yield text.escalate_cascade
+            elif text.cascade is not None:
+                yield text.cascade
 
 
 def llm_backtest_cascade_concurrency(
@@ -1082,16 +1638,20 @@ def backtest_cascade_task(
     *,
     bill_text_mode: str,
     similar_bills_evidence: bool,
+    line_items_rule: bool = False,
 ) -> StructuredTask:
     """Harness-local task; production BILL_CODING_SUGGESTION_TASK stays untouched."""
-    if (
-        bill_text_mode == DEFAULT_BILL_TEXT_MODE
-        and not similar_bills_evidence
+    if uses_production_text_cascade_path(
+        bill_text_mode=bill_text_mode,
+        similar_bills_evidence=similar_bills_evidence,
+        line_items_rule=line_items_rule,
     ):
         return BILL_CODING_SUGGESTION_TASK
     system_prompt = BILL_CODING_SUGGESTION_TASK.system_prompt
     if similar_bills_evidence:
         system_prompt = system_prompt + "\n" + SIMILAR_BILLS_RULE_LINE
+    if line_items_rule:
+        system_prompt = system_prompt + "\n" + LINE_ITEMS_RULE_LINE
 
     def build_user_message(payload: dict[str, Any]) -> str:
         return _backtest_build_user_message(
@@ -1117,12 +1677,30 @@ def arm_hash(
     bill_text_mode: str,
     similar_bills_evidence: bool,
     task: StructuredTask,
+    line_items_rule: bool = False,
+    escalate_ladder: Optional[str] = None,
+    escalate_below: Optional[float] = None,
 ) -> str:
     builder = task.build_user_message
     builder_id = f"{builder.__module__}.{getattr(builder, '__qualname__', repr(builder))}"
-    payload = (
-        f"{bill_text_mode}|{similar_bills_evidence}|{task.system_prompt}|{builder_id}"
-    )
+    if (
+        not line_items_rule
+        and escalate_ladder is None
+        and escalate_below is None
+    ):
+        payload = (
+            f"{bill_text_mode}|{similar_bills_evidence}|{task.system_prompt}|{builder_id}"
+        )
+    else:
+        below = (
+            f"{escalate_below:.4f}"
+            if escalate_below is not None
+            else ""
+        )
+        payload = (
+            f"{bill_text_mode}|{similar_bills_evidence}|{line_items_rule}|"
+            f"{escalate_ladder or ''}|{below}|{task.system_prompt}|{builder_id}"
+        )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
@@ -1176,16 +1754,24 @@ async def run_backtest_bill_coding_suggestion(
     ladder: tuple[Rung, ...] | None = None,
     bill_text_mode: str = DEFAULT_BILL_TEXT_MODE,
     similar_bills_evidence: bool = False,
+    line_items_rule: bool = False,
+    acceptance_threshold: Optional[float] = None,
 ) -> CascadeResult:
     base_task = backtest_cascade_task(
         bill_text_mode=bill_text_mode,
         similar_bills_evidence=similar_bills_evidence,
+        line_items_rule=line_items_rule,
     )
 
     def validate(result: dict[str, Any]) -> tuple[bool, str]:
         return validate_bill_coding_result(result, payload=payload)
 
-    task = replace(base_task, validate=validate)
+    threshold = (
+        acceptance_threshold
+        if acceptance_threshold is not None
+        else base_task.threshold
+    )
+    task = replace(base_task, validate=validate, threshold=threshold)
     if ladder is not None:
         task = replace(task, ladder=ladder)
     return await run_cascade(task, payload, transport_for=transport_for)
@@ -1256,7 +1842,7 @@ def prepare_sample_per_bill_evidence(
             as_of=bill.created,
             ambiguous_numbers=ref.ambiguous_scc_numbers,
         )
-        raw_n = list(neighbours_raw_by_bill.get(bill.bill_id) or [])
+        raw_n = list(neighbours_raw_by_bill.get(bill.bill_id) or [])[:SIMILAR_BILLS_TOP_K]
         fields = SampleBillHarnessFields()
         if similar_bills_evidence and raw_n:
             merged, added, block, filtered, drops = apply_similar_evidence(
@@ -1423,7 +2009,9 @@ def compute_sample_neighbours(
             enriched_all,
             sample_ids,
             idf,
-            top_k=SIMILAR_BILLS_TOP_K,
+            # Production votes over DEFAULT_TOP_K (10) raw neighbours and shows the model
+            # the first SIMILAR_BILLS_TOP_K (5); collect 10, slice for the model below.
+            top_k=DEFAULT_TOP_K,
             token_config=token_config,
         )
 
@@ -1471,6 +2059,8 @@ def followed_neighbour_metrics(
     override_correct = 0
     override_total = 0
     for row in scored:
+        if row.is_extra:
+            continue
         text = row.text_a
         if text is None or row.followed_top_neighbour is None:
             continue
@@ -1792,9 +2382,14 @@ def dry_run_summary(
     candidate_scc_mode: str = DEFAULT_CANDIDATE_SCC_MODE,
     bill_text_mode: str = DEFAULT_BILL_TEXT_MODE,
     similar_bills_evidence: bool = False,
+    line_items_rule: bool = False,
+    escalate_ladder_name: Optional[str] = None,
+    escalate_ladder: tuple[Rung, ...] | None = None,
+    escalate_below: float = DEFAULT_ESCALATE_BELOW,
     similarity_ctx: Optional[SampleSimilarityContext] = None,
     bill_ids_pin_stats: Optional[dict[str, int]] = None,
     arm_settings_hash: Optional[str] = None,
+    extra_bills: int = 0,
 ) -> dict[str, Any]:
     by_stratum: dict[str, int] = defaultdict(int)
     mixed = 0
@@ -1803,7 +2398,7 @@ def dry_run_summary(
     for b, _ in sample:
         if b.mixed_code:
             mixed += 1
-    calls = len(sample) * 2  # Mode A + Mode B
+    calls = (len(sample) + extra_bills) * 2  # Mode A + Mode B
     resolved_ladder = ladder if ladder is not None else ladder_by_name(ladder_name)
     input_per_call = _ESTIMATE_INPUT_TOKENS_PER_CALL
     mean_candidate_scc_count: Optional[float] = None
@@ -1855,10 +2450,24 @@ def dry_run_summary(
         resolved_ladder, input_tokens=input_per_call
     )
     est_cost = calls * cost_per_call
+    esc_ladder = escalate_ladder
+    if escalate_ladder_name and esc_ladder is None:
+        esc_ladder = ladder_by_name(escalate_ladder_name)
+    esc_cost_per_call = (
+        estimate_ladder_first_rung_cost_usd(esc_ladder, input_tokens=input_per_call)
+        if esc_ladder is not None
+        else 0.0
+    )
+    if esc_ladder is not None:
+        worst_cost = calls * (cost_per_call + esc_cost_per_call)
+        est_cost = worst_cost
     est_tokens = calls * (input_per_call + _ESTIMATE_OUTPUT_TOKENS_PER_CALL)
+    if esc_ladder is not None:
+        est_tokens += calls * (input_per_call + _ESTIMATE_OUTPUT_TOKENS_PER_CALL)
     task = backtest_cascade_task(
         bill_text_mode=bill_text_mode,
         similar_bills_evidence=similar_bills_evidence,
+        line_items_rule=line_items_rule,
     )
     out: dict[str, Any] = {
         **populations,
@@ -1871,6 +2480,9 @@ def dry_run_summary(
             bill_text_mode=bill_text_mode,
             similar_bills_evidence=similar_bills_evidence,
             task=task,
+            line_items_rule=line_items_rule,
+            escalate_ladder=escalate_ladder_name,
+            escalate_below=escalate_below if escalate_ladder_name else None,
         ),
         "sample_requested": sample_size,
         "sample_selected": len(sample),
@@ -1882,6 +2494,15 @@ def dry_run_summary(
         "estimated_cost_usd_first_rung_only": round(est_cost, 4),
         "note": "Dry-run assumes every call stops at the first rung; actual spend may be higher on escalation.",
     }
+    if esc_ladder is not None:
+        out["escalate_ladder"] = escalate_ladder_name
+        out["escalate_below"] = escalate_below
+        out["escalation_assumed_rate"] = ESCALATION_DRY_RUN_ASSUMED_RATE
+        out["estimated_primary_cost_usd"] = round(calls * cost_per_call, 4)
+        out["estimated_escalation_cost_usd_worst_case"] = round(
+            calls * esc_cost_per_call, 4
+        )
+        out["estimated_cost_usd_with_escalation_worst_case"] = round(est_cost, 4)
     if mean_candidate_scc_count is not None:
         out["mean_candidate_scc_count"] = round(mean_candidate_scc_count, 2)
     if ref is not None and vendor_votes is not None and sample:
@@ -1910,6 +2531,8 @@ def dry_run_summary(
     if similar_bills_evidence or bill_text_mode == BILL_TEXT_MODE_FULL_CONTENT:
         if similarity_ctx is not None:
             out["bills_with_no_linked_pdf"] = similarity_ctx.bills_with_no_linked_pdf
+    if line_items_rule:
+        out["line_items_rule"] = True
     if similar_bills_evidence:
         out["candidate_union_bills_with_additions"] = union_addition_bills
         if similarity_ctx is not None:
@@ -1917,6 +2540,8 @@ def dry_run_summary(
             out["bills_with_pdf_read_failure_for_neighbours"] = (
                 similarity_ctx.bills_with_pdf_read_failure
             )
+    if extra_bills:
+        out["extra_bill_count"] = extra_bills
     if similarity_ctx is not None and similarity_ctx.pdf_load_stats is not None:
         st = similarity_ctx.pdf_load_stats
         out["pdf_blob_load"] = {
@@ -2200,8 +2825,9 @@ def compute_combined_metrics_at_bar(
 
 
 def confidence_bar_sweep(rows: Sequence[ScoredTextBill]) -> dict[str, Any]:
-    rows_a = [r for r in rows if r.text_a is not None]
-    rows_b = [r for r in rows if r.text_b is not None]
+    sample = [r for r in rows if not r.is_extra]
+    rows_a = [r for r in sample if r.text_a is not None]
+    rows_b = [r for r in sample if r.text_b is not None]
     hist_a = compute_suggester_metrics(rows_a, mode="A", source="history")
     sweep: dict[str, Any] = {"bars": list(CONFIDENCE_BAR_SWEEP_BARS), "mode_a": {}, "mode_b": {}}
     best_bar: Optional[float] = None
@@ -2408,6 +3034,7 @@ def write_report_and_outputs(
     bill_text_mode: str = DEFAULT_BILL_TEXT_MODE,
     similar_bills_evidence: bool = False,
     cost_state: Optional[dict[str, Any]] = None,
+    extra_bill_ids: Optional[Sequence[int]] = None,
 ) -> tuple[Path, Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     file_stamp = f"{ladder_name}_{stamp}"
@@ -2415,7 +3042,8 @@ def write_report_and_outputs(
     csv_path = out_dir / f"u654a_predictions_{file_stamp}.csv"
     json_path = out_dir / f"u654a_summary_{file_stamp}.json"
 
-    summary = {
+    sample_size = sum(1 for r in scored if not r.is_extra)
+    summary: dict[str, Any] = {
         "model_version": MODEL_VERSION,
         "ladder": ladder_name,
         "candidate_sccs": candidate_scc_mode,
@@ -2428,51 +3056,68 @@ def write_report_and_outputs(
         "evaluation_window": {"since": str(eval_since), "until": str(eval_until)},
         "run_status": run_status,
         "populations": populations or {},
-        "sample_size": len(scored),
+        "sample_size": sample_size,
         "cap_tripped": metrics.get("cap_tripped", False),
         "scored_bill_count": metrics.get("scored_bill_count"),
         "unscored_bill_count": metrics.get("unscored_bill_count"),
         "metrics": metrics,
         "dry_run": dry_info,
     }
+    if metrics.get("line_items_rule"):
+        summary["line_items_rule"] = True
+    if metrics.get("escalate_ladder"):
+        summary["escalate_ladder"] = metrics.get("escalate_ladder")
+        summary["escalate_below"] = metrics.get("escalate_below")
+    if extra_bill_ids is None:
+        extra_bill_ids = [r.bill.bill_id for r in scored if r.is_extra]
+    if extra_bill_ids:
+        # The extras selected for the run (found, before any unreadable drop) - the same
+        # set the resume guard rebuilds from --extra-bill-ids, so a dropped extra cannot
+        # make the resume abort.
+        summary["extra_bill_ids"] = list(extra_bill_ids)
     if cost_state is not None:
         summary.update(harness_run_summary_top_level(cost_state))
     json_path.write_text(json.dumps(summary, indent=2, default=_json_default), encoding="utf-8")
 
+    escalation_csv = bool(metrics.get("escalation_metrics"))
+    extra_csv = bool(metrics.get("extra_bill_count"))
     with csv_path.open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
-        w.writerow(
-            [
-                "BillId",
-                "VendorId",
-                "mode",
-                "suggester",
-                "predicted_scc_id",
-                "label_scc_id",
-                "predicted_project_id",
-                "label_project_id",
-                "correct_scc",
-                "correct_project",
-                "stratum",
-                "winning_rung",
-                "winning_rung_provider",
-                "needs_human",
-                "raw_predicted_scc_id",
-                "raw_predicted_project_id",
-                "raw_confidence",
-                "raw_correct_scc",
-                "raw_correct_project",
-                "error_kind",
-                "http_status",
-                "candidate_scc_count",
-                "candidate_scc_narrowed",
-                "top_neighbour_scc_id",
-                "neighbour_count",
-                "followed_top_neighbour",
-                "bill_text_chars_capped",
-                "candidates_added_by_neighbours",
-            ]
-        )
+        header = [
+            "BillId",
+            "VendorId",
+            "mode",
+            "suggester",
+            "predicted_scc_id",
+            "label_scc_id",
+            "predicted_project_id",
+            "label_project_id",
+            "correct_scc",
+            "correct_project",
+            "stratum",
+            "winning_rung",
+            "winning_rung_provider",
+            "needs_human",
+            "raw_predicted_scc_id",
+            "raw_predicted_project_id",
+            "raw_confidence",
+            "raw_correct_scc",
+            "raw_correct_project",
+            "error_kind",
+            "http_status",
+            "candidate_scc_count",
+            "candidate_scc_narrowed",
+            "top_neighbour_scc_id",
+            "neighbour_count",
+            "followed_top_neighbour",
+            "bill_text_chars_capped",
+            "candidates_added_by_neighbours",
+        ]
+        if extra_csv:
+            header.append("extra")
+        if escalation_csv:
+            header.extend(ESCALATION_CSV_COLUMNS)
+        w.writerow(header)
         for row in scored:
             for mode, hist, text in (
                 ("A", row.history_a, row.text_a),
@@ -2529,6 +3174,37 @@ def write_report_and_outputs(
                         text_capped = "1"
                     if row.candidates_added_by_neighbours:
                         cand_added = str(row.candidates_added_by_neighbours)
+                    extra_flag = ""
+                    if extra_csv:
+                        extra_flag = "1" if row.is_extra else "0"
+                    esc_cols: list[str] = []
+                    if escalation_csv and is_text:
+                        esc_cols = [
+                            str(text.primary_scc_id)
+                            if text.primary_scc_id is not None
+                            else "",
+                            f"{text.primary_confidence:.4f}"
+                            if text.primary_confidence is not None
+                            else "",
+                            str(text.escalated) if text.escalated is not None else "",
+                            str(text.escalate_valid)
+                            if text.escalate_valid is not None
+                            else "",
+                            str(text.escalate_scc_id)
+                            if text.escalate_scc_id is not None
+                            else "",
+                            f"{text.escalate_confidence:.4f}"
+                            if text.escalate_confidence is not None
+                            else "",
+                            f"{text.primary_cost_usd:.6f}"
+                            if text.primary_cost_usd is not None
+                            else "",
+                            f"{text.escalate_cost_usd:.6f}"
+                            if text.escalate_cost_usd is not None
+                            else "",
+                        ]
+                    elif escalation_csv:
+                        esc_cols = [""] * len(ESCALATION_CSV_COLUMNS)
                     if is_text:
                         if text.raw_predicted_scc_id is not None:
                             raw_scc = str(text.raw_predicted_scc_id)
@@ -2555,46 +3231,49 @@ def write_report_and_outputs(
                             cand_count = str(text.candidate_scc_count)
                         if text.candidate_scc_narrowed is not None:
                             cand_narrowed = "1" if text.candidate_scc_narrowed else "0"
-                    w.writerow(
-                        [
-                            row.bill.bill_id,
-                            row.bill.vendor_id,
-                            mode,
-                            source,
-                            pred_scc if pred_scc is not None else "",
-                            row.bill.label_scc_id,
-                            pred_proj if pred_proj is not None else "",
-                            row.bill.label_project_id
-                            if row.bill.label_project_id is not None
-                            else "",
-                            correct_scc,
-                            correct_proj,
-                            row.stratum,
-                            cascade.winning_rung.model
-                            if cascade and cascade.winning_rung
-                            else "",
-                            cascade.winning_rung.provider
-                            if cascade and cascade.winning_rung
-                            else "",
-                            "1"
-                            if cascade and cascade.needs_human
-                            else ("0" if cascade else ""),
-                            raw_scc,
-                            raw_proj,
-                            raw_conf,
-                            raw_correct_scc,
-                            raw_correct_proj,
-                            err_kind,
-                            http_st,
-                            cand_count,
-                            cand_narrowed,
-                            top_neigh,
-                            neigh_count,
-                            followed_neigh,
-                            text_capped,
-                            cand_added,
-                        ]
-                    )
+                    row_cells = [
+                        row.bill.bill_id,
+                        row.bill.vendor_id,
+                        mode,
+                        source,
+                        pred_scc if pred_scc is not None else "",
+                        row.bill.label_scc_id,
+                        pred_proj if pred_proj is not None else "",
+                        row.bill.label_project_id
+                        if row.bill.label_project_id is not None
+                        else "",
+                        correct_scc,
+                        correct_proj,
+                        row.stratum,
+                        cascade.winning_rung.model
+                        if cascade and cascade.winning_rung
+                        else "",
+                        cascade.winning_rung.provider
+                        if cascade and cascade.winning_rung
+                        else "",
+                        "1"
+                        if cascade and cascade.needs_human
+                        else ("0" if cascade else ""),
+                        raw_scc,
+                        raw_proj,
+                        raw_conf,
+                        raw_correct_scc,
+                        raw_correct_proj,
+                        err_kind,
+                        http_st,
+                        cand_count,
+                        cand_narrowed,
+                        top_neigh,
+                        neigh_count,
+                        followed_neigh,
+                        text_capped,
+                        cand_added,
+                    ]
+                    if extra_csv:
+                        row_cells.append(extra_flag)
+                    if escalation_csv:
+                        row_cells.extend(esc_cols)
+                    w.writerow(row_cells)
 
     def pct(v: Optional[Decimal]) -> str:
         return f"{v:.2%}" if v is not None else "n/a"
@@ -2817,6 +3496,101 @@ def write_report_and_outputs(
             f"{pct(text_m.get('project_top1'))} | {pct(row.get('combined_top1_bill'))} |"
         )
     lines.append("")
+    esc_m = metrics.get("escalation_metrics") or {}
+    if esc_m:
+        lines.extend(
+            [
+                "### Escalation ladder (U-701b)",
+                "",
+                f"- Primary calls: {esc_m.get('primary_call_count', 0)}",
+                f"- Escalated calls: {esc_m.get('escalated_call_count', 0)}",
+                f"- Escalation rate: {pct(esc_m.get('escalation_rate'))}",
+                f"- Primary cost USD: {esc_m.get('primary_cost_usd', 0)}",
+                f"- Escalation cost USD: {esc_m.get('escalate_cost_usd', 0)}",
+                f"- Sample text spend USD: {esc_m.get('sample_text_spend_usd', 0)} "
+                f"(reconciled={esc_m.get('spend_reconciled')}; "
+                f"orphaned={esc_m.get('orphaned_spend_usd', 0)}, "
+                f"unattributed={esc_m.get('unattributed_spend_usd', 0)} - on a resumed run "
+                "this includes spend the earlier run paid for rows it left unscored)",
+                f"- Extra text spend USD: {esc_m.get('extra_text_spend_usd', 0)}",
+                "",
+            ]
+        )
+    hist_ov = metrics.get("history_override_scoring") or {}
+    if hist_ov.get("reported"):
+        lines.extend(
+            [
+                "### History override scoring (similar-bills disagree; U-701b)",
+                "",
+            ]
+        )
+        for combo in (
+            "override_mode_a_text",
+            "override_mode_a_vote",
+            "override_mode_b_text",
+            "override_mode_b_vote",
+        ):
+            block = hist_ov.get(combo) or {}
+            if block:
+                lines.append(
+                    f"- {combo}: fired={block.get('fired', 0)} "
+                    f"fixed={block.get('fixed', 0)} broke={block.get('broke', 0)}"
+                )
+        lines.append("")
+        for mode_key in ("mode_a", "mode_b"):
+            block = hist_ov.get(mode_key) or {}
+            if block:
+                lines.append(f"- {mode_key}: {json.dumps(block, default=_json_default)}")
+        lines.append("")
+    if metrics.get("extra_bill_count"):
+        extra_rows = [r for r in scored if r.is_extra]
+        lines.extend(
+            [
+                "### Extra bills (outside eval window; excluded from sample metrics)",
+                "",
+                f"- Count: {metrics.get('extra_bill_count')}",
+            ]
+        )
+        for row in extra_rows:
+            for mode, hist, text in (
+                ("A", row.history_a, row.text_a),
+                ("B", row.history_b, row.text_b),
+            ):
+                if mode == "A":
+                    comb = combined_mode_a_predicted_scc(hist, text)
+                    comb_ov = combined_mode_a_predicted_scc_with_override(
+                        hist,
+                        text,
+                        vote_scc_id=row.word_vote_scc_id,
+                        vote_confidence=row.word_vote_confidence,
+                        neighbours=row.filtered_neighbours,
+                    )
+                else:
+                    comb = combined_mode_b_predicted_scc(hist, text)
+                    comb_ov = combined_mode_b_predicted_scc_with_override(
+                        hist,
+                        text,
+                        vote_scc_id=row.word_vote_scc_id,
+                        vote_confidence=row.word_vote_confidence,
+                        neighbours=row.filtered_neighbours,
+                    )
+                hist_score = (
+                    float(hist.raw_score) if hist.raw_score is not None else None
+                )
+                lines.append(
+                    f"- BillId {row.bill.bill_id} mode {mode}: "
+                    f"label_scc={row.bill.label_scc_id} "
+                    f"history_pred={hist.predicted_scc_id} history_score={hist_score} "
+                    f"vote_pred={row.word_vote_scc_id} "
+                    f"vote_conf={row.word_vote_confidence} "
+                    f"primary_pred={text.primary_scc_id if text else None} "
+                    f"primary_conf={text.primary_confidence if text else None} "
+                    f"escalate_pred={text.escalate_scc_id if text else None} "
+                    f"escalate_conf={text.escalate_confidence if text else None} "
+                    f"combined={comb} combined_override={comb_ov} "
+                    f"text_final={text.predicted_scc_id if text else None}"
+                )
+        lines.append("")
     cat_cmp = metrics.get("combined_vs_history_catalog_eligible")
     if cat_cmp and cat_cmp.get("n", 0) > 0:
         lines.extend(
@@ -2998,6 +3772,14 @@ def load_prior_text_results(
                 cand_narrowed = None
             else:
                 cand_narrowed = cand_narrowed_raw == "1"
+
+            def _float(v: str) -> Optional[float]:
+                return float(v) if (v or "").strip() else None
+
+            esc_raw = (row.get("escalated") or "").strip()
+            escalated = int(esc_raw) if esc_raw else None
+            ev_raw = (row.get("escalate_valid") or "").strip()
+            escalate_valid = int(ev_raw) if ev_raw else None
             out[(int(row["BillId"]), row["mode"])] = TextAttemptResult(
                 mode=row["mode"],
                 cascade=cascade,
@@ -3005,6 +3787,14 @@ def load_prior_text_results(
                 predicted_project_id=_int(row.get("predicted_project_id", "")),
                 candidate_scc_count=_int(row.get("candidate_scc_count", "")),
                 candidate_scc_narrowed=cand_narrowed,
+                primary_scc_id=_int(row.get("primary_scc_id", "")),
+                primary_confidence=_float(row.get("primary_confidence", "")),
+                escalated=escalated,
+                escalate_valid=escalate_valid,
+                escalate_scc_id=_int(row.get("escalate_scc_id", "")),
+                escalate_confidence=_float(row.get("escalate_confidence", "")),
+                primary_cost_usd=_float(row.get("primary_cost_usd", "")),
+                escalate_cost_usd=_float(row.get("escalate_cost_usd", "")),
             )
     return out
 
@@ -3020,12 +3810,45 @@ async def run_text_cascade_batch(
     out: Optional[dict[tuple[int, str], TextAttemptResult]] = None,
     bill_text_mode: str = DEFAULT_BILL_TEXT_MODE,
     similar_bills_evidence: bool = False,
+    line_items_rule: bool = False,
+    escalate_ladder: tuple[Rung, ...] | None = None,
+    escalate_below: float = DEFAULT_ESCALATE_BELOW,
 ) -> dict[tuple[int, str], TextAttemptResult]:
     resolved_ladder = ladder if ladder is not None else BILL_CODING_FOUNDRY_LADDER
+    escalation_arm = escalate_ladder is not None
+    keep_valid_threshold = (
+        HARNESS_KEEP_VALID_CASCADE_THRESHOLD if escalation_arm else None
+    )
     sem = asyncio.Semaphore(concurrency)
     results_out: dict[tuple[int, str], TextAttemptResult] = (
         out if out is not None else {}
     )
+
+    async def _invoke_cascade(
+        p: dict[str, Any],
+        *,
+        run_ladder: tuple[Rung, ...],
+    ) -> CascadeResult:
+        if uses_production_text_cascade_path(
+            bill_text_mode=bill_text_mode,
+            similar_bills_evidence=similar_bills_evidence,
+            line_items_rule=line_items_rule,
+            escalation_arm=escalation_arm,
+        ):
+            return await run_bill_coding_suggestion(
+                p,
+                transport_for=transport_for,
+                ladder=run_ladder,
+            )
+        return await run_backtest_bill_coding_suggestion(
+            p,
+            transport_for=transport_for,
+            ladder=run_ladder,
+            bill_text_mode=bill_text_mode,
+            similar_bills_evidence=similar_bills_evidence,
+            line_items_rule=line_items_rule,
+            acceptance_threshold=keep_valid_threshold,
+        )
 
     async def one(item: TextCascadeWorkItem) -> None:
         bill, mode, payload = item.bill, item.mode, item.payload
@@ -3038,44 +3861,126 @@ async def run_text_cascade_batch(
             if harness_should_skip_new_cascade(cost_state):
                 return
             est = estimate_ladder_first_rung_cost_usd(resolved_ladder)
+            if escalation_arm and escalate_ladder is not None:
+                est += estimate_ladder_first_rung_cost_usd(escalate_ladder)
             if cost_state["usd"] + est > max_cost_usd:
                 cost_state["stopped"] = True
                 return
-            async def _cascade_call(p: dict[str, Any] = payload) -> CascadeResult:
-                if (
-                    bill_text_mode == DEFAULT_BILL_TEXT_MODE
-                    and not similar_bills_evidence
-                ):
-                    return await run_bill_coding_suggestion(
-                        p,
-                        transport_for=transport_for,
-                        ladder=resolved_ladder,
-                    )
-                return await run_backtest_bill_coding_suggestion(
-                    p,
-                    transport_for=transport_for,
-                    ladder=resolved_ladder,
-                    bill_text_mode=bill_text_mode,
-                    similar_bills_evidence=similar_bills_evidence,
-                )
 
-            cascade = await run_capped_cascade(
-                _cascade_call,
-                est=est,
+            async def _primary_call(p: dict[str, Any] = payload) -> CascadeResult:
+                return await _invoke_cascade(p, run_ladder=resolved_ladder)
+
+            primary_cascade = await run_capped_cascade(
+                _primary_call,
+                est=estimate_ladder_first_rung_cost_usd(resolved_ladder),
                 cost_state=cost_state,
                 max_cost_usd=max_cost_usd,
             )
-            if cascade is None:
+            if primary_cascade is None:
                 return
+
+            scc_map = cost_state["scc_number_to_id"]
+            proj_map = cost_state["proj_abbrev_to_id"]
+            if escalation_arm:
+                primary_scc, primary_proj, primary_conf = cascade_best_validated_prediction(
+                    primary_cascade,
+                    scc_number_to_id=scc_map,
+                    proj_abbrev_to_id=proj_map,
+                )
+                primary_cost = bill_cascade_spend_usd(primary_cascade)
+                escalated_flag = 0
+                esc_scc: Optional[int] = None
+                esc_proj: Optional[int] = None
+                esc_conf: Optional[float] = None
+                esc_cost = 0.0
+                esc_cascade: Optional[CascadeResult] = None
+                need_esc = escalate_ladder is not None and should_escalate_text_answer(
+                    primary_scc,
+                    primary_conf,
+                    escalate_below=escalate_below,
+                )
+                escalate_valid_flag = 0
+                if need_esc:
+                    est_esc = estimate_ladder_first_rung_cost_usd(escalate_ladder)
+                    if cost_state["usd"] + est_esc > max_cost_usd:
+                        cost_state["stopped"] = True
+                        _record_orphaned_spend(cost_state, primary_cost)
+                        return
+
+                    async def _escalate_call(
+                        p: dict[str, Any] = payload,
+                    ) -> CascadeResult:
+                        return await _invoke_cascade(p, run_ladder=escalate_ladder)
+
+                    esc_cascade = await run_capped_cascade(
+                        _escalate_call,
+                        est=est_esc,
+                        cost_state=cost_state,
+                        max_cost_usd=max_cost_usd,
+                    )
+                    if esc_cascade is None:
+                        _record_orphaned_spend(cost_state, primary_cost)
+                        return
+                    esc_scc, esc_proj, esc_conf = cascade_best_validated_prediction(
+                        esc_cascade,
+                        scc_number_to_id=scc_map,
+                        proj_abbrev_to_id=proj_map,
+                    )
+                    esc_cost = bill_cascade_spend_usd(esc_cascade)
+                    if not escalate_leg_completed(esc_cascade, esc_scc):
+                        # Rate limit / overload / exception / no attempt: not a finished
+                        # escalation. Leave the row unscored so --resume-from re-runs it.
+                        _record_orphaned_spend(cost_state, primary_cost + esc_cost)
+                        return
+                    escalated_flag = 1
+                    if esc_scc is not None:
+                        escalate_valid_flag = 1
+                final_scc, final_proj, final_conf = (
+                    (esc_scc, esc_proj, esc_conf)
+                    if esc_scc is not None
+                    else (primary_scc, primary_proj, primary_conf)
+                )
+                cascade = (
+                    esc_cascade
+                    if escalated_flag and esc_cascade is not None
+                    else primary_cascade
+                )
+                err_kind, http_status = cascade_call_error_summary(cascade)
+                results_out[(bill.bill_id, mode)] = TextAttemptResult(
+                    mode=mode,
+                    cascade=cascade,
+                    predicted_scc_id=final_scc,
+                    predicted_project_id=final_proj,
+                    raw_predicted_scc_id=final_scc,
+                    raw_predicted_project_id=final_proj,
+                    raw_confidence=final_conf,
+                    error_kind=err_kind,
+                    http_status=http_status,
+                    candidate_scc_count=cand_count,
+                    candidate_scc_narrowed=cand_narrowed,
+                    primary_scc_id=primary_scc,
+                    primary_confidence=primary_conf,
+                    escalated=escalated_flag,
+                    escalate_valid=escalate_valid_flag,
+                    escalate_scc_id=esc_scc,
+                    escalate_confidence=esc_conf,
+                    primary_cost_usd=round(primary_cost, 6),
+                    escalate_cost_usd=round(esc_cost, 6) if esc_cost else None,
+                    primary_cascade=primary_cascade,
+                    escalate_cascade=esc_cascade,
+                )
+                return
+
+            cascade = primary_cascade
             scc_id, proj_id = resolve_text_prediction(
                 cascade,
-                scc_number_to_id=cost_state["scc_number_to_id"],
-                proj_abbrev_to_id=cost_state["proj_abbrev_to_id"],
+                scc_number_to_id=scc_map,
+                proj_abbrev_to_id=proj_map,
             )
             raw_scc, raw_proj, raw_conf = resolve_raw_text_prediction(
                 cascade,
-                scc_number_to_id=cost_state["scc_number_to_id"],
-                proj_abbrev_to_id=cost_state["proj_abbrev_to_id"],
+                scc_number_to_id=scc_map,
+                proj_abbrev_to_id=proj_map,
             )
             err_kind, http_status = cascade_call_error_summary(cascade)
             results_out[(bill.bill_id, mode)] = TextAttemptResult(
@@ -3159,16 +4064,25 @@ def finalize_run_state(
     """One rule: the run is complete only if EVERY sampled (Bill, mode) has a result.
     Anything missing makes it incomplete (or keeps it partial after an interrupt);
     no KEEP/DROP is ever printed for it."""
-    expected = {(r.bill.bill_id, mode) for r in scored for mode in ("A", "B")}
+    expected = {
+        (r.bill.bill_id, mode)
+        for r in scored
+        if not getattr(r, "is_extra", False)
+        for mode in ("A", "B")
+    }
     missing = expected - set(results)
     unscored_bills = {bill_id for bill_id, _mode in missing}
     if run_status == "complete" and missing:
         run_status = "incomplete"
     usd = float(cost_state.get("usd", 0.0))
+    sample_bill_ids = {
+        r.bill.bill_id for r in scored if not getattr(r, "is_extra", False)
+    }
+    unscored_sample = unscored_bills & sample_bill_ids
     return RunState(
         run_status=run_status,
-        scored_bill_count=len(scored) - len(unscored_bills),
-        unscored_bill_count=len(unscored_bills),
+        scored_bill_count=len(sample_bill_ids) - len(unscored_sample),
+        unscored_bill_count=len(unscored_sample),
         cap_tripped=bool(cost_state.get("stopped")) and bool(missing),
         cost_overshoot_usd=(usd - max_cost_usd) if usd > max_cost_usd else None,
     )
@@ -3273,10 +4187,14 @@ def build_metrics(
     pdf_blob_load: Optional[dict[str, int]] = None,
     neighbour_filter_drops: Optional[dict[str, int]] = None,
     bills_with_pdf_read_failure_for_neighbours: int = 0,
+    escalate_ladder: Optional[str] = None,
+    line_items_rule: bool = False,
 ) -> dict[str, Any]:
+    sample_scored = [r for r in scored if not r.is_extra]
+    extra_count = sum(1 for r in scored if r.is_extra)
     restrict = cap_tripped or run_status != "complete"
-    rows_a = metric_rows_for_mode(scored, mode="A", restrict=restrict)
-    rows_b = metric_rows_for_mode(scored, mode="B", restrict=restrict)
+    rows_a = metric_rows_for_mode(sample_scored, mode="A", restrict=restrict)
+    rows_b = metric_rows_for_mode(sample_scored, mode="B", restrict=restrict)
     mode_a_hist = compute_suggester_metrics(rows_a, mode="A", source="history")
     mode_a_text = compute_suggester_metrics(rows_a, mode="A", source="text")
     mode_a_combined = compute_suggester_metrics(rows_a, mode="A", source="combined")
@@ -3305,6 +4223,17 @@ def build_metrics(
     mixed_text = compute_suggester_metrics(mixed_rows, mode="A", source="text")
     mixed_combined = compute_suggester_metrics(mixed_rows, mode="A", source="combined")
     needs_human = sum(1 for c in cascades if c.needs_human)
+    sample_cascades = list(iter_text_cascades_for_usage(sample_scored))
+    if sample_cascades:
+        needs_human = sum(1 for c in sample_cascades if c.needs_human)
+    if escalate_ladder:
+        # Both legs are in the cascade list; count per (bill, mode) final answer instead.
+        needs_human = sum(
+            1
+            for row in sample_scored
+            for t in (row.text_a, row.text_b)
+            if t is not None and t.predicted_scc_id is None
+        )
     catalog_public = (
         {
             k: v
@@ -3315,9 +4244,23 @@ def build_metrics(
         else {}
     )
     neighbour_metrics = (
-        followed_neighbour_metrics(scored) if similar_bills_evidence else {}
+        followed_neighbour_metrics(sample_scored) if similar_bills_evidence else {}
     )
-    return {
+    escalation_metrics: dict[str, Any] = {}
+    if escalate_ladder:
+        escalation_metrics = compute_escalation_run_metrics(scored)
+        if not escalation_metrics.get("primary_call_count"):
+            escalation_metrics = {}
+    history_override: dict[str, Any] = {}
+    if similar_bills_evidence:
+        history_override = compute_history_override_metrics(
+            scored,
+            similar_bills_evidence=True,
+            cap_tripped=cap_tripped,
+            run_status=run_status,
+        )
+    rung_source = sample_cascades if sample_cascades else list(cascades)
+    result: dict[str, Any] = {
         "cap_tripped": cap_tripped,
         "scored_bill_count": scored_bill_count,
         "unscored_bill_count": unscored_bill_count,
@@ -3359,7 +4302,7 @@ def build_metrics(
             "text_top1": mixed_text.top1_bill,
             "combined_top1": mixed_combined.top1_bill,
         },
-        "rung_usage": aggregate_rung_usage(cascades),
+        "rung_usage": aggregate_rung_usage(rung_source),
         "needs_human_count": needs_human,
         "throttle_retry_count": throttle_retry_count,
         "throttle_failure_count": throttle_failure_count,
@@ -3367,11 +4310,11 @@ def build_metrics(
         "cascade_error_count": cascade_error_count,
         "call_failures_by_kind": aggregate_call_failures_by_kind(
             t
-            for row in scored
+            for row in sample_scored
             for t in (row.text_a, row.text_b)
             if t is not None
         ),
-        "confidence_bar_sweep": confidence_bar_sweep(scored),
+        "confidence_bar_sweep": confidence_bar_sweep(sample_scored),
         "duplicate_scc_number_count": duplicate_scc_number_count,
         "duplicate_project_abbrev_count": duplicate_project_abbrev_count,
         "usage": usage_totals,
@@ -3385,9 +4328,20 @@ def build_metrics(
             cap_tripped=cap_tripped,
         ),
         "prompt_size": aggregate_prompt_size_stats(
-            scored, usage_totals, candidate_scc_mode=candidate_scc_mode
+            sample_scored, usage_totals, candidate_scc_mode=candidate_scc_mode
         ),
     }
+    if line_items_rule:
+        result["line_items_rule"] = True
+    if escalate_ladder:
+        result["escalate_ladder"] = escalate_ladder
+        if escalation_metrics:
+            result["escalation_metrics"] = escalation_metrics
+    if history_override:
+        result["history_override_scoring"] = history_override
+    if extra_count:
+        result["extra_bill_count"] = extra_count
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -3461,8 +4415,34 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Include top similar earlier bills (PDF text) in the LLM payload",
     )
+    ap.add_argument(
+        "--escalate-ladder",
+        choices=sorted(BACKTEST_LADDERS),
+        default=None,
+        help="Second ladder when primary confidence is below --escalate-below (U-701b)",
+    )
+    ap.add_argument(
+        "--escalate-below",
+        type=float,
+        default=DEFAULT_ESCALATE_BELOW,
+        help="Escalate when primary valid confidence is below this (default: 0.70)",
+    )
+    ap.add_argument(
+        "--line-items-rule",
+        action="store_true",
+        help="Append line-items-first rule to harness system prompt (U-701b)",
+    )
+    ap.add_argument(
+        "--extra-bill-ids",
+        default=None,
+        help="Comma-separated BillIds outside the eval window (U-701b); not in sample metrics",
+    )
     args = ap.parse_args(argv)
     selected_ladder = ladder_by_name(args.ladder)
+    selected_escalate_ladder = (
+        ladder_by_name(args.escalate_ladder) if args.escalate_ladder else None
+    )
+    extra_bill_ids = parse_extra_bill_ids(args.extra_bill_ids)
 
     validate_windows(
         date(2025, 10, 11),
@@ -3500,18 +4480,29 @@ def main(argv: list[str] | None = None) -> int:
             eval_since=args.eval_since,
             eval_until=args.eval_until,
         )
+    sample_ids = {b.bill_id for b, _ in sample}
+    if extra_bill_ids:
+        deduped = [bid for bid in extra_bill_ids if bid not in sample_ids]
+        dropped_dup = len(extra_bill_ids) - len(deduped)
+        if dropped_dup:
+            print(
+                f"U-701b: dropped {dropped_dup} --extra-bill-ids already in sample"
+            )
+        extra_bill_ids = deduped
     ref = load_reference_data()
     blob_storage: list[Any] = []
     read_blob = make_text_blob_reader(blob_storage)
+    extra_sample = extra_bills_from_ids(text_bills, extra_bill_ids, vendor_votes)
+    neighbour_sample = list(sample) + extra_sample
     similarity_ctx: Optional[SampleSimilarityContext] = None
-    if sample and (
+    if neighbour_sample and (
         args.similar_bills_evidence
         or args.bill_text == BILL_TEXT_MODE_FULL_CONTENT
     ):
         similarity_ctx = compute_sample_neighbours(
             bills,
             blob_map,
-            sample,
+            neighbour_sample,
             read_blob=read_blob,
             ref=ref,
             vendor_votes=vendor_votes,
@@ -3522,12 +4513,16 @@ def main(argv: list[str] | None = None) -> int:
     cascade_task = backtest_cascade_task(
         bill_text_mode=args.bill_text,
         similar_bills_evidence=args.similar_bills_evidence,
+        line_items_rule=args.line_items_rule,
     )
     prompt_hash = prompt_variant_hash(cascade_task)
     settings_hash = arm_hash(
         bill_text_mode=args.bill_text,
         similar_bills_evidence=args.similar_bills_evidence,
         task=cascade_task,
+        line_items_rule=args.line_items_rule,
+        escalate_ladder=args.escalate_ladder,
+        escalate_below=args.escalate_below if args.escalate_ladder else None,
     )
     catalog_diag = catalog_diagnostics_for_sample(
         sample,
@@ -3550,6 +4545,11 @@ def main(argv: list[str] | None = None) -> int:
             similarity_ctx=similarity_ctx,
             bill_ids_pin_stats=bill_ids_pin_stats,
             arm_settings_hash=settings_hash,
+            line_items_rule=args.line_items_rule,
+            escalate_ladder_name=args.escalate_ladder,
+            escalate_ladder=selected_escalate_ladder,
+            escalate_below=args.escalate_below,
+            extra_bills=len(extra_sample),
         ),
         **{
             k: v
@@ -3557,6 +4557,9 @@ def main(argv: list[str] | None = None) -> int:
             if k != "label_not_in_catalog_bill_ids"
         },
     }
+    if extra_bill_ids:
+        dry_info["extra_bill_ids"] = extra_bill_ids
+        dry_info["extra_bills_selected"] = len(extra_sample)
 
     if not args.run:
         print(json.dumps(dry_info, indent=2, default=_json_default))
@@ -3581,6 +4584,8 @@ def main(argv: list[str] | None = None) -> int:
             bill_ids_pin_stats,
             ref,
             read_blob,
+            extra_sample=extra_sample,
+            selected_escalate_ladder=selected_escalate_ladder,
         )
     finally:
         claude_budget.clear_isolated_spend_ledger()
@@ -3603,9 +4608,22 @@ def _run_u654a_live(
     bill_ids_pin_stats,
     ref,
     read_blob,
+    extra_sample: list[tuple[TextBillRow, str]] | None = None,
+    selected_escalate_ladder: tuple[Rung, ...] | None = None,
 ) -> int:
     run_status = "complete"
     scored = prepare_scored_rows(sample, vendor_votes)
+    for bill, stratum in extra_sample or []:
+        priors = priors_for_bill(vendor_votes, bill)
+        scored.append(
+            ScoredTextBill(
+                bill=bill,
+                stratum=stratum,
+                history_a=predict_mode_a(bill, priors),
+                history_b=predict_mode_b(bill, priors),
+                is_extra=True,
+            )
+        )
     if similarity_ctx is not None:
         for row in scored:
             fields = similarity_ctx.per_bill.get(row.bill.bill_id)
@@ -3615,6 +4633,15 @@ def _run_u654a_live(
             row.top_neighbour_scc_id = fields.top_neighbour_scc_id
             row.candidates_added_by_neighbours = fields.candidates_added_by_neighbours
             row.bill_text_chars_capped = fields.bill_text_chars_capped
+            row.filtered_neighbours = list(fields.filtered_neighbours)
+            raw_neighbours = (
+                list(similarity_ctx.neighbours_raw_by_bill.get(row.bill.bill_id) or [])
+                if similarity_ctx is not None
+                else []
+            )
+            vote_scc, vote_conf = word_matching_vote_from_neighbours(raw_neighbours)
+            row.word_vote_scc_id = vote_scc
+            row.word_vote_confidence = vote_conf
     work: list[TextCascadeWorkItem] = []
     cost_state: dict[str, Any] = {
         "usd": 0.0,
@@ -3663,6 +4690,25 @@ def _run_u654a_live(
                 f"--resume-from similar_bills_evidence {prior_similar!r} differs from "
                 f"current flag"
             )
+        for key, cur_val in (
+            ("line_items_rule", bool(args.line_items_rule)),
+            ("escalate_ladder", args.escalate_ladder),
+            (
+                "escalate_below",
+                args.escalate_below if args.escalate_ladder else None,
+            ),
+        ):
+            if key not in prior_summary:
+                continue
+            if key == "escalate_below" and not (
+                prior_summary.get("escalate_ladder") or args.escalate_ladder
+            ):
+                continue
+            prior_val = prior_summary[key]
+            if prior_val != cur_val:
+                raise SystemExit(
+                    f"--resume-from {key} {prior_val!r} differs from current {cur_val!r}"
+                )
         prior_arm = prior_summary["arm_hash"]
         if prior_arm != settings_hash:
             raise SystemExit(
@@ -3670,7 +4716,18 @@ def _run_u654a_live(
             )
         prior = load_prior_text_results(args.resume_from, ladder_name=prior_ladder)
         sample_ids = {b.bill_id for b, _ in sample}
-        stray = {bid for bid, _ in prior} - sample_ids
+        allowed_extra = {b.bill_id for b, _ in (extra_sample or [])}
+        prior_extra = prior_summary.get("extra_bill_ids")
+        if prior_extra is not None:
+            prior_extra_set = {int(x) for x in prior_extra}
+            if allowed_extra and allowed_extra != prior_extra_set:
+                raise SystemExit(
+                    "--resume-from extra_bill_ids differ from current --extra-bill-ids"
+                )
+            allowed_extra = prior_extra_set
+        elif not allowed_extra:
+            allowed_extra = set()
+        stray = {bid for bid, _ in prior} - sample_ids - allowed_extra
         if stray:
             raise SystemExit(
                 f"--resume-from has {len(stray)} Bill(s) outside this sample; "
@@ -3694,6 +4751,14 @@ def _run_u654a_live(
         concurrency=args.concurrency,
         claude_concurrency=args.claude_concurrency,
     )
+    if args.escalate_ladder:
+        esc_conc = llm_backtest_cascade_concurrency(
+            args.escalate_ladder,
+            concurrency=args.concurrency,
+            claude_concurrency=args.claude_concurrency,
+        )
+        # Claude ladders run at the lower Claude concurrency; either leg on Claude caps the run.
+        cascade_concurrency = min(cascade_concurrency, esc_conc)
 
     def run_cascades_on_work() -> None:
         if not work:
@@ -3709,6 +4774,9 @@ def _run_u654a_live(
                 out=results,
                 bill_text_mode=args.bill_text,
                 similar_bills_evidence=args.similar_bills_evidence,
+                line_items_rule=args.line_items_rule,
+                escalate_ladder=selected_escalate_ladder,
+                escalate_below=args.escalate_below,
             )
         )
 
@@ -3810,8 +4878,11 @@ def _run_u654a_live(
             vendor_votes=vendor_votes,
             candidate_scc_mode=args.candidate_sccs,
         )
+        sample_bill_ids = {b.bill_id for b, _ in sample}
         run_status = run_status_after_unreadable(
-            run_status, unreadable=len(unreadable_bill_ids), sampled=len(sample)
+            run_status,
+            unreadable=len(unreadable_bill_ids & sample_bill_ids),
+            sampled=len(sample),
         )
 
     for row in scored:
@@ -3841,9 +4912,7 @@ def _run_u654a_live(
 
     # Counted over the scored Bills only, so a Bill dropped on a resume (its blob
     # unreadable) cannot leave a reloaded half behind in the counts.
-    cascades = [
-        t.cascade for row in scored for t in (row.text_a, row.text_b) if t is not None
-    ]
+    cascades = list(iter_text_cascades_for_usage(scored))
     usage = {
         "input_tokens": prior_tokens["input_tokens"],
         "output_tokens": prior_tokens["output_tokens"],
@@ -3901,9 +4970,18 @@ def _run_u654a_live(
         bills_with_pdf_read_failure_for_neighbours=(
             similarity_ctx.bills_with_pdf_read_failure if similarity_ctx else 0
         ),
+        escalate_ladder=args.escalate_ladder,
+        line_items_rule=args.line_items_rule,
+    )
+    reconcile_escalation_spend(
+        metrics.get("escalation_metrics") or {},
+        total_spend_usd=float(cost_state["usd"]),
+        orphaned_spend_usd=float(cost_state.get("orphaned_usd", 0.0)),
     )
     metrics["blob_unreadable_count"] = len(unreadable_bill_ids)
     metrics["call_timeout_count"] = int(cost_state.get("call_timeout_count", 0))
+    if args.escalate_ladder:
+        metrics["escalate_below"] = args.escalate_below
     stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     write_report_and_outputs(
         out_dir=args.out_dir,
@@ -3920,6 +4998,7 @@ def _run_u654a_live(
         bill_text_mode=args.bill_text,
         similar_bills_evidence=args.similar_bills_evidence,
         cost_state=cost_state,
+        extra_bill_ids=[b.bill_id for b, _ in (extra_sample or [])],
     )
     print(
         f"U-654a run {run_status} ladder={args.ladder} candidate_sccs={args.candidate_sccs}; "

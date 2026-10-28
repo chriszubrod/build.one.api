@@ -19,6 +19,9 @@ from entities.attachment.business.extraction_service import AttachmentExtraction
 from entities.attachment.business.service import AttachmentService
 from entities.attachment.persistence.repo import AttachmentLinkState, AttachmentRepository
 from entities.coding_suggestion.business.bill_suggestion_service import (
+    SIMILAR_BILLS_SUGGESTION_REASON,
+    SUGGESTION_SOURCE_SIMILAR_BILLS,
+    TEXT_LLM_SUGGESTION_REASON,
     BillCodingSuggester,
     BillSuggestion,
     history_blocks_text_tier,
@@ -46,7 +49,12 @@ from entities.bill_intake_prediction.business.service import (
     INTAKE_SOURCES,
 )
 from intelligence.cascade.core import CascadeResult
-from shared.access import EntityNotAccessibleError, assert_can_access_project
+from shared.access import (
+    EntityNotAccessibleError,
+    assert_can_access_project,
+    resolve_accessible_project_ids,
+)
+from shared.authz import current_company_id, current_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -475,6 +483,104 @@ def _drop_coding_after_text_model(
     return None
 
 
+_LADDER_LLM_SOURCES = frozenset({"primary", "escalate", "fallback"})
+
+
+def _drop_amount(fields: dict[str, Any]) -> Optional[Decimal]:
+    """The read's total, absolute (credit memos read negative); None when absent/unparseable."""
+    total = fields.get("total_amount") if isinstance(fields, dict) else None
+    value = total.get("value") if isinstance(total, dict) else None
+    if value is None or value == "":
+        return None
+    try:
+        amount = abs(Decimal(str(value)))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return amount if amount.is_finite() else None
+
+
+def _suggestion_from_decision(
+    decision: Any,
+    *,
+    chosen_project_id: Optional[int],
+    engine: BillCodingSuggester,
+) -> Optional[BillSuggestion]:
+    """U-701b4: the drop's prefill from a ladder V2 decision (None = no coding).
+
+    history -> the history suggestion (its own source values); primary/escalate/fallback ->
+    "llm"; similar_vote -> "similar_bills"; none -> no coding. No confidence floor: a
+    low-confidence Haiku answer IS the prefill. A holding (Suspense) code is never returned.
+    """
+    from entities.coding_suggestion.business.bill_text_suggestion_service import (
+        MODEL_VERSION_V2,
+    )
+
+    source = getattr(decision, "source", None)
+    project_service = engine.project_service
+    if source == "history":
+        history = getattr(decision, "history", None)
+        if history is None or history.sub_cost_code_id is None:
+            return None
+        if chosen_project_id is not None:
+            out = _history_strong_for_project(
+                history, project_id=chosen_project_id, project_service=project_service
+            )
+        else:
+            out = _suggestion_from_history(history, project_service=project_service)
+        return replace(out, decision_source="history")
+
+    if source in _LADDER_LLM_SOURCES:
+        out_source, reason = "llm", TEXT_LLM_SUGGESTION_REASON
+    elif source == "similar_vote":
+        out_source, reason = SUGGESTION_SOURCE_SIMILAR_BILLS, SIMILAR_BILLS_SUGGESTION_REASON
+    else:
+        return None
+
+    scc_id = getattr(decision, "sub_cost_code_id", None)
+    if scc_id is None:
+        return None
+    scc_svc = engine.sub_cost_code_service
+    scc = scc_svc.read_by_id(int(scc_id))
+    if scc is None or scc_svc.is_holding_code(int(scc_id)):
+        return None
+
+    mode = getattr(decision, "mode", None) or ("A" if chosen_project_id is not None else "B")
+    if chosen_project_id is not None:
+        out_project = resolve_accessible_text_project_id(
+            chosen_project_id, project_service=project_service
+        )
+        predicted = False
+    else:
+        out_project = resolve_accessible_text_project_id(
+            getattr(decision, "project_id", None), project_service=project_service
+        )
+        predicted = out_project is not None
+    confidence = getattr(decision, "confidence", None)
+    if confidence is not None and not isinstance(confidence, Decimal):
+        confidence = Decimal(str(confidence))
+    return BillSuggestion(
+        project_id=out_project,
+        sub_cost_code_id=int(scc_id),
+        sub_cost_code_public_id=str(scc.public_id) if scc.public_id else None,
+        sub_cost_code_number=scc.number,
+        sub_cost_code_name=scc.name,
+        source=out_source,
+        reason=reason,
+        confidence=confidence,
+        raw_score=None,
+        top_count=None,
+        second_count=None,
+        total_count=None,
+        model_version=MODEL_VERSION_V2,
+        predicted_project=predicted,
+        text_used=out_source == "llm",
+        text_mode=mode,
+        text_model=getattr(decision, "model", None),
+        project_confidence=confidence if predicted else None,
+        decision_source=source,
+    )
+
+
 def _resolve_status(
     *,
     header_ok: bool,
@@ -500,6 +606,7 @@ async def run_bill_read_attachment(
     transport_for: Optional[Callable[[str], Any]] = None,
     settings: Optional[Any] = None,
     intake_prediction_service: Optional[BillIntakePredictionService] = None,
+    exclude_bill_id: Optional[int] = None,
 ) -> dict[str, Any]:
     if intake_source not in INTAKE_SOURCES:
         raise ValueError("invalid intake_source")
@@ -525,6 +632,9 @@ async def run_bill_read_attachment(
     fields_for_persist: dict[str, Any] = _empty_fields()
     intake_svc = intake_prediction_service or BillIntakePredictionService()
     shadow_extraction_content: Optional[str] = None
+    # U-701b4: ladder V2 coding (flag default OFF; `is True` so a mocked Settings stays OFF).
+    ladder_v2 = getattr(cfg, "bill_coding_ladder_v2_enabled", False) is True
+    coding_decision: Any = None
 
     async def _finish(
         result: dict[str, Any],
@@ -539,8 +649,12 @@ async def run_bill_read_attachment(
                 shadow_amount = None
                 if isinstance(total_field, dict):
                     shadow_amount = total_field.get("value")
+                extra_record_kwargs: dict[str, Any] = {}
+                if coding_decision is not None:
+                    extra_record_kwargs["coding_decision"] = coding_decision
                 _schedule_record_read(
                     intake_svc,
+                    **extra_record_kwargs,
                     attachment_id=attachment_id,
                     intake_source=intake_source,
                     status=status,
@@ -587,8 +701,11 @@ async def run_bill_read_attachment(
 
     # Naive UTC, like the DB timestamps the tick compares against.
     as_of = datetime.now(timezone.utc).replace(tzinfo=None)
-    catalog_task: Optional[asyncio.Task[CatalogSnapshot]] = asyncio.create_task(
-        asyncio.to_thread(load_catalog_from_db, as_of)
+    # Ladder V2 builds its own catalog inside run_bill_coding_decision.
+    catalog_task: Optional[asyncio.Task[CatalogSnapshot]] = (
+        None
+        if ladder_v2
+        else asyncio.create_task(asyncio.to_thread(load_catalog_from_db, as_of))
     )
     project_task: Optional[asyncio.Task[Optional[int]]] = None
     if project_public_id is not None:
@@ -688,6 +805,59 @@ async def run_bill_read_attachment(
                         vendor_name_for_catalog = vendor.name or None
             vendor_id_for_persist = vendor_id
 
+        async def _run_ladder_v2(
+            engine: BillCodingSuggester,
+            chosen: Optional[int],
+        ) -> tuple[Optional[BillSuggestion], bool]:
+            """ONE drop-stage ladder call (Haiku + Foundry fallback); returns (prefill, error)."""
+            nonlocal coding_decision, coding_cascade
+            from entities.coding_suggestion.business.bill_text_suggestion_service import (
+                run_bill_coding_decision,
+            )
+
+            accessible = await asyncio.to_thread(resolve_accessible_project_ids)
+            step_l = time.monotonic()
+            try:
+                decision = await run_bill_coding_decision(
+                    stage="drop",
+                    bill_text=masked_text,
+                    vendor_id=int(vendor_id),
+                    vendor_name=vendor_name_for_catalog or "",
+                    chosen_project_id=chosen,
+                    amount=_drop_amount(fields),
+                    as_of=as_of,
+                    exclude_bill_id=exclude_bill_id,
+                    company_id=current_company_id.get(),
+                    actor_user_id=current_user_id.get(),
+                    accessible_project_ids=accessible,
+                    transport_for=transport_for,
+                    settings=cfg,
+                )
+            except Exception as error:
+                logger.warning(
+                    "bill_read_attachment.coding_failed err=%s",
+                    type(error).__name__,
+                )
+                cascade_from_error = getattr(error, "coding_cascade", None)
+                if cascade_from_error is not None:
+                    coding_cascade = cascade_from_error
+                timing_ms["coding_llm"] = int((time.monotonic() - step_l) * 1000)
+                return None, True
+            timing_ms["coding_llm"] = int((time.monotonic() - step_l) * 1000)
+            coding_decision = decision
+            cascades = getattr(decision, "cascades", None) or ()
+            if cascades:
+                coding_cascade = cascades[-1]
+            out = await asyncio.to_thread(
+                _suggestion_from_decision,
+                decision,
+                chosen_project_id=chosen,
+                engine=engine,
+            )
+            # Claude capped/unavailable and nothing (Foundry, vote) answered: partial, as today.
+            errored = out is None and getattr(decision, "stopped_reason", None) == "daily_cap"
+            return out, errored
+
         if vendor_id is not None:
             engine = suggester or BillCodingSuggester()
             project_service = engine.project_service
@@ -727,6 +897,8 @@ async def run_bill_read_attachment(
                         history_suggestion,
                         project_service=project_service,
                     )
+                elif eligible and ladder_v2:
+                    suggestion, coding_error = await _run_ladder_v2(engine, chosen_project_id)
                 elif eligible:
                     step = time.monotonic()
                     prefetched_catalog: Optional[CatalogSnapshot] = None
@@ -765,6 +937,9 @@ async def run_bill_read_attachment(
                             coding_cascade = cascade_from_error
                         coding_error = True
                     timing_ms["coding_llm"] = int((time.monotonic() - step) * 1000)
+            elif ladder_v2:
+                # Mode B: the ladder owns history (project predicted from the decision).
+                suggestion, coding_error = await _run_ladder_v2(engine, None)
             else:
                 step = time.monotonic()
                 prefetched_catalog = None
@@ -869,9 +1044,14 @@ async def run_bill_read_attachment_with_timeout(
     intake_source: str = "pdf_drop",
     settings: Optional[Any] = None,
     pre_gated: Optional[tuple[Any, bool]] = None,
+    exclude_bill_id: Optional[int] = None,
 ) -> dict[str, Any]:
     cfg = settings or config.Settings()
     timeout = max(1, int(cfg.bill_drop_prefill_timeout_seconds))
+    # Only forwarded when set (a reread's own bill), so existing call shapes are unchanged.
+    extra: dict[str, Any] = {}
+    if exclude_bill_id is not None:
+        extra["exclude_bill_id"] = int(exclude_bill_id)
     try:
         return await asyncio.wait_for(
             run_bill_read_attachment(
@@ -880,6 +1060,7 @@ async def run_bill_read_attachment_with_timeout(
                 intake_source=intake_source,
                 settings=cfg,
                 pre_gated=pre_gated,
+                **extra,
             ),
             timeout=timeout,
         )

@@ -39,6 +39,13 @@ HISTORY_STRONG_RAW_SCORE = Decimal("0.60")
 _HISTORY_SOURCES = frozenset({"vendor_history", "vendor_project_history"})
 TEXT_LLM_SUGGESTION_REASON = "Suggested from the bill's document text"
 TextTierStatus = Literal["ready", "pending", "none"]
+# Every value BillSuggestion.source can carry (API `source`). "similar_bills" is the
+# U-701b4 filtered similar-bills vote (ladder V2 only).
+SUGGESTION_SOURCE_SIMILAR_BILLS = "similar_bills"
+BillSuggestionSource = Literal[
+    "vendor_project_history", "vendor_history", "memo", "llm", "similar_bills", "none"
+]
+SIMILAR_BILLS_SUGGESTION_REASON = "Suggested from similar past bills"
 
 
 @dataclass
@@ -65,6 +72,10 @@ class BillSuggestion:
     text_model: Optional[str] = None
     text_status: Optional[str] = None
     project_confidence: Optional[Decimal] = None
+    # U-701b4 (ladder V2 only; None = not emitted): which ladder rung produced the answer,
+    # and - for a background escalate that changed the drop's code - the drop's SCC it replaces.
+    decision_source: Optional[str] = None
+    supersedes_sub_cost_code_public_id: Optional[str] = None
 
 
 def _smoothed_share(top_count: int, total_count: int) -> Decimal:
@@ -313,8 +324,23 @@ def compute_text_tier_status(
     history_blocked: bool,
     text_row: Optional[BillTextCodingSuggestionRow],
     extraction: Optional[BillLatestTextExtractionState],
+    escalation_pending: bool = False,
 ) -> TextTierStatus:
-    """Status when the text result is NOT applied: "pending" while one may still arrive."""
+    """Status when the text result is NOT applied: "pending" while one may still arrive.
+
+    escalation_pending (U-701b4, ladder V2): the bill's drop marked its coding for the
+    background tick (CodingEscalation set). Until a terminal text row exists for the
+    current extraction the tick's answer may still arrive, so an open editor keeps polling.
+    """
+    if escalation_pending and not history_blocked:
+        terminal_for_current = (
+            text_row is not None
+            and text_row.status != "pending"
+            and extraction is not None
+            and _text_row_matches_current_extraction(text_row, extraction)
+        )
+        if not terminal_for_current:
+            return "pending"
     if text_row is None:
         incomplete = extraction is not None and extraction.has_incomplete_extraction
         return "pending" if incomplete and not history_blocked else "none"
@@ -335,15 +361,27 @@ def apply_bill_text_tier_to_suggestion(
     sub_cost_code_service: Optional[SubCostCodeService] = None,
     project_service: Optional[ProjectService] = None,
     text_enabled: Optional[bool] = None,
+    ladder_v2_enabled: Optional[bool] = None,
+    intake_service: Any = None,
 ) -> tuple[BillSuggestion, TextTierStatus]:
-    """Merge stored text-tier SCC (and optional Mode-B project) over cold/weak history."""
-    enabled = (
-        text_enabled
-        if text_enabled is not None
-        else config.Settings().bill_coding_text_enabled
-    )
+    """Merge stored text-tier SCC (and optional Mode-B project) over cold/weak history.
+
+    Ladder V2 (U-701b4, flag ON only): the result carries ``decision_source``; an escalate
+    answer that differs from the drop's Haiku (primary) SCC carries
+    ``supersedes_sub_cost_code_public_id``; a similar-bills vote is presented as source
+    "similar_bills"; status stays "pending" while the drop's escalation is outstanding.
+    """
+    settings: Any = None
+    if text_enabled is None or ladder_v2_enabled is None:
+        settings = config.Settings()
+    enabled = text_enabled if text_enabled is not None else settings.bill_coding_text_enabled
     if not enabled or bill_id is None:
         return history_suggestion, "none"
+    v2 = (
+        ladder_v2_enabled
+        if ladder_v2_enabled is not None
+        else getattr(settings, "bill_coding_ladder_v2_enabled", False)
+    ) is True
 
     repository = text_repo or BillTextCodingSuggestionRepository()
     scc_svc = sub_cost_code_service or SubCostCodeService()
@@ -364,11 +402,25 @@ def apply_bill_text_tier_to_suggestion(
         )
         return history_suggestion, "none"
 
+    intake_cache: list[Any] = []
+
+    def _intake() -> Any:
+        if not intake_cache:
+            intake_cache.append(_read_intake_for_bill(int(bill_id), intake_service))
+        return intake_cache[0]
+
     def _history_only() -> tuple[BillSuggestion, TextTierStatus]:
+        escalation_pending = False
+        if v2:
+            if history_blocked:
+                history_suggestion.decision_source = "history"
+            else:
+                escalation_pending = _intake_escalation_pending(_intake(), extraction)
         return history_suggestion, compute_text_tier_status(
             history_blocked=history_blocked,
             text_row=text_row,
             extraction=extraction,
+            escalation_pending=escalation_pending,
         )
 
     if history_blocked:
@@ -414,7 +466,77 @@ def apply_bill_text_tier_to_suggestion(
         return _history_only()
 
     text_suggestion.project_confidence = project_confidence
+    if v2:
+        _apply_ladder_v2_presentation(
+            text_suggestion,
+            text_row=text_row,
+            intake=_intake,
+            sub_cost_code_service=scc_svc,
+        )
     return text_suggestion, "ready"
+
+
+def _read_intake_for_bill(bill_id: int, intake_service: Any) -> Any:
+    """The bill's intake row (failure-isolated: None on any error)."""
+    try:
+        if intake_service is None:
+            from entities.bill_intake_prediction.business.service import (
+                BillIntakePredictionService,
+            )
+
+            intake_service = BillIntakePredictionService()
+        return intake_service.read_by_bill_id(int(bill_id))
+    except Exception as error:
+        logger.warning(
+            "bill text tier intake read failed bill_id=%s err=%s",
+            bill_id,
+            type(error).__name__,
+        )
+        return None
+
+
+def _intake_escalation_pending(
+    intake: Any,
+    extraction: Optional[BillLatestTextExtractionState],
+) -> bool:
+    """The drop marked this bill for the tick, for the attachment that is current now."""
+    if intake is None or not getattr(intake, "coding_escalation", None):
+        return False
+    latest_att = extraction.latest_completed_attachment_id if extraction is not None else None
+    intake_att = getattr(intake, "attachment_id", None)
+    if latest_att is not None and intake_att is not None and int(intake_att) != int(latest_att):
+        return False
+    return True
+
+
+def _apply_ladder_v2_presentation(
+    suggestion: BillSuggestion,
+    *,
+    text_row: BillTextCodingSuggestionRow,
+    intake: Any,
+    sub_cost_code_service: SubCostCodeService,
+) -> None:
+    decision_source = getattr(text_row, "decision_source", None)
+    suggestion.decision_source = decision_source
+    if decision_source == "similar_vote":
+        suggestion.source = SUGGESTION_SOURCE_SIMILAR_BILLS
+        suggestion.reason = SIMILAR_BILLS_SUGGESTION_REASON
+        return
+    if decision_source != "escalate" or text_row.sub_cost_code_id is None:
+        return
+    primary_id = getattr(text_row, "primary_sub_cost_code_id", None)
+    if primary_id is None:
+        intake_row = intake()
+        primary_id = getattr(intake_row, "primary_sub_cost_code_id", None) if intake_row else None
+    if primary_id is None or int(primary_id) == int(text_row.sub_cost_code_id):
+        return
+    try:
+        primary_scc = sub_cost_code_service.read_by_id(int(primary_id))
+    except Exception as error:
+        logger.warning("bill text tier primary scc read failed err=%s", type(error).__name__)
+        return
+    if primary_scc is not None and primary_scc.public_id:
+        suggestion.supersedes_sub_cost_code_public_id = str(primary_scc.public_id)
 
 
 def apply_budget_check_to_suggestion(

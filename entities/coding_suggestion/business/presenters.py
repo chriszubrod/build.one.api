@@ -23,7 +23,7 @@ def suggestion_to_api_payload(
     confidence = (
         str(suggestion.confidence) if suggestion.confidence is not None else None
     )
-    return {
+    payload = {
         "project_public_id": project_public_id,
         "project_name": project_name,
         "sub_cost_code_public_id": suggestion.sub_cost_code_public_id,
@@ -41,3 +41,10 @@ def suggestion_to_api_payload(
         ),
         "text_status": suggestion.text_status,
     }
+    # U-701b4 (ladder V2 only): emitted only when set, so the flag-OFF shape is unchanged.
+    # `source` may also be "similar_bills" (the filtered similar-bills vote).
+    for key in ("decision_source", "supersedes_sub_cost_code_public_id"):
+        value = getattr(suggestion, key, None)
+        if value is not None:
+            payload[key] = value
+    return payload

@@ -140,6 +140,14 @@ Harness-only (`scripts/u654a_text_backtest.py`); none of these touch the app. Lo
 - **Extra bills must be finalized** (`IsDraft = 0`, the U-653b load filter); an in-review bill passed via `--extra-bill-ids` is silently skipped (`extra_bills_selected` shows it).
 - **Quality, deferred from Pass 2:** collapse the five combined/override predictors into one gate (`combined_scc(history, fallback, override_row=None)`), simplify `compute_history_override_metrics` closures and `_history_override_outcome_counts`, reuse `prepare_scored_rows` for extras, single-assign `needs_human`, CSV cell formatters, reuse `_int` in `load_prior_text_results`.
 
+## U-701b2 deferred — similar-bills scoping (booked 2026-10-28, shipped `4962cc3a`)
+
+- **Access-set cache is not invalidated on UserProject changes.** `shared/access.py` caches each user's bill-access project set for 5 minutes and nothing clears it; the UserProject router publishes `publish_profile_changed` but does not touch `_accessible_projects_cache`. A removed membership keeps feeding that project's similar-bills evidence (codes, not bill contents) for up to 5 minutes per worker. Clear the user's entries from the UserProject router on every mutation.
+- **For U-701b3 / b4 (callers):** inside a system tick acting for a bill's creator, scope with `accessible_project_ids_for_user(creator, is_system_admin=...)`, never `resolve_accessible_project_ids()` (it returns "all" in system context). Show users only `filtered_vote` results, never the raw vote on `SimilarBillsMatchResult`, and pass a catalog that excludes `IsHoldingCode`.
+- **Per-company hash cache reads all companies.** `read_since` is not company-filtered, so with a 2nd company each company's service would cache every company's attachment hashes (memory only; scoring is per company). Filter when a 2nd company arrives.
+- **Refresh peak memory unchanged.** Compaction shrinks the steady-state hash cache, but each refresh still builds full token sets for every bill at once.
+- **SQL fixture fidelity.** `tests_sqlserver/fixtures/u701a_real_schema.py` adds `CompanyId` like prod but not the `FK_<table>_Company` constraints; the b2 SQL test adds `CreatedByUserId` as NULL where prod is NOT NULL DEFAULT 17.
+
 ## QBO external `update_*` clients are FULL-REPLACE by default — this is what wiped a vendor record (booked 2026-10-22, Vendor Agent run)
 
 Owner reported that a past vendor update "removed all else that was not updated — cleared each field

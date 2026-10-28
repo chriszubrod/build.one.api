@@ -2,6 +2,63 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## QBO bill PULL: staging rows that never became a `dbo.Bill` — FOUR distinct causes, only one a real gap (booked 2026-10-28, Vendor Agent run)
+
+Found by confirming a vendor's bill count for the Owner: `qbo.Bill` staging held Kiser Vogrin
+`26083-01` (**QBO 76737**, 08/31/2026, **$304.75**, still OPEN) and **no `dbo.Bill` was ever created**.
+No `qbo.ReconciliationIssue` was recorded — the projection simply did not happen, silently.
+
+⚠️ **Do NOT quote "215 broken." The raw count is 215 but it decomposes, and most of it is not a defect.**
+
+**Shape of the 215** (`qbo.Bill` rows with no matching `dbo.Bill`, total $1,348,204.37):
+
+| Years | Rows | Value | Read |
+|---|---|---|---|
+| 2022–2024 | **204** | $1,339,375.03 | backfill-era; characterise before touching |
+| 2025–2026 | **11** | **$8,829.34** | the live population — **all 11 still exist in QBO** |
+
+**Of the 11, exactly ONE carries an open balance: Kiser Vogrin `26083-01`, $304.75.** The other ten are
+fully paid, so the exposure is data integrity, not money.
+
+### The four causes (verified live 2026-10-28, not inferred)
+
+1. **QBO-side DUPLICATE bills — not an app defect.** Three cases have **two live QBO bills** with the
+   same vendor + date + amount: `457412` (76746/72523, $380.00, Nacho's Painting), `805714`
+   (74034/72237, $265.20, Walker), `670652` (73237/74042, $2,075.00, GM Construction). `dbo` correctly
+   holds one; the connector's `(vendor, number)` create-dedup correctly refused the second. **The fix
+   here is in QuickBooks, not in our code** — these are duplicate entries the Owner may want voided.
+2. **Near-duplicate with DIFFERENT amounts — needs human adjudication.** `92625` W.M. Brooks: QBO
+   **61598 $2,100.00** (projected → dbo 14817) and QBO **60940 $2,327.25** (not projected), same vendor
+   and date. Dedup blocked it either way. Is the second a correction, or a second bill?
+3. **STALE dbo→QBO link.** `12626-99` Kenny & Company: only **68746** is live in QBO, but `dbo.Bill`
+   17777 points at **68612**, which is not. So dbo is bound to a QboId that no longer exists while the
+   live one never projected. Different failure from the others and worth its own look.
+4. **GENUINELY unprojected — the real gap.** `26083-01` (Kiser Vogrin) has **one** live QBO bill and
+   **no `dbo.Bill` at all**. Plus two already with the Owner for manual research, which turn out to be
+   the *same* document unlinked on both sides: `K06988` Walker — QBO **73208** $1,477.83 and `dbo.Bill`
+   19143 $1,477.83 `in_review` with **QboId NULL** (identical amount, clearly one document); and
+   `152320` Walker — QBO **65595** $1,170.75 vs `dbo.Bill` 16911 **$585.38** QboId NULL (**amounts
+   differ** — may be two different things).
+
+**These last two also appear in the push-side entry above** ("four completed bills with no outbox
+row"). That is the same breakage seen from both ends: a local bill that never pushed and a QBO bill
+that never pulled, for the same document, with nothing linking them. Treat the two entries as one
+problem when scoping.
+
+- [ ] 🟠 **Make a failed/skipped projection record a `ReconciliationIssue`.** A staging row that does
+  not become a `dbo.Bill` currently emits nothing — that silence is why a 2026-08 open invoice went
+  unnoticed until a vendor count was questioned by hand. Note a *deliberate* dedup skip (cause 1) must
+  be distinguishable from a genuine failure, or the signal is noise on arrival.
+- [ ] 🟠 **Adjudicate the 11 recent rows individually** — they have four different causes and no single
+  remedy. Only `26083-01` is open ($304.75) and only it needs a `dbo.Bill` today.
+- [ ] 🟡 **Characterise the 204 rows from 2022–2024 before touching them.** Likely backfill-era and
+  correct to leave; confirm that rather than assume it, and record the finding so the raw 215 stops
+  being re-discovered.
+- [ ] 🟡 **Surface the QBO-side duplicates to the Owner** (cause 1, 3 pairs). Our books are right; QBO
+  has duplicate bills. Voiding them is a QuickBooks-side decision, never an app write.
+- [ ] 🟢 Fix the stale link on `12626-99` (cause 3) once the repoint path exists — related to the
+  open "mapping-repoint sproc" item already tracked for the heal-don't-delete family.
+
 ## U-739 follow-ups (booked 2026-10-27)
 
 - [ ] **`_get_or_create_subfolder` KeyError when it CREATES a folder** (entities/expense/business/service.py ~2146): reads `create_result["item"]["id"]`; the listing path uses `item_id`. Folder is created, then the receipt copy to 520 - Current Receipts/yyyy/mm fails. Hit expenses 10904 and 19618 (MR2-MAIN) during the U-739 backfill - re-run their general-receipts upload after the fix.

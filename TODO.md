@@ -6943,3 +6943,24 @@ moves, SyncToken does not); delete-reconcile only ran on full pulls, which never
   circular import through `intelligence.cascade` (`anthropic.py` imports `claude_budget` at top level), so
   `tests/test_u657_anthropic_foundry_route.py` errors at collection when run alone. Fix with the same
   lazy-import shape U-701d used in `transport/foundry.py`.
+
+## Business-intelligence follow-ups (booked 2026-10-29)
+- **U-744 scorecard - legacy rows score the wrong "prediction".** On `u654b-text-v1` intake rows,
+  `PredSubCostCodeId` is the intake Haiku answer, but the draft line was prefilled by the history-first
+  `/bill/coding/suggest` path, so 46 of 114 finalized rows show a line `accepted` with a final != Pred.
+  v2 rows store the real prefill, so this only affects the legacy baseline. Either label the v1 section
+  "intake Haiku answer, not the prefill" in the scorecard output, or reconstruct the v1 prefill from the
+  history rule (>= 0.60 share and >= 3 priors). Read-only gap check 2026-10-29: reconstructed old rule
+  38.6 %, vendor history alone 45.6 %, 68 % of live drops are weak/no-history vendors.
+- **U-744 scale threshold:** the admin endpoint reads every finalized row per call and filters `since` in
+  Python. Fine at hundreds of rows; at ~50k add an optional `@Since` to `ReadBillIntakePredictionsForAccuracy`
+  and an index on `(FinalizedDatetime) INCLUDE (CreatedDatetime)`.
+- **U-693 side findings (observability cleanup, non-P0):** ~1,500 WARNING/week from `opentelemetry/attributes`
+  ("Invalid type NoneType for attribute 'error_code' / 'correlation_id'") - some `extra=` dicts pass None;
+  and ~600 "RBAC INFO: ..." startup lines from `app.py` land as WARNING. Also: `log_similar_bills_shadow_none`
+  takes open `**fields` and is now exported at INFO - keep callers to ids/counts.
+- **U-673 parked idea - labor cost-code picker ordering:** phrase precedent's top-3 holds the right code on
+  73-75 % of TimeLog-sourced lines (docs/design/u673/README.md). A picker that orders codes by that ranking
+  (no prefill, no auto-apply) is the only use the backtest supports; needs its own Gate 1.
+- **Backtest helper dedupe:** `scripts/u697_vector_similar_bills_backtest.sign_test_p` is copied into
+  `entities/coding_suggestion/business/decision_model/stats.py` (U-698); once U-698 lands, make u697 import it.

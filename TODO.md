@@ -2,6 +2,17 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-745 follow-ups - M0 shadow + switched last rung (booked 2026-10-29, shipped `cea3c8d6`, switch BILL_CODING_M0_RUNG_ENABLED off)
+
+- [ ] **Switch-on bar:** turn BILL_CODING_M0_RUNG_ENABLED on only when the U-744 scorecard shows rung `m0` >= `similar_vote` on the same u701b-text-v2 rows where M0 ran (drop-row NULLs = M0 lost the no-wait race, mostly on the history short-circuit; compare on rows where M0 answered). Ask Chris before flipping.
+- [ ] **Re-measure M0 with the live 50-token neighbour cap** (live similar-bills uses `similar_bills_max_tokens_per_bill`=50 on both sides; U-698 trained on full PDF token sets, so F7-F10 and the isotonic calibration differ). Re-run the u698 neighbour pass with max_tokens_per_bill=50 (prod read-only, $0 LLM - ask first); retrain/recalibrate on capped neighbours if the lift or calibration moves.
+- [ ] **Index** `dbo.BillLineItemAttachment (BillLineItemId) INCLUDE (AttachmentId)`: the HasPdf EXISTS in ReadVendorPriorBillsForDecisionModel (and ReadSimilarBillsCorpusRows) scans IX_BillLineItemAttachment_AttachmentId. Fine at today's size.
+- [ ] **One home for the dominant-label rule:** three hand-synced copies (ReadSimilarBillsCorpusRows + both U-745 sprocs, plus u653b `_LOAD_SQL`); an inline TVF `dbo.BillDominantLabel(@CompanyId)` would make them one.
+- [ ] **Stale SQL test fixtures (pre-existing, fail on clean trunk):** tests_sqlserver/test_u654b_bill_text_sql.py stub Bill lacks `CreatedByUserId` (ReadBillCodingActorByBillId) and its autocommit fixture leaves a committed BillTextCodingSuggestion table behind on failure, which breaks later files (u676m, u653b collateral); test_u653b_backtest_equivalence_sql.py schema lacks `IsHoldingCode`.
+- [ ] **Vendor-history reads ignore project access (pre-existing, hardening):** ReadVendorSccCountsForBills (no company filter either) / engine.suggest and the new vendor-priors read rank codes from all of the vendor's bills regardless of the actor's UserProject access. Only a catalog code is surfaced, never a project.
+- [ ] **M0 retrain cadence:** the shipped model is trained through 2026-09-11 (u698 run 20261029T185458Z). Decide a retrain schedule (with the December U-698 re-run) and how a new model file is versioned/validated (feature-list check + parity test).
+- [ ] Optional cleanup (Pass 2 skipped): `choose_final` could take one `last_rung` pick instead of separate vote/M0 parameters, keeping the ladder model-agnostic.
+
 ## QBO bill PULL: staging rows that never became a `dbo.Bill` — FOUR distinct causes, only one a real gap (booked 2026-10-28, Vendor Agent run)
 
 Found by confirming a vendor's bill count for the Owner: `qbo.Bill` staging held Kiser Vogrin

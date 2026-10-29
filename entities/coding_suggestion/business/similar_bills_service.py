@@ -191,6 +191,17 @@ class SimilarBillsService:
         with self._state_lock:
             return self._snapshot is not None
 
+    @classmethod
+    def warm_at_startup(cls, company_ids: tuple[int, ...] = (1,)) -> None:
+        """Start each company's corpus build in the background so a worker's first bill
+        drop gets neighbours (a cold snapshot answers nothing while it builds). Never
+        blocks or raises. Company 1 is the only tenant until multi-tenant Phase 5b."""
+        for cid in company_ids:
+            try:
+                cls.for_company(cid)._schedule_refresh_if_needed()
+            except Exception as error:
+                logger.warning("similar_bills.startup_warm_failed err=%s", type(error).__name__)
+
     def _schedule_refresh_if_needed(self, *, force: bool = False) -> None:
         if not feature_enabled(self._settings):
             warn_once_if_disabled()

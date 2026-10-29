@@ -356,6 +356,12 @@ async def startup_event():
     from entities.review.business.task_feed import ReviewTaskFeed
     feed_registry.register(ReviewTaskFeed())
 
+    # Build the similar-bills corpus in the background now, not on the first bill
+    # drop: a cold worker returns no neighbours while it builds (U-701b live drop,
+    # 2026-10-29). Non-blocking; a failure only logs.
+    from entities.coding_suggestion.business.similar_bills_service import SimilarBillsService
+    SimilarBillsService.warm_at_startup()
+
     # Start the recurring-jobs scheduler (QBO outbox drain, etc.). Gated on
     # ENABLE_SCHEDULER=true so local dev runs silently by default; prod App
     # Service sets the flag in Application Settings.

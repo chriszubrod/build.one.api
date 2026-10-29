@@ -6913,3 +6913,33 @@ moves, SyncToken does not); delete-reconcile only ran on full pulls, which never
   (TB3-DRAFT-17, OL-DRAFT-10, HP-DRAFT-23, HP2-DRAFT-07, $943,747.24 showing as open A/R) get `qbo_deleted`
   issues on the first full run; the 48 dbo Bills and 38 dbo Expenses whose QBO records are gone are already
   carried by `qbo_voided` issues. Nothing deletes dbo rows automatically.
+
+## U-701d deferred — Foundry spend metering (booked 2026-10-29; unit commit on `unit/u-701d`, not yet landed)
+- **Undercounts (accepted, conservative direction is the other way only for cache):**
+  - Streams cut off before `Done` (mid-stream error, consumer `aclose`) and streams with no usage chunk
+    meter $0. Possible fix: meter the last usage seen in the transport's `finally` when `Done` never arrived.
+  - The worker is a daemon thread: unsaved / in-flight spend is lost at process exit (deliberately no
+    flush-on-exit, so a hung DB cannot block shutdown).
+  - A failed write retries only on the next `record_usage`; if Foundry traffic stops, the amount sits in
+    memory (invisible to the DB, admin endpoint and alert) until the next call or is lost on restart.
+  - Switching the U-702 isolated ledger drops buffered spend (same as claude_budget's reset).
+- **Overcounts:** cached prompt tokens are priced as full input (conservative); an add that commits then
+  raises is retried and double-counted (same as Claude).
+- **Cap (off by default):** per-worker overshoot (each worker reads the shared total on a TTL); a
+  cross-midnight retry can briefly skew the single-date cache.
+- **Alert volume:** one log line per worker per UTC day, again after each restart — the App Insights
+  `count > 0` rule still pages once per window. `buildone-foundry-spend-high` is in `infra/provision.sh`
+  but NOT yet created in Azure (ask before applying).
+- **Settings refresh lag:** Foundry spend settings take up to 60 s to apply in a running worker.
+- **Smoke / dry-run scripts that call Foundry now write live `Provider='foundry'` spend** unless wrapped in
+  the isolated ledger like `scripts/u658_extraction_bakeoff.py` (whose isolate call also sits just before
+  its `try`).
+- **Quality (Pass 2, deferred to keep the Claude path untouched before deploy):** `foundry_spend.usage_cost_usd`
+  copies `claude_budget._usage_cost_usd` — fold both into one `cost_usd_with_fallback(provider, model, usage,
+  *, fallback_model, warned)` helper; same for the two warn-once helpers. `GET /admin/llm/spend` makes two
+  range reads because `ReadLlmSpendForRange` requires `@Provider` — an optional `@Provider` would make it one
+  (needs a Gate-2 SQL apply).
+- **Pre-existing on master (not U-701d):** importing `intelligence.transport.anthropic` first fails on a
+  circular import through `intelligence.cascade` (`anthropic.py` imports `claude_budget` at top level), so
+  `tests/test_u657_anthropic_foundry_route.py` errors at collection when run alone. Fix with the same
+  lazy-import shape U-701d used in `transport/foundry.py`.

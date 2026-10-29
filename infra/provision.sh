@@ -278,7 +278,14 @@ az monitor scheduled-query show -g "$RG" -n buildone-outbox-dead-letter >/dev/nu
        --condition-query DeadLetters="traces | where message contains 'outbox.row.dead_lettered'" \
        --evaluation-frequency 30m --window-size 1h --severity 2 --action-groups "$AGID" --auto-mitigate true \
        --description "Outbox row dead-lettered (qbo/ms/box) — a SharePoint/Excel/QBO write permanently failed" -o none
-echo ">> log alerts: sched-failed-invocations, sched-no-invocations, outbox-dead-letter -> $AG_NAME"
+# U-701d: Foundry daily spend crossed FOUNDRY_SPEND_ALERT_USD (default $2.00/UTC day).
+az monitor scheduled-query show -g "$RG" -n buildone-foundry-spend-high >/dev/null 2>&1 \
+  || az monitor scheduled-query create -g "$RG" -n buildone-foundry-spend-high \
+       --scopes "$AI_API" --condition "count 'FoundrySpend' > 0" \
+       --condition-query FoundrySpend="traces | where message contains 'llm.spend.foundry_threshold_crossed'" \
+       --evaluation-frequency 1h --window-size 1h --severity 3 --action-groups "$AGID" --auto-mitigate true \
+       --description "Foundry LLM spend crossed the daily alert threshold (FOUNDRY_SPEND_ALERT_USD)" -o none
+echo ">> log alerts: sched-failed-invocations, sched-no-invocations, outbox-dead-letter, foundry-spend-high -> $AG_NAME"
 
 # ============================================================================ #
 # 9. Azure SQL — REFERENCE ONLY (lives in resource group `owner`, shared server)

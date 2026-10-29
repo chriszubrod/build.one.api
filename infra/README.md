@@ -67,6 +67,12 @@ Alerting was built out 2026-06-16 (action group `buildone-ops-ag` →
 - `buildone-outbox-dead-letter` — API `traces` matching `outbox.row.dead_lettered`,
   **>0 in 1h** (Sev2): a qbo/ms/box write that permanently failed (incl. the
   critical "bill never reached the client Excel" case).
+- `buildone-foundry-spend-high` — API `traces` matching `llm.spend.foundry_threshold_crossed`,
+  **>0 in 1h**, evaluated hourly (Sev3, auto-mitigate): Foundry (DeepSeek / GPT-5.4) spend for the
+  UTC day is at or above `FOUNDRY_SPEND_ALERT_USD` (default $2.00; `0` disables). Logged at most
+  once per worker per day (again after a restart) by `intelligence/cascade/foundry_spend.py`
+  (U-701d), so several lines per day are normal — the count > 0 rule pages once. Daily totals:
+  `GET /api/v1/admin/llm/spend?days=14` (system admin).
 - `buildone-la-ingestion-high` — Log Analytics ingestion **>1.5 GB/day** (Sev3); cost guardrail
   added in the 2026-07-09 review.
 

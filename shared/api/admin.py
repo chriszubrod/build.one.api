@@ -5,7 +5,8 @@ import logging
 import os
 import time
 from contextlib import ExitStack
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any, Literal, Optional
 
 # Third-party Imports
@@ -18,7 +19,7 @@ import config
 from integrations.intuit.qbo.base.locking import qbo_sync_lock
 from shared.authz import set_authz_context
 from shared.database import format_exception_for_log
-from shared.rbac import require_module_api
+from shared.rbac import require_module_api, require_system_admin
 from shared.rbac_constants import Modules
 
 logger = logging.getLogger(__name__)
@@ -484,6 +485,61 @@ def _qbo_sync_fn(entity: str):
         from scripts.sync_qbo_reimburse_charge import sync_qbo_reimburse_charge
         return sync_qbo_reimburse_charge
     raise HTTPException(status_code=400, detail=f"Unknown QBO entity: {entity}")
+
+
+def _llm_spend_rows(from_date, to_date, provider: str):
+    from shared.llm_spend_repo import LlmSpendRepository
+
+    return LlmSpendRepository().read_spend_for_range(from_date, to_date, provider)
+
+
+def _money(value) -> float:
+    return float(Decimal(str(value)).quantize(Decimal("0.000001")))
+
+
+@router.get("/llm/spend")
+async def llm_spend(
+    days: int = Query(14, ge=1, le=90),
+    current_user: dict = Depends(require_system_admin()),
+):
+    """U-701d: per-UTC-day LLM spend (anthropic + foundry) from dbo.LlmDailySpend,
+    oldest first, zero-filled, plus the configured cap/alert levels."""
+    from intelligence.cascade import claude_budget, foundry_spend
+
+    to_date = datetime.now(timezone.utc).date()
+    from_date = to_date - timedelta(days=days - 1)
+    anthropic_rows, foundry_rows = await asyncio.gather(
+        asyncio.to_thread(_llm_spend_rows, from_date, to_date, claude_budget.ANTHROPIC_PROVIDER),
+        asyncio.to_thread(_llm_spend_rows, from_date, to_date, foundry_spend.FOUNDRY_PROVIDER),
+    )
+
+    def _by_date(rows) -> dict:
+        return {row.SpendDate: (row.CostUsd, row.CallCount) for row in rows or []}
+
+    anthropic, foundry = _by_date(anthropic_rows), _by_date(foundry_rows)
+    out_days = []
+    for offset in range(days):
+        d = from_date + timedelta(days=offset)
+        a_cost, a_calls = anthropic.get(d, (0, 0))
+        f_cost, f_calls = foundry.get(d, (0, 0))
+        out_days.append({
+            "spend_date": d.isoformat(),
+            "anthropic_usd": _money(a_cost),
+            "anthropic_calls": int(a_calls or 0),
+            "foundry_usd": _money(f_cost),
+            "foundry_calls": int(f_calls or 0),
+        })
+    settings = config.Settings()
+    alert = foundry_spend.alert_threshold_usd(settings)
+    cap = foundry_spend.daily_cap_usd(settings)
+    return {
+        "data": {
+            "days": out_days,
+            "claude_cap_usd": _money(claude_budget.daily_cap_usd(settings)),
+            "foundry_alert_usd": _money(alert) if alert is not None else None,
+            "foundry_cap_usd": _money(cap) if cap is not None else None,
+        }
+    }
 
 
 # Entities whose sync function accepts a `sync_attachments` kwarg. Others pull

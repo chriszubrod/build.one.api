@@ -2140,6 +2140,11 @@ def main(argv: list[str] | None = None) -> int:
     run_meta: dict[str, Any] = {}
     incomplete = True
     interrupted = False
+    # U-701d: offline harness — meter LLM spend (Claude AND Foundry) into the
+    # in-process isolated ledger, never the prod LlmDailySpend / live Claude cap.
+    from intelligence.cascade import claude_budget
+
+    claude_budget.use_isolated_spend_ledger(Decimal(str(args.max_cost_usd)))
     try:
         results, run_meta, incomplete = run_bakeoff(
             docs,
@@ -2153,6 +2158,8 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         interrupted = True
         incomplete = True
+    finally:
+        claude_budget.clear_isolated_spend_ledger()
 
     verdicts: dict[str, str] = {}
     w9_entity_name_digit_excluded = count_w9_entity_name_digit_exclusions(

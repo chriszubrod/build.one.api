@@ -305,6 +305,10 @@ class Settings(BaseSettings):
     claude_daily_spend_cap_usd: Optional[str] = None  # default 6.45; "0" = disabled
     claude_credit_breaker_minutes: Optional[str] = None  # default 60; must be > 0
     claude_spend_cache_seconds: Optional[str] = None  # default 30; 0 = no cache
+    # U-701d — Foundry spend metering (parsed in intelligence/cascade/foundry_spend).
+    foundry_spend_alert_usd: Optional[str] = None  # default 2.00/UTC day; "0" = no alert
+    # Unlike Claude's cap, unset/empty/"0" = NO cap (Foundry stays on); opt in to gate.
+    foundry_daily_spend_cap_usd: Optional[str] = None
     cascade_ladder_bill_coding_suggestion: Optional[str] = None
     cascade_ladder_bill_header_extraction: Optional[str] = None
     cascade_threshold_bill_coding_suggestion: Optional[str] = None

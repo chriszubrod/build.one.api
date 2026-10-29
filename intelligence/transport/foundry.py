@@ -157,6 +157,23 @@ class FoundryTransport:
         if not self._endpoint:
             yield TransportError(message="FOUNDRY_ENDPOINT is not configured", code="missing_endpoint")
             return
+        # U-701d: opt-in daily cap (off by default; fails open on a read error).
+        # Lazy: a top-level import cycles via intelligence.cascade ->
+        # transport.anthropic -> this module when it is imported first.
+        try:
+            from intelligence.cascade import foundry_spend
+        except Exception:
+            foundry_spend = None
+        try:
+            gate = await foundry_spend.pre_call_gate() if foundry_spend is not None else None
+        except Exception:
+            gate = None
+        if gate == "daily_cap":
+            yield TransportError(
+                message="foundry budget gate: daily_cap",
+                code="foundry_unavailable:daily_cap",
+            )
+            return
 
         body = to_openai_request(
             messages, model=model, system=system, max_tokens=max_tokens, tools=tools,
@@ -225,6 +242,15 @@ class FoundryTransport:
 
             try:
                 async for ev in _chunks_to_events(_parse_openai_sse(resp), model):
+                    if isinstance(ev, Done):
+                        # U-701d: meter BEFORE the consumer sees Done (it may
+                        # stop iterating there). record_usage never raises; the
+                        # guard keeps Done flowing even if that ever regresses.
+                        try:
+                            if foundry_spend is not None:
+                                foundry_spend.record_usage(model, ev.usage)
+                        except Exception:
+                            logger.warning("foundry spend metering failed", exc_info=True)
                     yield ev
             finally:
                 if resp_ctx is not None:

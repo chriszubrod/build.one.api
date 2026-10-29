@@ -70,30 +70,33 @@ _isolated_cap_usd: Optional[Decimal] = None
 
 
 class _IsolatedSpendRepo:
-    """Process-local per-run ledger for offline harnesses — never touches dbo.LlmDailySpend."""
+    """Process-local per-run ledger for offline harnesses — never touches dbo.LlmDailySpend.
+
+    Keyed per provider (U-701d): Foundry spend accrues separately and never
+    counts toward the anthropic run total or the Claude cap."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._run_total_usd = Decimal("0")
+        self._totals: dict[str, Decimal] = {}
 
     @property
     def run_total_usd(self) -> Decimal:
+        return self.total_for(ANTHROPIC_PROVIDER)
+
+    def total_for(self, provider: str) -> Decimal:
         with self._lock:
-            return self._run_total_usd
+            return self._totals.get(provider, Decimal("0"))
 
     def read_daily_spend(self, spend_date: date, provider: str) -> Decimal:
-        if provider != ANTHROPIC_PROVIDER:
-            return Decimal("0")
-        return self.run_total_usd
+        return self.total_for(provider)
 
     def add_daily_spend(
         self, spend_date: date, provider: str, cost_usd: Decimal,
     ) -> Decimal:
-        if provider != ANTHROPIC_PROVIDER:
-            return self.run_total_usd
         with self._lock:
-            self._run_total_usd += cost_usd
-            return self._run_total_usd
+            total = self._totals.get(provider, Decimal("0")) + cost_usd
+            self._totals[provider] = total
+            return total
 
 
 def _reset_process_spend_buffers_locked() -> None:
@@ -114,6 +117,7 @@ def use_isolated_spend_ledger(cap_usd: Decimal) -> None:
         _reset_process_spend_buffers_locked()
     _isolated_cap_usd = cap_usd
     _repo = _IsolatedSpendRepo()
+    _reset_foundry_spend()
 
 
 def clear_isolated_spend_ledger() -> None:
@@ -122,15 +126,24 @@ def clear_isolated_spend_ledger() -> None:
         _reset_process_spend_buffers_locked()
     _isolated_cap_usd = None
     _repo = None
+    _reset_foundry_spend()
 
 
-def get_isolated_spend_total() -> Optional[Decimal]:
-    """Per-run anthropic spend while isolated mode is active, else None."""
+def _reset_foundry_spend() -> None:
+    """U-701d: Foundry metering shares this repo — drop its buffers on a ledger
+    switch so nothing recorded under one ledger is flushed under the other."""
+    from intelligence.cascade import foundry_spend
+
+    foundry_spend.reset_process_state()
+
+
+def get_isolated_spend_total(provider: str = ANTHROPIC_PROVIDER) -> Optional[Decimal]:
+    """Per-run spend for ``provider`` while isolated mode is active, else None."""
     if _isolated_cap_usd is None:
         return None
     repo = _repo
     if isinstance(repo, _IsolatedSpendRepo):
-        return repo.run_total_usd
+        return repo.total_for(provider)
     return None
 
 
@@ -231,8 +244,19 @@ def _get_repo() -> LlmSpendReader:
     return _repo
 
 
+def get_spend_repo() -> LlmSpendReader:
+    """The process spend repo (honours pytest zero-spend default, test
+    injection and the isolated ledger) — shared with ``foundry_spend``."""
+    return _get_repo()
+
+
 def _utc_today() -> date:
     return _now_fn().date()
+
+
+def daily_cap_usd(settings: Settings) -> Decimal:
+    """Public read of the configured live Claude daily cap (U-701d admin endpoint)."""
+    return _daily_cap_usd(settings)
 
 
 def _daily_cap_usd(settings: Settings) -> Decimal:

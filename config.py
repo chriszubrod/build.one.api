@@ -251,6 +251,10 @@ class Settings(BaseSettings):
     bill_coding_candidate_sccs: str = "narrowed"
     # U-701b3: Haiku→Sonnet ladder V2 + similar-evidence payload (drop/tick). Default off.
     bill_coding_ladder_v2_enabled: bool = False
+    # U-701c: when Claude's daily cap is hit, the PDF drop and the background tick's
+    # full ladder fall back to the Foundry rungs (only when Foundry is configured).
+    # Default off.
+    bill_coding_foundry_on_claude_cap_enabled: bool = False
 
     # Bill create drop-to-prefill synchronous read (U-676b). Default off.
     bill_drop_prefill_enabled: bool = False

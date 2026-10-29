@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import threading
@@ -21,6 +22,7 @@ from entities.coding_suggestion.business.bill_coding_decision import (
     BillCodingInputs,
     RungAnswer,
     SimilarScope,
+    _default_run_cascade,
     decide_bill_coding,
     rung_columns,
 )
@@ -42,7 +44,7 @@ from entities.coding_suggestion.persistence.bill_text_suggestion_repo import (
     BillTextCodingSuggestionRepository,
 )
 from intelligence.cascade import claude_budget
-from intelligence.cascade.core import CascadeResult
+from intelligence.cascade.core import CascadeResult, attempt_was_skipped
 from intelligence.observability.cascade_telemetry import cascade_usage_totals
 from intelligence.cascade.bill_coding import (
     SUSPENSE_SCC_NUMBER,
@@ -365,6 +367,7 @@ async def run_bill_coding_decision(
     catalog: Optional[CatalogSnapshot] = None,
     similar_service: Optional[Any] = None,
     history_suggestion: Optional[BillSuggestion] = None,
+    fallback_on_daily_cap: bool = False,
 ) -> BillCodingDecision:
     """V2 ladder decision for the drop and the tick (U-701b3): the ONE place that builds
     the catalog, history, candidate SCCs and the scoped similar-bills service.
@@ -377,7 +380,16 @@ async def run_bill_coding_decision(
     concurrently off the loop. history_suggestion: a precomputed engine.suggest for
     (vendor, chosen_project_id, as_of, exclude_bill_id) - pass it only when computed with
     the SAME exclude_bill_id.
+
+    fallback_on_daily_cap (U-701c): the Foundry fallback rungs run when Claude's daily
+    cap is hit. It has no effect on "tick_escalate", whose ladder has no fallback rungs.
+    An unknown stage raises ValueError.
     """
+    run_cascade = None
+    if fallback_on_daily_cap:
+        if stage not in ("drop", "tick_full", "tick_escalate"):
+            raise ValueError(f"unknown bill coding stage: {stage!r}")
+        run_cascade = functools.partial(_default_run_cascade, fallback_on_daily_cap=True)
     settings = settings or config.Settings()
     repository = repository or BillTextCodingSuggestionRepository()
     engine = suggester or BillCodingSuggester()
@@ -465,6 +477,7 @@ async def run_bill_coding_decision(
         candidate_sccs=candidate_sccs,
         similar_service=similar_service,
         history_for_project=_history,
+        run_cascade=run_cascade,
         transport_for=transport_for,
     )
     return await decide_bill_coding(inputs, deps)
@@ -531,6 +544,7 @@ async def _process_one_claim_v2(
     suggester: Optional[BillCodingSuggester],
     catalog_loader: Optional[Callable[[datetime], CatalogSnapshot]],
     transport_for: Optional[Callable[[str], Any]],
+    foundry_on_cap: bool = False,
 ) -> dict[str, Any]:
     from entities.bill_intake_prediction.business.service import (
         BillIntakePredictionService,
@@ -564,7 +578,44 @@ async def _process_one_claim_v2(
             return _refused()
         return _tick_result(status="skipped", bill_id=claim.bill_id, skipped_reason=reason)
 
+    def _read_intake() -> Any:
+        try:
+            return BillIntakePredictionService().read_by_attachment_id(claim.attachment_id)
+        except Exception as error:
+            logger.warning(
+                "bill_text_coding_tick intake_prediction_lookup_failed bill_id=%s err=%s",
+                claim.bill_id,
+                type(error).__name__,
+            )
+            return None
+
+    def _route(intake_row: Any) -> str:
+        if intake_row is None:
+            return "full"
+        return tick_decision_for_intake(
+            intake_row,
+            extracted_datetime=claim.extracted_datetime,
+            chosen_project_id=claim.chosen_project_id,
+            vendor_id=claim.vendor_id,
+            ladder_v2_enabled=True,
+        )
+
     try:
+        intake = None
+        tick_action: Optional[str] = None
+        if foundry_on_cap:
+            # U-701c: route first, so a claim held for the Claude reset spends nothing
+            # (no history, blob, actor or catalog read). The Sonnet-only escalation
+            # waits for the reset; a drop already coded by Foundry / the vote is reused,
+            # never paid for twice.
+            intake = _read_intake()
+            tick_action = _route(intake)
+            if await claude_budget.is_claude_day_stopped_async():
+                if tick_action == "escalate":
+                    return _tick_result(status="capped", bill_id=claim.bill_id)
+                if tick_action == "full" and _drop_coded_without_claude(intake, claim):
+                    tick_action = "reuse"
+
         engine = suggester or BillCodingSuggester()
         # Computed once: the eligibility check and the ladder use the same history
         # (same vendor / project / as_of / exclude_bill_id).
@@ -586,25 +637,9 @@ async def _process_one_claim_v2(
         if not eligible:
             return _finish_skipped(skip_reason)
 
-        intake = None
-        try:
-            intake = BillIntakePredictionService().read_by_attachment_id(claim.attachment_id)
-        except Exception as error:
-            logger.warning(
-                "bill_text_coding_tick intake_prediction_lookup_failed bill_id=%s err=%s",
-                claim.bill_id,
-                type(error).__name__,
-            )
-
-        tick_action = "full"
-        if intake is not None:
-            tick_action = tick_decision_for_intake(
-                intake,
-                extracted_datetime=claim.extracted_datetime,
-                chosen_project_id=claim.chosen_project_id,
-                vendor_id=claim.vendor_id,
-                ladder_v2_enabled=True,
-            )
+        if tick_action is None:
+            intake = _read_intake()
+            tick_action = _route(intake)
 
         mode = "A" if claim.chosen_project_id is not None else "B"
         if tick_action == "reuse":
@@ -690,6 +725,7 @@ async def _process_one_claim_v2(
             suggester=engine,
             catalog=catalog,
             history_suggestion=tick_history,
+            fallback_on_daily_cap=foundry_on_cap,
         )
         made_call = bool(decision.cascades)
         cascade_ran = made_call
@@ -703,7 +739,10 @@ async def _process_one_claim_v2(
                 and decision.primary.sub_cost_code_id is not None
                 and decision.source != "none"
             )
-            if not keep_haiku:
+            # U-701c: a tick_full ladder whose Foundry fallback ran under the cap is
+            # finalized like any other decision (fallback / similar_vote / none).
+            foundry_decided = foundry_on_cap and _fallback_rung_ran(decision)
+            if not keep_haiku and not foundry_decided:
                 return _tick_result(status="capped", bill_id=claim.bill_id)
 
         complete_kwargs = _decision_complete_kwargs(
@@ -753,6 +792,38 @@ async def _process_one_claim_v2(
         )
 
 
+def _fallback_rung_ran(decision: BillCodingDecision) -> bool:
+    """True when a fallback_only (Foundry) rung actually ran (was not skipped)."""
+    return any(
+        attempt.rung.fallback_only and not attempt_was_skipped(attempt)
+        for cascade in decision.cascades or ()
+        for attempt in cascade.attempts
+    )
+
+
+def _drop_coded_without_claude(intake: Any, claim: BillTextCodingClaim) -> bool:
+    """A V2 drop row that Claude could not code but Foundry / the vote did (U-701c)."""
+    from entities.bill_intake_prediction.business.service import _intake_reuse_checks_pass
+
+    return (
+        intake is not None
+        and intake.model_version == MODEL_VERSION_V2
+        and intake.coding_escalation == "claude_unavailable"
+        and intake.coding_source in ("fallback", "similar_vote")
+        and _intake_reuse_checks_pass(
+            intake,
+            extracted_datetime=claim.extracted_datetime,
+            chosen_project_id=claim.chosen_project_id,
+            vendor_id=claim.vendor_id,
+        )
+    )
+
+
+def _foundry_on_cap_kwargs(foundry_on_cap: bool) -> dict[str, Any]:
+    """Passed only when on, so flag-off calls are exactly today's."""
+    return {"foundry_on_cap": True} if foundry_on_cap else {}
+
+
 def _tick_result(**fields: Any) -> dict[str, Any]:
     base = {
         "status": "idle",
@@ -774,6 +845,7 @@ async def _process_one_claim(
     suggester: Optional[BillCodingSuggester],
     catalog_loader: Optional[Callable[[datetime], CatalogSnapshot]],
     transport_for: Optional[Callable[[str], Any]],
+    foundry_on_cap: bool = False,
 ) -> dict[str, Any]:
     if settings.bill_coding_ladder_v2_enabled is True:
         return await _process_one_claim_v2(
@@ -784,6 +856,7 @@ async def _process_one_claim(
             suggester=suggester,
             catalog_loader=catalog_loader,
             transport_for=transport_for,
+            **_foundry_on_cap_kwargs(foundry_on_cap),
         )
     def _finalize_complete(*, record_call: bool = False, **kwargs: Any) -> bool:
         row = repository.complete(
@@ -1018,12 +1091,19 @@ async def run_bill_text_coding_tick(
     if cap <= 0:
         return _tick_result(status="cap_reached")
 
+    # U-701c: with the opt-in (ladder V2 only; Foundry is configured or the tick is
+    # disabled above) the Claude day cap no longer stops the tick before claiming -
+    # tick_full falls back to Foundry; tick_escalate is left pending inside.
+    foundry_on_cap = (
+        getattr(settings, "bill_coding_foundry_on_claude_cap_enabled", False) is True
+        and settings.bill_coding_ladder_v2_enabled is True
+    )
     blob_store = storage
     last = _tick_result(status="idle")
     for _ in range(max(1, int(limit))):
         if repository.count_calls_today() >= cap:
             return _tick_result(status="cap_reached", bill_id=last.get("bill_id"))
-        if await claude_budget.is_claude_day_stopped_async():
+        if not foundry_on_cap and await claude_budget.is_claude_day_stopped_async():
             return _tick_result(status="capped", bill_id=last.get("bill_id"))
         claim = repository.claim_next()
         if claim is None:
@@ -1037,7 +1117,11 @@ async def run_bill_text_coding_tick(
             suggester=suggester,
             catalog_loader=catalog_loader,
             transport_for=transport_for,
+            **_foundry_on_cap_kwargs(foundry_on_cap),
         )
+        # A capped claim stays pending; stop so this tick does not re-claim it.
+        if foundry_on_cap and last.get("status") == "capped":
+            return last
     return last
 
 

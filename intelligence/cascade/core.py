@@ -79,6 +79,10 @@ class StructuredTask:
     # than any one model's self-confidence. Disabled when either is None.
     consensus_k: Optional[int] = None
     consensus_key: Optional[str] = None
+    # U-701c: when True, fallback_only (Foundry) rungs still run after a rung
+    # returned claude_unavailable:daily_cap (opt-in per call; default keeps the
+    # cap stopping the cascade before any fallback rung).
+    fallback_on_daily_cap: bool = False
 
 
 @dataclass
@@ -134,6 +138,7 @@ async def run_cascade(
     return await run_ladder(
         rungs, execute, task.validate, task.threshold, task.name,
         consensus_k=task.consensus_k, consensus_key=task.consensus_key,
+        fallback_on_daily_cap=task.fallback_on_daily_cap,
     )
 
 
@@ -145,6 +150,7 @@ async def run_ladder(
     name: str,
     consensus_k: Optional[int] = None,
     consensus_key: Optional[str] = None,
+    fallback_on_daily_cap: bool = False,
 ) -> CascadeResult:
     """Generic cheapest-first escalation, shared by the single-shot cascade and
     the agent-loop cascade.
@@ -158,6 +164,10 @@ async def run_ladder(
     Optional consensus: when `consensus_k`/`consensus_key` are set, a rung is
     also accepted if `consensus_k` validated rungs (including this one) agree on
     the same `result[consensus_key]` value — even if no single rung reached τ.
+
+    `fallback_on_daily_cap` (U-701c, opt-in): a fallback_only rung still runs
+    after the daily Claude cap stopped a rung (it is still skipped once a
+    valid result exists). `stopped_reason` semantics are unchanged.
     """
     attempts: list[Attempt] = []
     agree: dict[Any, int] = {}   # validated label -> count, for consensus
@@ -170,12 +180,19 @@ async def run_ladder(
 
     for rung in rungs:
         if rung.fallback_only and (
-            had_valid_result or daily_cap_stopped
+            had_valid_result
+            or (daily_cap_stopped and not fallback_on_daily_cap)
         ):
             _append_skipped_rung(
                 attempts, rung, name, reason="fallback_only",
             )
             continue
+        if rung.fallback_only and daily_cap_stopped:
+            log_safely(
+                logger, logging.INFO,
+                "cascade[%s] rung %s/%s -> run (fallback_on_daily_cap)",
+                name, rung.provider, rung.model,
+            )
 
         t0 = time.perf_counter()
         parsed, confidence, usage, error = await execute(rung)
@@ -272,6 +289,9 @@ def _attempt_error_code(error: Optional[str]) -> Optional[str]:
     return None
 
 
+_SKIPPED_PREFIX = "skipped:"
+
+
 def _append_skipped_rung(
     attempts: list[Attempt],
     rung: Rung,
@@ -281,13 +301,23 @@ def _append_skipped_rung(
 ) -> None:
     attempts.append(Attempt(
         rung=rung, accepted=False, latency_ms=0,
-        error=f"skipped:{reason}",
+        error=f"{_SKIPPED_PREFIX}{reason}",
     ))
     log_safely(
         logger, logging.INFO,
         "cascade[%s] rung %s/%s -> skip (%s)",
         name, rung.provider, rung.model, reason,
     )
+
+
+def is_skipped_error(error: Optional[str]) -> bool:
+    """True for the error marker _append_skipped_rung writes."""
+    return isinstance(error, str) and error.startswith(_SKIPPED_PREFIX)
+
+
+def attempt_was_skipped(attempt: Attempt) -> bool:
+    """True when the ladder skipped this rung instead of running it."""
+    return is_skipped_error(attempt.error)
 
 
 def _best_attempt(attempts: list[Attempt]) -> Optional[Attempt]:

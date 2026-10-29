@@ -258,8 +258,13 @@ async def run_bill_header_extraction(
     *,
     transport_for=None,
     ladder: tuple[Rung, ...] | None = None,
+    fallback_on_daily_cap: bool = False,
 ) -> CascadeResult:
-    """Run the bill header extraction ladder."""
+    """Run the bill header extraction ladder.
+
+    ``fallback_on_daily_cap`` (U-701c) lets the Foundry fallback rungs run when
+    Claude's daily cap is hit; BILL_HEADER_EXTRACTION_TASK itself stays False.
+    """
     task = BILL_HEADER_EXTRACTION_TASK
     if ladder is None:
         task = dataclasses.replace(
@@ -273,4 +278,6 @@ async def run_bill_header_extraction(
         )
     else:
         task = dataclasses.replace(task, ladder=ladder)
+    if fallback_on_daily_cap:
+        task = dataclasses.replace(task, fallback_on_daily_cap=True)
     return await run_cascade(task, payload, transport_for=transport_for)

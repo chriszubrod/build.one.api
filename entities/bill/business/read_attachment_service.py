@@ -29,6 +29,7 @@ from entities.coding_suggestion.business.bill_suggestion_service import (
 )
 from entities.coding_suggestion.business.bill_text_suggestion_service import (
     CatalogSnapshot,
+    foundry_is_configured,
     history_eligible_for_text,
     load_catalog_from_db,
     predict_text_coding,
@@ -621,8 +622,21 @@ async def run_bill_read_attachment(
     if not cfg.bill_drop_prefill_enabled:
         return _result_shell("disabled")
 
+    # U-701c: Claude capped -> the header and the V2 coding ladder fall back to Foundry
+    # (flag default OFF; `is True` so a mocked Settings stays OFF).
+    foundry_on_cap = False
     if await claude_budget.is_claude_day_stopped_async():
-        return _result_shell("ai_unavailable", message=MSG_AI_PAUSED)
+        if not (
+            getattr(cfg, "bill_coding_foundry_on_claude_cap_enabled", False) is True
+            and foundry_is_configured()
+        ):
+            return _result_shell("ai_unavailable", message=MSG_AI_PAUSED)
+        foundry_on_cap = True
+        logger.info("bill_read_attachment.claude_capped_foundry_fallback")
+    # Passed only when on, so the flag-off calls are exactly today's.
+    cap_fallback_kwargs: dict[str, Any] = (
+        {"fallback_on_daily_cap": True} if foundry_on_cap else {}
+    )
 
     request_start = time.monotonic()
     timing_ms: dict[str, int] = {}
@@ -762,6 +776,7 @@ async def run_bill_read_attachment(
             header_cascade = await run_bill_header_extraction(
                 {"bill_text": masked_text},
                 transport_for=transport_for,
+                **cap_fallback_kwargs,
             )
         except Exception as error:
             logger.warning(
@@ -774,7 +789,15 @@ async def run_bill_read_attachment(
             )
         timing_ms["header_llm"] = int((time.monotonic() - step) * 1000)
 
-        if header_cascade.stopped_reason == "daily_cap":
+        # With the opt-in, a validated Foundry answer (U-701c) is used even below the
+        # bar; with it off this is exactly today's exit.
+        if header_cascade.stopped_reason == "daily_cap" and not (
+            foundry_on_cap
+            and any(
+                attempt.validated and attempt.rung.fallback_only
+                for attempt in header_cascade.attempts
+            )
+        ):
             return await _finish(
                 _result_shell("ai_unavailable", message=MSG_AI_PAUSED),
                 attachment_id=attachment_id_for_log,
@@ -848,6 +871,7 @@ async def run_bill_read_attachment(
                     settings=cfg,
                     catalog=catalog,
                     history_suggestion=history_suggestion,
+                    **cap_fallback_kwargs,
                 )
 
             coding_budget = (

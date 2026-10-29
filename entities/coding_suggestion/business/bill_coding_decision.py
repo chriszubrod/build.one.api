@@ -52,6 +52,7 @@ from intelligence.cascade.core import (
     CascadeResult,
     Rung,
     _attempt_error_code,
+    is_skipped_error,
     run_cascade,
 )
 from intelligence.cascade.ladder_config import (
@@ -194,7 +195,7 @@ def rung_error_code(error: Optional[str]) -> Optional[str]:
     """Short, provider-text-free code for the *Error columns."""
     if not error:
         return None
-    if error.startswith("skipped:"):
+    if is_skipped_error(error):
         return "skipped"
     if error == "no parseable result":
         return "unparseable"
@@ -560,7 +561,11 @@ async def _default_run_cascade(
     payload: dict[str, Any],
     ladder: tuple[Rung, ...],
     transport_for: Optional[Callable[[str], Any]],
+    *,
+    fallback_on_daily_cap: bool = False,
 ) -> CascadeResult:
+    """fallback_on_daily_cap (U-701c): the Foundry fallback rungs still run when
+    Claude's daily cap stopped a rung."""
     def validate(result: dict[str, Any]) -> tuple[bool, str]:
         return validate_bill_coding_result(result, payload=payload)
 
@@ -569,6 +574,7 @@ async def _default_run_cascade(
         validate=validate,
         ladder=ladder,
         threshold=BILL_CODING_THRESHOLD,
+        fallback_on_daily_cap=fallback_on_daily_cap,
     )
     return await run_cascade(task, payload, transport_for=transport_for)
 

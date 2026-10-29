@@ -17,6 +17,8 @@ is set (prod App Service).
 | Outbox row lifecycle | `intelligence.outbox`, `integrations.intuit.qbo.outbox`, `integrations.ms.outbox`, `integrations.box.outbox` | Enqueue, claim, send, and dead-letter for each outbox row |
 | Reconciliation runs | `integrations.intuit.qbo.reconciliation` | `qbo.reconcile.run.started` and `qbo.reconcile.run.completed` |
 | QBO sync pull and scheduler | `shared.scheduler` | `qbo.sync.pull.started` and `qbo.sync.pull.completed`, plus scheduler lifecycle |
+| Time-tracking write audit | `shared.api.request_log` | One line per POST/PUT/PATCH/DELETE on the time APIs (U-663) |
+| Coding-suggestion outcomes | `entities.coding_suggestion` | `bill_text_coding_suggestion ... candidate_scc_count=... candidate_scc_narrowed=...` (U-676r) the similar-bills shadow lines, and the expense coding-suggestion batch-cap line; ids and counts only (U-693) |
 
 ## What is deliberately not exported
 
@@ -34,9 +36,10 @@ Library and request INFO is also not exported, because the root stays at WARNING
 
 1. Add the logger name to `EXPORTED_INFO_LOGGERS` in `shared/observability.py`, under
    the group that describes what it emits. A package name covers every module below it.
-2. Add the name to `BUSINESS_LOGGER_NAMES` in `tests/test_u650_observability.py`. The
-   exact-set test pins the registry to the cascade and business names, so it fails until
-   both lists agree. The client-exclusion test runs on every registry name without changes.
+2. Add the name to the exact-set test in `tests/test_u650_observability.py`
+   (`test_registry_is_exactly_the_cascade_and_business_loggers`): either in
+   `BUSINESS_LOGGER_NAMES` or as its own commented entry, as U-663 and U-693 did. The test
+   fails until both lists agree. The client-exclusion test runs on every registry name without changes.
 3. Run `./.venv/bin/python -m pytest -o addopts= -p no:cacheprovider tests/test_u650_observability.py`.
 4. Size it before you rely on it (see below).
 
@@ -56,6 +59,16 @@ Events without an `event_name` group under an empty `event`. Those are plain
 human-readable INFO lines from the exported loggers.
 
 ## Verification
+
+Always pass `--offset` to `az monitor app-insights query`. Without it the CLI searches
+only the last hour, whatever `ago(...)` the query says, which once made INFO look missing
+(U-693):
+
+```bash
+az monitor app-insights query --app buildone --resource-group buildone_group --offset 1d \
+  --analytics-query "traces | where timestamp > ago(1d) and message startswith 'bill_text_coding_suggestion' | count" \
+  --query "tables[0].rows" -o tsv
+```
 
 After a deploy that changes the registry, run the sizing query. A newly added
 logger's events should appear within a few minutes. If they do not, check that

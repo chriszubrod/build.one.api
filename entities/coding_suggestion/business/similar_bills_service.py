@@ -54,6 +54,7 @@ def log_similar_bills_shadow_none(
     attachment_id: Optional[int] = None,
     **fields: object,
 ) -> None:
+    # Exported to App Insights at INFO (U-693): pass ids, counts and timings only, never text.
     parts = [f"similar_bills.shadow_none reason={reason}"]
     if attachment_id is not None:
         parts.append(f"attachment_id={attachment_id}")

@@ -164,6 +164,7 @@ def test_registry_is_exactly_the_cascade_and_business_loggers():
             "intelligence.transport.cascade",
             *BUSINESS_LOGGER_NAMES,
             "shared.api.request_log",  # U-663 time-tracking write audit line
+            "entities.coding_suggestion",  # U-693 coding-suggestion outcome lines
         )
     )
 

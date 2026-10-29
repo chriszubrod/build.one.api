@@ -48,6 +48,8 @@ EXPORTED_INFO_LOGGERS: tuple[str, ...] = (
     "shared.scheduler",
     # Time-tracking write audit line (one INFO row per POST/PUT/PATCH/DELETE on time APIs).
     "shared.api.request_log",
+    # Coding-suggestion outcomes (U-676r candidate counts, similar-bills shadow), U-693.
+    "entities.coding_suggestion",
 )
 
 _PYPDF_WARNING_MODULE = r"pypdf(\..*)?"

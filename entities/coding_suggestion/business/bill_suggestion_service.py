@@ -549,7 +549,13 @@ def _apply_ladder_v2_presentation(
 ) -> None:
     decision_source = getattr(text_row, "decision_source", None)
     suggestion.decision_source = decision_source
-    if decision_source == "similar_vote":
+    # U-745: an M0 pick sits at the vote's rung and is presented the same way. (Lazy:
+    # bill_coding_decision imports this module.)
+    from entities.coding_suggestion.business.bill_coding_decision import (
+        NO_LLM_LAST_RUNG_SOURCES,
+    )
+
+    if decision_source in NO_LLM_LAST_RUNG_SOURCES:
         suggestion.source = SUGGESTION_SOURCE_SIMILAR_BILLS
         suggestion.reason = SIMILAR_BILLS_SUGGESTION_REASON
         return

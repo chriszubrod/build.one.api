@@ -10,6 +10,13 @@ any model call. Mode B (no project, U-676k "text project first"): the model runs
 its project P then keys history - strong history FOR P overrides the code; with no
 model project, strong vendor-wide history applies, as the drop path does.
 
+M0 (U-745): on every decision the U-698 M0 model (no LLM) scores the same filtered
+neighbour list the vote uses plus the vendor's strictly-earlier history; its pick and
+calibrated probability are stored beside the vote (shadow). It abstains whenever the
+filtered vote has no neighbours and never sets a project. With
+``BillCodingDeps.m0_rung_enabled`` (setting ``bill_coding_m0_rung_enabled``) it replaces
+the vote at the last rung (source "m0"); off = today's ladder. Any M0 failure -> no pick.
+
 Similar-bills scope: decide_bill_coding does the neighbour lookup itself from
 ``inputs.scope`` (never from neighbours a caller hands in), so a caller cannot pass
 neighbours gathered under a wider scope. The lookup is best-effort: no service, no
@@ -19,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import inspect
 import logging
 from dataclasses import dataclass
 from decimal import Decimal
@@ -28,11 +36,22 @@ from entities.coding_suggestion.business.bill_suggestion_service import (
     BillSuggestion,
     history_blocks_text_tier,
 )
+from entities.coding_suggestion.business.decision_model.features import QueryBill
+from entities.coding_suggestion.business.decision_model.serve import (
+    M0_READ_BOUND_SECONDS,
+    M0Model,
+    M0Priors,
+    catalog_choosable,
+    get_m0_model,
+    m0_pick,
+    neighbour_evidence,
+)
 from entities.coding_suggestion.business.similar_bills import (
     Neighbour,
     VisibilityFilter,
     apply_similar_evidence,
-    filtered_vote,
+    choosable_scc_numbers,
+    vote_over_filtered,
 )
 from intelligence.cascade.bill_coding import (
     BILL_CODING_SUGGESTION_TASK_V2,
@@ -64,8 +83,10 @@ from intelligence.cascade.ladder_config import (
 logger = logging.getLogger(__name__)
 
 DecisionSource = Literal[
-    "history", "primary", "escalate", "fallback", "similar_vote", "none", "reused_intake"
+    "history", "primary", "escalate", "fallback", "similar_vote", "m0", "none", "reused_intake"
 ]
+# The no-LLM last rung (the filtered vote, or M0 in its place): presented alike.
+NO_LLM_LAST_RUNG_SOURCES: frozenset[str] = frozenset({"similar_vote", "m0"})
 CodingMode = Literal["A", "B"]
 DecisionStage = Literal["drop", "tick_full", "tick_escalate"]
 DropEscalation = Literal["low_confidence", "claude_unavailable"]
@@ -129,6 +150,9 @@ class BillCodingDecision:
     stopped_reason: Optional[str]
     cascades: tuple[CascadeResult, ...]
     history: Optional[BillSuggestion]
+    # U-745 M0 shadow: always computed beside the vote (None = M0 abstained / failed).
+    m0_scc_id: Optional[int] = None
+    m0_confidence: Optional[Decimal] = None
 
 
 @dataclass(frozen=True)
@@ -163,6 +187,13 @@ class BillCodingDeps:
         ]
     ] = None
     transport_for: Optional[Callable[[str], Any]] = None
+    # U-745 M0: its DB inputs - a decision_model.serve.M0Priors, or an awaitable (task)
+    # still running beside the cascade, used only at choose_final (drop: only if already
+    # done; tick: waited up to M0_WAIT_TICK_SECONDS); None = no M0 pick - an optional model override (None = the
+    # shipped model) and the rung switch.
+    m0_priors: Optional[Any] = None
+    m0_model: Optional[Any] = None
+    m0_rung_enabled: bool = False
 
 
 _RUNG_FIELDS = {
@@ -408,6 +439,9 @@ def choose_final(
     similar_vote_confidence: Optional[Decimal],
     history_for_project: Optional[Callable[[int], Optional[BillSuggestion]]] = None,
     project_accessible: Callable[[int], bool] = _allow_all_projects,
+    m0_scc_id: Optional[int] = None,
+    m0_confidence: Optional[Decimal] = None,
+    m0_rung_enabled: bool = False,
 ) -> FinalPick:
     """Final (source, scc, project, confidence, model). Never weak history.
 
@@ -419,6 +453,8 @@ def choose_final(
     With no (accessible) P: strong vendor-wide ``history`` with its project access-checked,
     else the model's code with no project. Past V1, the filtered vote then blank (owner
     rule 2026-10-28); the vote never sets a project.
+    U-745: with ``m0_rung_enabled`` and an M0 pick, M0 takes the vote's place at that
+    last rung (source "m0", no project); M0 silent -> the vote as before.
     """
     pick = _model_pick(primary, escalate, fallback)
     if mode == "A":
@@ -460,6 +496,8 @@ def choose_final(
         elif answer_pick is not None and answer_pick[1].sub_cost_code_id is not None:
             src, ans = answer_pick
             return src, ans.sub_cost_code_id, None, ans.confidence, ans.model
+    if m0_rung_enabled and m0_scc_id is not None:
+        return "m0", m0_scc_id, None, m0_confidence, None
     if similar_vote_scc_id is not None:
         return "similar_vote", similar_vote_scc_id, None, similar_vote_confidence, None
     return "none", None, None, None, None
@@ -494,21 +532,34 @@ def _ladder_for_stage(stage: DecisionStage) -> tuple[Rung, ...]:
     return base
 
 
+def neighbour_lookup_possible(
+    *,
+    query_token_hashes: frozenset[int],
+    amount: Optional[Decimal],
+    company_id: Optional[int],
+    accessible_project_ids: Optional[frozenset[int]],
+) -> bool:
+    """Whether a similar-bills lookup can return anything. No token hashes, no company or
+    an empty accessible set -> no neighbours. SimilarBillsService has no band-less mode:
+    an unknown amount scores every prior 0 (as U-701a's shadow, which returns nothing on
+    "no_amount"), so no amount -> no lookup. No neighbours also means M0 abstains."""
+    if not query_token_hashes or amount is None or company_id is None:
+        return False
+    return accessible_project_ids is None or bool(accessible_project_ids)
+
+
 def scoped_neighbours(
     inputs: BillCodingInputs,
     similar_service: Optional[Any],
 ) -> list[Neighbour]:
     """Neighbours visible to inputs.scope; best-effort (never raises)."""
     scope = inputs.scope
-    if similar_service is None or not inputs.query_token_hashes:
-        return []
-    # SimilarBillsService has no band-less mode: an unknown amount scores every prior 0
-    # (as U-701a's shadow, which returns nothing on "no_amount"), so skip the lookup.
-    if inputs.amount is None:
-        return []
-    if scope.company_id is None:
-        return []
-    if scope.accessible_project_ids is not None and not scope.accessible_project_ids:
+    if similar_service is None or not neighbour_lookup_possible(
+        query_token_hashes=inputs.query_token_hashes,
+        amount=inputs.amount,
+        company_id=scope.company_id,
+        accessible_project_ids=scope.accessible_project_ids,
+    ):
         return []
     try:
         return list(
@@ -530,6 +581,90 @@ def scoped_neighbours(
             type(error).__name__,
         )
         return []
+
+
+# U-745: how long the TICK waits, after its cascade, for M0's reads to land (the read
+# bound). The drop never waits: it serves a live request under read_attachment_service's
+# coding deadline, so it uses M0 only when the reads already finished; a late read still
+# finishes and warms the cache.
+M0_WAIT_TICK_SECONDS = M0_READ_BOUND_SECONDS
+
+
+async def _await_m0_priors(source: Any, *, stage: DecisionStage) -> Optional[Any]:
+    """M0Priors from ``source`` (a value, or a task still running beside the cascade);
+    None when absent. Never raises; never cancels the read.
+
+    Drop: no wait - the task's result only if it is already done (a read that has not
+    landed is simply absent, logged at DEBUG). Tick: a shielded wait of at most
+    M0_WAIT_TICK_SECONDS. A read that failed or was cancelled -> None with a WARNING."""
+    if source is None or not inspect.isawaitable(source):
+        return source
+    if stage == "drop":
+        if not isinstance(source, asyncio.Future) or not source.done():
+            logger.debug("bill_coding_decision.m0_not_ready stage=drop")
+            return None
+        try:
+            # A DONE future: result() re-raises its stored exception (CancelledError
+            # included) - never the current task's cancellation.
+            return source.result()
+        except BaseException as error:
+            logger.warning("bill_coding_decision.m0_not_ready err=%s", type(error).__name__)
+            return None
+    try:
+        return await asyncio.wait_for(asyncio.shield(source), timeout=M0_WAIT_TICK_SECONDS)
+    except Exception as error:
+        logger.warning("bill_coding_decision.m0_not_ready err=%s", type(error).__name__)
+        return None
+
+
+def m0_shadow_pick(
+    inputs: BillCodingInputs,
+    *,
+    catalog: BillCodingCatalog,
+    priors: Optional[M0Priors],
+    model: Optional[M0Model],
+    vote_neighbours: Sequence[Neighbour],
+    choosable_nums: frozenset[str],
+) -> tuple[Optional[int], Optional[Decimal]]:
+    """M0's (code, calibrated confidence) over the filtered vote's neighbours, or
+    (None, None). Abstains when the vote has no neighbours (owner rule: never prefill
+    from weak history alone). ``model`` None = the shipped model. Never raises: a
+    missing/mismatched model, absent priors, a leakage guard or any error -> no pick (a
+    WARNING with the exception type only)."""
+    if priors is None or not vote_neighbours:
+        return None, None
+    try:
+        model = model if model is not None else get_m0_model()
+        if model is None:
+            return None, None
+        hashes = inputs.query_token_hashes
+        query = QueryBill(
+            bill_id=int(inputs.exclude_bill_id) if inputs.exclude_bill_id is not None else -1,
+            vendor_id=int(inputs.vendor_id),
+            created=inputs.as_of,
+            amount=float(abs(inputs.amount)) if inputs.amount is not None else 0.0,
+            project_id=inputs.chosen_project_id,
+            has_text=bool(hashes),
+            pdf_token_count=len(hashes),
+        )
+        pick = m0_pick(
+            model,
+            priors,
+            query,
+            mode="A" if inputs.chosen_project_id is not None else "B",
+            neighbours=neighbour_evidence(vote_neighbours),
+            choosable=catalog_choosable(
+                choosable_nums=choosable_nums,
+                scc_by_id=catalog.scc_by_id,
+                ambiguous_numbers=catalog.ambiguous_scc_numbers,
+            ),
+        )
+    except Exception as error:
+        logger.warning("bill_coding_decision.m0_failed err=%s", type(error).__name__)
+        return None, None
+    if pick is None:
+        return None, None
+    return pick.scc_id, pick.confidence
 
 
 def build_v2_payload(
@@ -587,23 +722,44 @@ async def decide_bill_coding(
     cat = deps.catalog
 
     neighbours = scoped_neighbours(inputs, deps.similar_service)
+    choosable_nums = choosable_scc_numbers(cat.as_of_catalog)
     merged, _added, similar_block, filtered, _drops = apply_similar_evidence(
         neighbours[:SIMILAR_BILLS_TOP_K],
         list(deps.candidate_sccs),
         as_of_catalog=cat.as_of_catalog,
         scc_by_id=cat.scc_by_id,
         ambiguous_numbers=cat.ambiguous_scc_numbers,
+        choosable_nums=choosable_nums,
     )
-    vote_scc, vote_conf = filtered_vote(
+    # Filtered ONCE (all neighbours, not the model's top SIMILAR_BILLS_TOP_K): the vote
+    # and M0 read the same list.
+    _m, _a, _b, vote_neighbours, _d = apply_similar_evidence(
         neighbours,
+        [],
         as_of_catalog=cat.as_of_catalog,
         scc_by_id=cat.scc_by_id,
         ambiguous_numbers=cat.ambiguous_scc_numbers,
+        choosable_nums=choosable_nums,
     )
+    vote_scc, vote_conf = vote_over_filtered(vote_neighbours)
+    # M0 is needed only at choose_final: its reads (deps.m0_priors may be a still-running
+    # task) are consulted AFTER the cascade / history short-circuit (drop: never waits).
+    async def _resolve_m0() -> tuple[Optional[int], Optional[Decimal]]:
+        priors = await _await_m0_priors(deps.m0_priors, stage=inputs.stage)
+        return m0_shadow_pick(
+            inputs,
+            catalog=cat,
+            priors=priors,
+            model=deps.m0_model,
+            vote_neighbours=vote_neighbours,
+            choosable_nums=choosable_nums,
+        )
 
     def _decision(
         pick: FinalPick,
         *,
+        m0_scc: Optional[int],
+        m0_conf: Optional[Decimal],
         primary: Optional[RungAnswer],
         escalate: Optional[RungAnswer],
         fallback: Optional[RungAnswer],
@@ -628,6 +784,8 @@ async def decide_bill_coding(
             stopped_reason=cascade.stopped_reason if cascade else None,
             cascades=(cascade,) if cascade else (),
             history=deps.history_suggestion,
+            m0_scc_id=m0_scc,
+            m0_confidence=m0_conf,
         )
 
     # Mode A history-first short-circuit: no model call.
@@ -636,6 +794,7 @@ async def decide_bill_coding(
         and inputs.stage != "tick_escalate"
         and history_is_strong(deps.history_suggestion)
     ):
+        m0_scc, m0_conf = await _resolve_m0()
         pick = choose_final(
             mode=mode,
             history=deps.history_suggestion,
@@ -644,9 +803,19 @@ async def decide_bill_coding(
             fallback=None,
             similar_vote_scc_id=vote_scc,
             similar_vote_confidence=vote_conf,
+            m0_scc_id=m0_scc,
+            m0_confidence=m0_conf,
+            m0_rung_enabled=deps.m0_rung_enabled,
         )
         return _decision(
-            pick, primary=None, escalate=None, fallback=None, escalation=None, cascade=None
+            pick,
+            m0_scc=m0_scc,
+            m0_conf=m0_conf,
+            primary=None,
+            escalate=None,
+            fallback=None,
+            escalation=None,
+            cascade=None,
         )
 
     payload = build_v2_payload(
@@ -680,6 +849,7 @@ async def decide_bill_coding(
         def history_for_project(_project_id: int) -> Optional[BillSuggestion]:
             return history_p
 
+    m0_scc, m0_conf = await _resolve_m0()
     pick = choose_final(
         mode=mode,
         history=None if escalate_only and mode == "A" else deps.history_suggestion,
@@ -690,6 +860,9 @@ async def decide_bill_coding(
         similar_vote_confidence=vote_conf,
         history_for_project=history_for_project,
         project_accessible=project_accessible,
+        m0_scc_id=m0_scc,
+        m0_confidence=m0_conf,
+        m0_rung_enabled=deps.m0_rung_enabled,
     )
 
     escalation: Optional[DropEscalation] = None
@@ -698,6 +871,8 @@ async def decide_bill_coding(
 
     return _decision(
         pick,
+        m0_scc=m0_scc,
+        m0_conf=m0_conf,
         primary=primary,
         escalate=escalate,
         fallback=fallback,

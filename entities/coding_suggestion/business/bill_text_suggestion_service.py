@@ -21,9 +21,11 @@ from entities.coding_suggestion.business.bill_coding_decision import (
     BillCodingDeps,
     BillCodingInputs,
     RungAnswer,
+    NO_LLM_LAST_RUNG_SOURCES,
     SimilarScope,
     _default_run_cascade,
     decide_bill_coding,
+    neighbour_lookup_possible,
     rung_columns,
 )
 from entities.coding_suggestion.business.bill_suggestion_service import (
@@ -34,7 +36,13 @@ from entities.coding_suggestion.business.bill_suggestion_service import (
 )
 from entities.coding_suggestion.business.bill_text_token_hash import (
     bill_text_token_hash_key,
+    current_tokenizer_version,
     token_hashes_from_text_int,
+)
+from entities.coding_suggestion.business.decision_model.serve import (
+    LABEL_COUNTS,
+    M0_READ_BOUND_SECONDS,
+    M0Priors,
 )
 from entities.coding_suggestion.business.similar_bills import bill_text_from_extraction_blob
 from entities.coding_suggestion.business.similar_bills_service import SimilarBillsService
@@ -42,6 +50,9 @@ from entities.coding_suggestion.persistence.bill_text_suggestion_repo import (
     BillCodingActor,
     BillTextCodingClaim,
     BillTextCodingSuggestionRepository,
+)
+from entities.coding_suggestion.persistence.decision_model_priors_repo import (
+    DecisionModelPriorsRepository,
 )
 from intelligence.cascade import claude_budget
 from intelligence.cascade.core import CascadeResult, attempt_was_skipped
@@ -313,6 +324,8 @@ def _decision_complete_kwargs(
         "SimilarVoteSubCostCodeId": decision.similar_vote_scc_id,
         "SimilarVoteConfidence": decision.similar_vote_confidence,
         "SimilarNeighbourCount": decision.similar_neighbour_count,
+        "M0SubCostCodeId": decision.m0_scc_id,
+        "M0Confidence": decision.m0_confidence,
         "PrimaryFromIntake": 1 if primary_from_intake else None,
         "CostUsd": cost_usd,
     }
@@ -346,6 +359,53 @@ def _similar_service_for(company_id: Optional[int], settings: config.Settings) -
         return None
 
 
+# U-745: bound on the two M0 reads (serve.M0_READ_BOUND_SECONDS).
+M0_READ_TIMEOUT_SECONDS = M0_READ_BOUND_SECONDS
+
+
+def m0_rung_enabled(settings: Any) -> bool:
+    return getattr(settings, "bill_coding_m0_rung_enabled", False) is True
+
+
+async def _read_m0_priors(
+    m0_repository: DecisionModelPriorsRepository,
+    *,
+    company_id: int,
+    vendor_id: int,
+    as_of: datetime,
+    exclude_bill_id: Optional[int],
+    settings: config.Settings,
+) -> Optional[M0Priors]:
+    """M0's DB inputs, best-effort: None on ANY error or timeout (a WARNING with the
+    exception type only). The company-wide label counts come from the in-process ~1h
+    cache. Started only when a neighbour lookup is possible (else M0 abstains anyway)."""
+    try:
+        version = current_tokenizer_version(settings)
+        priors, counts = await asyncio.wait_for(
+            asyncio.gather(
+                asyncio.to_thread(
+                    m0_repository.read_vendor_prior_bills,
+                    company_id=int(company_id),
+                    vendor_id=int(vendor_id),
+                    as_of=as_of,
+                    exclude_bill_id=exclude_bill_id,
+                    tokenizer_version=version,
+                ),
+                asyncio.to_thread(
+                    LABEL_COUNTS.get, int(company_id), m0_repository.read_label_counts
+                ),
+            ),
+            timeout=M0_READ_TIMEOUT_SECONDS,
+        )
+        return M0Priors(vendor_priors=tuple(priors), label_counts=counts)
+    except Exception as error:
+        logger.warning(
+            "bill_coding_decision.m0_priors_failed err=%s",
+            type(error).__name__,
+        )
+        return None
+
+
 async def run_bill_coding_decision(
     *,
     stage: Literal["drop", "tick_full", "tick_escalate"],
@@ -368,6 +428,7 @@ async def run_bill_coding_decision(
     similar_service: Optional[Any] = None,
     history_suggestion: Optional[BillSuggestion] = None,
     fallback_on_daily_cap: bool = False,
+    m0_repository: Optional[DecisionModelPriorsRepository] = None,
 ) -> BillCodingDecision:
     """V2 ladder decision for the drop and the tick (U-701b3): the ONE place that builds
     the catalog, history, candidate SCCs and the scoped similar-bills service.
@@ -384,6 +445,11 @@ async def run_bill_coding_decision(
     fallback_on_daily_cap (U-701c): the Foundry fallback rungs run when Claude's daily
     cap is hit. It has no effect on "tick_escalate", whose ladder has no fallback rungs.
     An unknown stage raises ValueError.
+
+    U-745: M0's two reads (vendor priors + cached company label counts) start beside
+    these reads as a task the decision uses only at choose_final (drop: never waits -
+    only if already done; tick: <= 5 s; late = no M0 for this decision); ``bill_coding_m0_rung_enabled`` switches
+    the last rung from the vote to M0.
     """
     run_cascade = None
     if fallback_on_daily_cap:
@@ -406,6 +472,28 @@ async def run_bill_coding_decision(
     async def _given(value: Any) -> Any:
         return value
 
+    query_token_hashes = _query_token_hashes(bill_text, settings)
+
+    # M0's reads start now but are NOT awaited here: the decision consults them only at
+    # choose_final (after the cascade; the drop never waits), so a slow or cold read never
+    # delays the model call. No neighbour lookup possible -> M0 abstains: no task.
+    m0_priors_task: Optional[asyncio.Future] = None
+    if neighbour_lookup_possible(
+        query_token_hashes=query_token_hashes,
+        amount=amount,
+        company_id=company_id,
+        accessible_project_ids=accessible_project_ids,
+    ):
+        m0_priors_task = asyncio.ensure_future(
+            _read_m0_priors(
+                m0_repository or DecisionModelPriorsRepository(),
+                company_id=int(company_id),
+                vendor_id=vendor_id,
+                as_of=as_of,
+                exclude_bill_id=exclude_bill_id,
+                settings=settings,
+            )
+        )
     catalog, history_rows, narrowing_numbers, history_suggestion = await asyncio.gather(
         _given(catalog)
         if catalog is not None
@@ -451,7 +539,7 @@ async def run_bill_coding_decision(
         vendor_name=vendor_name or catalog.vendor_name,
         chosen_project_id=chosen_project_id,
         bill_text=bill_text,
-        query_token_hashes=_query_token_hashes(bill_text, settings),
+        query_token_hashes=query_token_hashes,
         amount=abs(amount) if amount is not None else None,
         as_of=as_of,
         exclude_bill_id=exclude_bill_id,
@@ -479,6 +567,8 @@ async def run_bill_coding_decision(
         history_for_project=_history,
         run_cascade=run_cascade,
         transport_for=transport_for,
+        m0_priors=m0_priors_task,
+        m0_rung_enabled=m0_rung_enabled(settings),
     )
     return await decide_bill_coding(inputs, deps)
 
@@ -517,6 +607,8 @@ def _intake_reuse_kwargs(intake: Any) -> dict[str, Any]:
             SimilarVoteSubCostCodeId=intake.similar_pred_sub_cost_code_id,
             SimilarVoteConfidence=intake.similar_confidence,
             SimilarNeighbourCount=intake.similar_neighbour_count,
+            M0SubCostCodeId=intake.m0_sub_cost_code_id,
+            M0Confidence=intake.m0_confidence,
         )
     return kwargs
 
@@ -809,7 +901,7 @@ def _drop_coded_without_claude(intake: Any, claim: BillTextCodingClaim) -> bool:
         intake is not None
         and intake.model_version == MODEL_VERSION_V2
         and intake.coding_escalation == "claude_unavailable"
-        and intake.coding_source in ("fallback", "similar_vote")
+        and intake.coding_source in ({"fallback"} | NO_LLM_LAST_RUNG_SOURCES)
         and _intake_reuse_checks_pass(
             intake,
             extracted_datetime=claim.extracted_datetime,

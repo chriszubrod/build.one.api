@@ -27,6 +27,8 @@ NEW_COLUMNS = (
     "TextDecisionSource", "TextStatus", "TextModelVersion", "TextSubCostCodeId", "TextProjectId",
     "TextEscalateModel", "TextEscalateSubCostCodeId", "TextEscalateProjectId",
     "TextEscalateConfidence", "TextEscalateError",
+    # U-745 (appended after the U-744 block).
+    "M0SubCostCodeId", "M0Confidence", "TextM0SubCostCodeId", "TextM0Confidence",
 )
 # The pre-U-744 column order, which must be unchanged (prefix of the new shape).
 OLD_COLUMNS = (

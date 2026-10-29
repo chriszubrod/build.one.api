@@ -35,6 +35,9 @@ class BillTextCodingSuggestionRow:
     escalate_sub_cost_code_id: Optional[int] = None
     escalate_confidence: Optional[Decimal] = None
     escalate_error: Optional[str] = None
+    # U-745 M0 shadow pick; None on rows written before it existed.
+    m0_sub_cost_code_id: Optional[int] = None
+    m0_confidence: Optional[Decimal] = None
 
 
 @dataclass(frozen=True)
@@ -193,6 +196,8 @@ class BillTextCodingSuggestionRepository:
                     escalate_sub_cost_code_id=_opt_int(row, "EscalateSubCostCodeId"),
                     escalate_confidence=_opt_decimal(row, "EscalateConfidence"),
                     escalate_error=_opt_str(row, "EscalateError"),
+                    m0_sub_cost_code_id=_opt_int(row, "M0SubCostCodeId"),
+                    m0_confidence=_opt_decimal(row, "M0Confidence"),
                 )
         except Exception as error:
             logger.error(

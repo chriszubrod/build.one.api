@@ -56,3 +56,6 @@ class BillIntakePrediction:
     fallback_sub_cost_code_id: Optional[int] = None
     fallback_confidence: Optional[Decimal] = None
     similar_neighbour_count: Optional[int] = None
+    # U-745: the M0 decision model's shadow pick (calibrated confidence) beside the vote.
+    m0_sub_cost_code_id: Optional[int] = None
+    m0_confidence: Optional[Decimal] = None

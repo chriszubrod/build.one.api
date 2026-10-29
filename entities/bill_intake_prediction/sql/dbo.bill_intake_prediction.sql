@@ -6,7 +6,7 @@
 -- Residual: UpsertBillIntakePrediction stamps ExtractedDatetime from the attachment row at upsert time; a
 --   concurrent re-extraction of the same attachment between that read and the MERGE is a known, accepted race.
 -- Depends (read-only): ReadBillIntakePredictionsForAccuracy (U-744) reads dbo.BillTextCodingSuggestion
---   (one row per BillId, UQ_BillTextCodingSuggestion_BillId) incl. its Escalate* columns: apply
+--   (one row per BillId, UQ_BillTextCodingSuggestion_BillId) incl. its Escalate* and M0* (U-745) columns: apply
 --   entities/coding_suggestion/sql/bill_text_coding_suggestion.sql before this file.
 -- Sprocs: BindBillIntakePredictionToBill, ReadBillIntakePredictionByAttachmentId, ReadBillIntakePredictionByBillId, ReadBillIntakePredictionsForAccuracy, RecordBillIntakePredictionFinal, UpdateBillIntakePredictionSimilarShadow, UpsertBillIntakePrediction
 --
@@ -166,6 +166,33 @@ BEGIN
         ALTER TABLE dbo.[BillIntakePrediction]
             ADD [SimilarNeighbourCount] TINYINT NULL;
     END
+
+    -- U-745: the M0 decision model's shadow pick, beside the filtered vote.
+    IF COL_LENGTH('dbo.BillIntakePrediction', 'M0SubCostCodeId') IS NULL
+    BEGIN
+        ALTER TABLE dbo.[BillIntakePrediction]
+            ADD [M0SubCostCodeId] BIGINT NULL;
+    END
+
+    IF COL_LENGTH('dbo.BillIntakePrediction', 'M0Confidence') IS NULL
+    BEGIN
+        ALTER TABLE dbo.[BillIntakePrediction]
+            ADD [M0Confidence] DECIMAL(5,4) NULL;
+    END
+END
+GO
+
+-- U-745: CodingSource gains 'm0'. Drop a pre-U-745 definition (no 'm0') so the block
+-- below re-adds the current one; a no-op once the current definition is in place.
+IF EXISTS (
+    SELECT 1 FROM sys.check_constraints
+    WHERE name = 'CK_BillIntakePrediction_CodingSource'
+      AND parent_object_id = OBJECT_ID('dbo.BillIntakePrediction')
+      AND [definition] NOT LIKE '%''m0''%'
+)
+BEGIN
+    ALTER TABLE dbo.[BillIntakePrediction]
+        DROP CONSTRAINT [CK_BillIntakePrediction_CodingSource];
 END
 GO
 
@@ -179,7 +206,7 @@ BEGIN
     ALTER TABLE dbo.[BillIntakePrediction]
         ADD CONSTRAINT [CK_BillIntakePrediction_CodingSource]
         CHECK ([CodingSource] IS NULL OR [CodingSource] IN (
-            'history', 'primary', 'fallback', 'similar_vote', 'none'
+            'history', 'primary', 'fallback', 'similar_vote', 'm0', 'none'
         ));
 END
 GO
@@ -248,7 +275,9 @@ CREATE OR ALTER PROCEDURE UpsertBillIntakePrediction
     @FallbackConfidence DECIMAL(5,4) = NULL,
     @SimilarPredSubCostCodeId BIGINT = NULL,
     @SimilarConfidence DECIMAL(5,4) = NULL,
-    @SimilarNeighbourCount TINYINT = NULL
+    @SimilarNeighbourCount TINYINT = NULL,
+    @M0SubCostCodeId BIGINT = NULL,
+    @M0Confidence DECIMAL(5,4) = NULL
 )
 AS
 BEGIN
@@ -318,7 +347,9 @@ BEGIN
             CAST(NULL AS NVARCHAR(100)) AS [FallbackModel],
             CAST(NULL AS BIGINT) AS [FallbackSubCostCodeId],
             CAST(NULL AS DECIMAL(5,4)) AS [FallbackConfidence],
-            CAST(NULL AS TINYINT) AS [SimilarNeighbourCount];
+            CAST(NULL AS TINYINT) AS [SimilarNeighbourCount],
+            CAST(NULL AS BIGINT) AS [M0SubCostCodeId],
+            CAST(NULL AS DECIMAL(5,4)) AS [M0Confidence];
         RETURN;
     END
 
@@ -374,7 +405,9 @@ BEGIN
             [FallbackConfidence] = @FallbackConfidence,
             [SimilarPredSubCostCodeId] = @SimilarPredSubCostCodeId,
             [SimilarConfidence] = @SimilarConfidence,
-            [SimilarNeighbourCount] = @SimilarNeighbourCount
+            [SimilarNeighbourCount] = @SimilarNeighbourCount,
+            [M0SubCostCodeId] = @M0SubCostCodeId,
+            [M0Confidence] = @M0Confidence
     WHEN NOT MATCHED THEN
         INSERT
             ([CreatedDatetime], [ModifiedDatetime], [CreatedByUserId], [AttachmentId],
@@ -387,7 +420,8 @@ BEGIN
              [CodingSource], [CodingEscalation], [PrimaryModel], [PrimarySubCostCodeId],
              [PrimaryProjectId], [PrimaryConfidence], [PrimaryError], [FallbackModel],
              [FallbackSubCostCodeId], [FallbackConfidence],
-             [SimilarPredSubCostCodeId], [SimilarConfidence], [SimilarNeighbourCount])
+             [SimilarPredSubCostCodeId], [SimilarConfidence], [SimilarNeighbourCount],
+             [M0SubCostCodeId], [M0Confidence])
         VALUES
             (@Now, @Now, COALESCE(@CreatedByUserId, 17), @AttachmentId,
              @LinkedBillId, @ExtractedDatetime, @IntakeSource, @ModelVersion, @Status,
@@ -399,7 +433,8 @@ BEGIN
              @CodingSource, @CodingEscalation, @PrimaryModel, @PrimarySubCostCodeId,
              @PrimaryProjectId, @PrimaryConfidence, @PrimaryError, @FallbackModel,
              @FallbackSubCostCodeId, @FallbackConfidence,
-             @SimilarPredSubCostCodeId, @SimilarConfidence, @SimilarNeighbourCount)
+             @SimilarPredSubCostCodeId, @SimilarConfidence, @SimilarNeighbourCount,
+             @M0SubCostCodeId, @M0Confidence)
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -452,7 +487,9 @@ BEGIN
         INSERTED.[FallbackModel],
         INSERTED.[FallbackSubCostCodeId],
         INSERTED.[FallbackConfidence],
-        INSERTED.[SimilarNeighbourCount];
+        INSERTED.[SimilarNeighbourCount],
+        INSERTED.[M0SubCostCodeId],
+        INSERTED.[M0Confidence];
 
     -- Re-bind after the MERGE (U-676p): a link that committed between the lookup above and
     -- the MERGE would otherwise leave BillId NULL for good (the create path's
@@ -676,7 +713,9 @@ BEGIN
         p.[FallbackModel],
         p.[FallbackSubCostCodeId],
         p.[FallbackConfidence],
-        p.[SimilarNeighbourCount]
+        p.[SimilarNeighbourCount],
+        p.[M0SubCostCodeId],
+        p.[M0Confidence]
     FROM dbo.[BillIntakePrediction] p
     WHERE p.[BillId] = @BillId
     ORDER BY p.[Id] DESC;
@@ -743,7 +782,9 @@ BEGIN
         p.[FallbackModel],
         p.[FallbackSubCostCodeId],
         p.[FallbackConfidence],
-        p.[SimilarNeighbourCount]
+        p.[SimilarNeighbourCount],
+        p.[M0SubCostCodeId],
+        p.[M0Confidence]
     FROM dbo.[BillIntakePrediction] p
     WHERE p.[AttachmentId] = @AttachmentId;
 END;
@@ -804,7 +845,12 @@ BEGIN
         t.[EscalateSubCostCodeId] AS [TextEscalateSubCostCodeId],
         t.[EscalateProjectId] AS [TextEscalateProjectId],
         t.[EscalateConfidence] AS [TextEscalateConfidence],
-        t.[EscalateError] AS [TextEscalateError]
+        t.[EscalateError] AS [TextEscalateError],
+        -- U-745 (additive, appended): the M0 shadow pick on both rows.
+        p.[M0SubCostCodeId],
+        p.[M0Confidence],
+        t.[M0SubCostCodeId] AS [TextM0SubCostCodeId],
+        t.[M0Confidence] AS [TextM0Confidence]
     FROM dbo.[BillIntakePrediction] p
     LEFT JOIN dbo.[Vendor] v ON v.[Id] = p.[FinalVendorId]
     -- The bill's background text-tier row. BillId is unique there today; TOP (1) by Id DESC
@@ -813,7 +859,7 @@ BEGIN
         SELECT TOP (1)
             s.[DecisionSource], s.[Status], s.[ModelVersion], s.[SubCostCodeId], s.[ProjectId],
             s.[EscalateModel], s.[EscalateSubCostCodeId], s.[EscalateProjectId], s.[EscalateConfidence],
-            s.[EscalateError]
+            s.[EscalateError], s.[M0SubCostCodeId], s.[M0Confidence]
         FROM dbo.[BillTextCodingSuggestion] s
         WHERE s.[BillId] = p.[BillId]
         ORDER BY s.[Id] DESC

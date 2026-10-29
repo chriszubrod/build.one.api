@@ -350,6 +350,16 @@ def filtered_vote(
         scc_by_id=scc_by_id,
         ambiguous_numbers=ambiguous_numbers,
     )
+    return vote_over_filtered(filtered, top_k=top_k)
+
+
+def vote_over_filtered(
+    filtered: Sequence[Neighbour],
+    *,
+    top_k: int = DEFAULT_TOP_K,
+) -> tuple[Optional[int], Optional[Decimal]]:
+    """The vote over neighbours ALREADY filtered by apply_similar_evidence (the second
+    half of filtered_vote, for callers that also need the filtered list)."""
     if not filtered:
         return None, None
     scored = [
@@ -357,6 +367,40 @@ def filtered_vote(
     ]
     vote = vote_from_scored_neighbours(scored, top_k)
     return vote.predicted_scc_id, vote.confidence
+
+
+def choosable_scc_numbers(as_of_catalog: Sequence[Mapping[str, str]]) -> frozenset[str]:
+    """Normalized numbers of the as-of catalog (build once per decision)."""
+    return frozenset(
+        normalize_scc_number(str(row["number"]))
+        for row in as_of_catalog
+        if row.get("number")
+    )
+
+
+def scc_drop_reason(
+    scc_id: int,
+    *,
+    choosable_nums: frozenset[str],
+    scc_by_id: Mapping[int, Any],
+    ambiguous_numbers: frozenset[str],
+) -> Optional[str]:
+    """Why a code is not choosable on the bill's as-of catalog (the drop counter key), or
+    None when it is: unknown / blank number / not in the catalog, ambiguous, Suspense.
+    THE rule for neighbour filtering (apply_similar_evidence) and M0's candidates."""
+    ref = scc_by_id.get(scc_id)
+    if ref is None:
+        return "neighbours_dropped_not_in_as_of_catalog"
+    num = normalize_scc_number(ref.number)
+    if not num:
+        return "neighbours_dropped_not_in_as_of_catalog"
+    if num in ambiguous_numbers:
+        return "neighbours_dropped_ambiguous"
+    if num == normalize_scc_number(SUSPENSE_SCC_NUMBER):
+        return "neighbours_dropped_suspense"
+    if num not in choosable_nums:
+        return "neighbours_dropped_not_in_as_of_catalog"
+    return None
 
 
 def top_neighbours_any_vendor(
@@ -441,6 +485,7 @@ def apply_similar_evidence(
     as_of_catalog: Sequence[Mapping[str, str]],
     scc_by_id: Mapping[int, Any],
     ambiguous_numbers: frozenset[str],
+    choosable_nums: Optional[frozenset[str]] = None,
 ) -> tuple[
     list[dict[str, str]],
     int,
@@ -451,13 +496,10 @@ def apply_similar_evidence(
     """
     Filter neighbours to SCCs choosable on the bill's as-of catalog; union into
     candidates; build the model-facing similar_bills block from the same list.
+    ``choosable_nums``: choosable_scc_numbers(as_of_catalog), when the caller built it.
     """
-    choosable_nums = {
-        normalize_scc_number(str(row["number"]))
-        for row in as_of_catalog
-        if row.get("number")
-    }
-    suspense_norm = normalize_scc_number(SUSPENSE_SCC_NUMBER)
+    if choosable_nums is None:
+        choosable_nums = choosable_scc_numbers(as_of_catalog)
     filtered: list[Neighbour] = []
     drops: dict[str, int] = {
         "neighbours_dropped_not_in_as_of_catalog": 0,
@@ -465,22 +507,14 @@ def apply_similar_evidence(
         "neighbours_dropped_ambiguous": 0,
     }
     for n in neighbours:
-        ref = scc_by_id.get(n.scc_id)
-        if ref is None:
-            drops["neighbours_dropped_not_in_as_of_catalog"] += 1
-            continue
-        num = normalize_scc_number(ref.number)
-        if not num:
-            drops["neighbours_dropped_not_in_as_of_catalog"] += 1
-            continue
-        if num in ambiguous_numbers:
-            drops["neighbours_dropped_ambiguous"] += 1
-            continue
-        if num == suspense_norm:
-            drops["neighbours_dropped_suspense"] += 1
-            continue
-        if num not in choosable_nums:
-            drops["neighbours_dropped_not_in_as_of_catalog"] += 1
+        reason = scc_drop_reason(
+            n.scc_id,
+            choosable_nums=choosable_nums,
+            scc_by_id=scc_by_id,
+            ambiguous_numbers=ambiguous_numbers,
+        )
+        if reason is not None:
+            drops[reason] += 1
             continue
         filtered.append(n)
 

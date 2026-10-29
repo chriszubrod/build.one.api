@@ -39,7 +39,10 @@ HISTORY_RUNG_NOTE = (
     "History's pick is only stored when history won (CodingSource = 'history'); when it "
     "lost it is not persisted, so history is scored on its own wins only. "
     "similar_vote_legacy (pre-V2 rows) is likewise conditional on the vote answering; on "
-    "V2 rows the vote runs on every decision, so a missing vote is an abstain."
+    "V2 rows the vote runs on every decision, so a missing vote is an abstain. "
+    "m0 (U-745) is the M0 decision model's shadow pick, stored on every V2 decision; a "
+    "missing pick is an abstain (M0 abstains when the vote has no neighbours, and V2 rows "
+    "written before U-745 carry no pick)."
 )
 
 LADDER_V2 = "u701b-text-v2"
@@ -83,6 +86,7 @@ _DB_COLUMNS: tuple[tuple[str, str], ...] = (
     ("fallback_model", "FallbackModel"),
     ("fallback_sub_cost_code_id", "FallbackSubCostCodeId"),
     ("similar_pred_sub_cost_code_id", "SimilarPredSubCostCodeId"),
+    ("m0_sub_cost_code_id", "M0SubCostCodeId"),
     ("text_decision_source", "TextDecisionSource"),
     ("text_status", "TextStatus"),
     ("text_sub_cost_code_id", "TextSubCostCodeId"),
@@ -229,6 +233,7 @@ _RUNGS: tuple[tuple[str, Attempted, str, Optional[str], str], ...] = (
     ("fallback", _ran("fallback_model", "fallback_sub_cost_code_id"),
      "fallback_sub_cost_code_id", None, BASIS_EVERY_ROW),
     ("similar_vote", _is_v2, "similar_pred_sub_cost_code_id", None, BASIS_EVERY_V2_ROW),
+    ("m0", _is_v2, "m0_sub_cost_code_id", None, BASIS_EVERY_V2_ROW),
     ("similar_vote_legacy",
      lambda r: not _is_v2(r) and r.get("similar_pred_sub_cost_code_id") is not None,
      "similar_pred_sub_cost_code_id", None, BASIS_CONDITIONAL),

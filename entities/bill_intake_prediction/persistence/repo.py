@@ -120,6 +120,10 @@ class BillIntakePredictionRepository:
             similar_neighbour_count=int(row.SimilarNeighbourCount)
             if getattr(row, "SimilarNeighbourCount", None) is not None
             else None,
+            m0_sub_cost_code_id=int(row.M0SubCostCodeId)
+            if getattr(row, "M0SubCostCodeId", None) is not None
+            else None,
+            m0_confidence=to_decimal_or_none(getattr(row, "M0Confidence", None)),
         )
 
     def _run(

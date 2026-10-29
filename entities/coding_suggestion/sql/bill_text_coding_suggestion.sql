@@ -102,6 +102,35 @@ BEGIN
 END
 GO
 
+-- U-745: the M0 decision model's shadow pick, beside the filtered vote.
+IF COL_LENGTH('dbo.BillTextCodingSuggestion', 'M0SubCostCodeId') IS NULL
+BEGIN
+    ALTER TABLE dbo.[BillTextCodingSuggestion]
+        ADD [M0SubCostCodeId] BIGINT NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.BillTextCodingSuggestion', 'M0Confidence') IS NULL
+BEGIN
+    ALTER TABLE dbo.[BillTextCodingSuggestion]
+        ADD [M0Confidence] DECIMAL(5,4) NULL;
+END
+GO
+
+-- U-745: DecisionSource gains 'm0'. Drop a pre-U-745 definition (no 'm0') so the block
+-- below re-adds the current one; a no-op once the current definition is in place.
+IF EXISTS (
+    SELECT 1 FROM sys.check_constraints
+    WHERE name = 'CK_BillTextCodingSuggestion_DecisionSource'
+      AND parent_object_id = OBJECT_ID('dbo.BillTextCodingSuggestion')
+      AND [definition] NOT LIKE '%''m0''%'
+)
+BEGIN
+    ALTER TABLE dbo.[BillTextCodingSuggestion]
+        DROP CONSTRAINT [CK_BillTextCodingSuggestion_DecisionSource];
+END
+GO
+
 IF OBJECT_ID('dbo.BillTextCodingSuggestion', 'U') IS NOT NULL
    AND NOT EXISTS (
        SELECT 1 FROM sys.check_constraints
@@ -112,7 +141,7 @@ BEGIN
     ALTER TABLE dbo.[BillTextCodingSuggestion]
         ADD CONSTRAINT [CK_BillTextCodingSuggestion_DecisionSource]
         CHECK ([DecisionSource] IS NULL OR [DecisionSource] IN (
-            'history', 'primary', 'escalate', 'fallback', 'similar_vote', 'reused_intake', 'none'
+            'history', 'primary', 'escalate', 'fallback', 'similar_vote', 'm0', 'reused_intake', 'none'
         ));
 END
 GO
@@ -228,7 +257,9 @@ BEGIN
         bt.[SimilarVoteConfidence],
         bt.[SimilarNeighbourCount],
         bt.[PrimaryFromIntake],
-        bt.[CostUsd]
+        bt.[CostUsd],
+        bt.[M0SubCostCodeId],
+        bt.[M0Confidence]
     FROM dbo.[BillTextCodingSuggestion] bt
     WHERE bt.[BillId] = @BillId;
 END;
@@ -266,7 +297,9 @@ CREATE OR ALTER PROCEDURE CompleteBillTextCodingSuggestion
     @SimilarVoteConfidence DECIMAL(5,4) = NULL,
     @SimilarNeighbourCount TINYINT = NULL,
     @PrimaryFromIntake BIT = NULL,
-    @CostUsd DECIMAL(12,6) = NULL
+    @CostUsd DECIMAL(12,6) = NULL,
+    @M0SubCostCodeId BIGINT = NULL,
+    @M0Confidence DECIMAL(5,4) = NULL
 )
 AS
 BEGIN
@@ -320,7 +353,9 @@ BEGIN
             CAST(NULL AS DECIMAL(5,4)) AS [SimilarVoteConfidence],
             CAST(NULL AS TINYINT) AS [SimilarNeighbourCount],
             CAST(NULL AS BIT) AS [PrimaryFromIntake],
-            CAST(NULL AS DECIMAL(12,6)) AS [CostUsd]
+            CAST(NULL AS DECIMAL(12,6)) AS [CostUsd],
+            CAST(NULL AS BIGINT) AS [M0SubCostCodeId],
+            CAST(NULL AS DECIMAL(5,4)) AS [M0Confidence]
         WHERE 1 = 0;
         RETURN;
     END;
@@ -355,7 +390,9 @@ BEGIN
         [SimilarVoteConfidence] = @SimilarVoteConfidence,
         [SimilarNeighbourCount] = @SimilarNeighbourCount,
         [PrimaryFromIntake] = @PrimaryFromIntake,
-        [CostUsd] = @CostUsd
+        [CostUsd] = @CostUsd,
+        [M0SubCostCodeId] = @M0SubCostCodeId,
+        [M0Confidence] = @M0Confidence
     WHERE [Id] = @RowId;
 
     COMMIT TRANSACTION;
@@ -515,6 +552,8 @@ BEGIN
                     [SimilarNeighbourCount] = NULL,
                     [PrimaryFromIntake] = NULL,
                     [CostUsd] = NULL,
+                    [M0SubCostCodeId] = NULL,
+                    [M0Confidence] = NULL,
                     [ModifiedDatetime] = @Now
             WHEN NOT MATCHED THEN
                 INSERT (

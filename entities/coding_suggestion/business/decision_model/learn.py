@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 from bisect import bisect_left
 from dataclasses import dataclass, field
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 
 def _sigmoid(t: float) -> float:
@@ -349,6 +349,29 @@ def rank_candidates(
     if prob < abstain_below:
         return Decision(None, raw, prob, candidates[best], contrib)
     return Decision(candidates[best], raw, prob, runner, contrib)
+
+
+def score_candidates(
+    model: LogisticModel,
+    candidates: Sequence[int],
+    features: Callable[[int], Sequence[float]],
+    *,
+    calibrate=None,
+    contributions: bool = False,
+) -> tuple[Decision, list[float]]:
+    """THE M0 scorer (backtest ``score_row`` and live ``serve.m0_score``): per-candidate
+    features -> RAW probabilities -> ``rank_candidates`` (ranked on raw, ``prob``
+    calibrated). Returns (decision, raw probabilities in candidate order)."""
+    cands = list(candidates)
+    xs = [features(c) for c in cands]
+    probs = [model.prob(x) for x in xs]
+    decision = rank_candidates(
+        cands,
+        probs,
+        calibrate=calibrate,
+        contributions=[model.contributions(x) for x in xs] if contributions else None,
+    )
+    return decision, probs
 
 
 def top_contributions(contribs: Sequence[tuple[str, float]], *, k: int = 3) -> list[tuple[str, float]]:

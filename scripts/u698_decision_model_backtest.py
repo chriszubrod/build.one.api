@@ -70,6 +70,7 @@ from entities.coding_suggestion.business.decision_model.learn import (
     fit_calibrator,
     fit_logistic,
     rank_candidates,
+    score_candidates,
 )
 from entities.coding_suggestion.business.decision_model import stats as st
 from intelligence.cascade.bill_coding import SUSPENSE_SCC_NUMBER, normalize_scc_number
@@ -561,13 +562,11 @@ def fit_m0(rows: Sequence[Row], *, l2: float, cut: Optional[CutKey] = None) -> M
 
 def score_row(model: LogisticModel, calibrator: Any, r: Row) -> tuple[Decision, dict[int, float]]:
     """One pass over the candidates: the decision (ranked on RAW probability) and the raw map."""
-    cands = list(r.ctx.candidates)
-    xs = [m0_features(r.ctx, c) for c in cands]
-    probs = [model.prob(x) for x in xs]
-    d = rank_candidates(
-        cands, probs, calibrate=calibrator, contributions=[model.contributions(x) for x in xs]
+    d, probs = score_candidates(
+        model, r.ctx.candidates, lambda c: m0_features(r.ctx, c),
+        calibrate=calibrator, contributions=True,
     )
-    return d, dict(zip(cands, probs))
+    return d, dict(zip(r.ctx.candidates, probs))
 
 
 def score_rows(fit: M0Fit, rows: Iterable[Row], fold: str) -> list[Scored]:

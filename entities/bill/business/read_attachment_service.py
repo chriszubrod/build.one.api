@@ -514,9 +514,13 @@ def _suggestion_from_decision(
     """U-701b4: the drop's prefill from a ladder V2 decision (None = no coding).
 
     history -> the history suggestion (its own source values); primary/escalate/fallback ->
-    "llm"; similar_vote -> "similar_bills"; none -> no coding. No confidence floor: a
+    "llm"; similar_vote and m0 (U-745, the M0 model at the vote's rung) -> "similar_bills";
+    none -> no coding. No confidence floor: a
     low-confidence Haiku answer IS the prefill. A holding (Suspense) code is never returned.
     """
+    from entities.coding_suggestion.business.bill_coding_decision import (
+        NO_LLM_LAST_RUNG_SOURCES,
+    )
     from entities.coding_suggestion.business.bill_text_suggestion_service import (
         MODEL_VERSION_V2,
     )
@@ -537,7 +541,7 @@ def _suggestion_from_decision(
         reason = history_label.reason if history_label else HISTORY_FOR_PROJECT_REASON
     elif source in _LADDER_LLM_SOURCES:
         out_source, reason = "llm", TEXT_LLM_SUGGESTION_REASON
-    elif source == "similar_vote":
+    elif source in NO_LLM_LAST_RUNG_SOURCES:
         out_source, reason = SUGGESTION_SOURCE_SIMILAR_BILLS, SIMILAR_BILLS_SUGGESTION_REASON
     else:
         return None

@@ -162,7 +162,8 @@ def tick_decision_for_intake(
 
 def _intake_decision_params(decision: "BillCodingDecision") -> dict[str, Any]:
     """Per-rung intake columns from a V2 decision (U-701b3); the similar columns hold
-    the decision's FILTERED vote, never the raw one."""
+    the decision's FILTERED vote, never the raw one; the M0 columns (U-745) its M0
+    shadow pick."""
     from entities.coding_suggestion.business.bill_coding_decision import rung_columns
 
     return {
@@ -173,6 +174,8 @@ def _intake_decision_params(decision: "BillCodingDecision") -> dict[str, Any]:
         "SimilarPredSubCostCodeId": decision.similar_vote_scc_id,
         "SimilarConfidence": decision.similar_vote_confidence,
         "SimilarNeighbourCount": decision.similar_neighbour_count,
+        "M0SubCostCodeId": decision.m0_scc_id,
+        "M0Confidence": decision.m0_confidence,
     }
 
 

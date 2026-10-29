@@ -255,6 +255,10 @@ class Settings(BaseSettings):
     # full ladder fall back to the Foundry rungs (only when Foundry is configured).
     # Default off.
     bill_coding_foundry_on_claude_cap_enabled: bool = False
+    # U-745: the ladder V2's last rung uses the U-698 M0 decision model's pick (source
+    # "m0") instead of the filtered similar vote. M0 is computed and stored in shadow on
+    # every V2 decision either way. Default off (env BILL_CODING_M0_RUNG_ENABLED).
+    bill_coding_m0_rung_enabled: bool = False
 
     # Bill create drop-to-prefill synchronous read (U-676b). Default off.
     bill_drop_prefill_enabled: bool = False

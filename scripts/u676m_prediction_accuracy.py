@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only bill intake prediction accuracy report (U-676m).
+"""Read-only bill intake prediction accuracy report (U-676m) + live coding scorecard (U-744).
 
 Usage (requires DB credentials — not for CI):
   ./.venv/bin/python scripts/u676m_prediction_accuracy.py /path/to/report.md
@@ -16,6 +16,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from entities.bill_intake_prediction.business.accuracy import (
     aggregate_prediction_accuracy,
     format_accuracy_markdown,
+)
+from entities.bill_intake_prediction.business.coding_scorecard import (
+    build_coding_scorecard,
+    format_coding_scorecard_markdown,
+    scorecard_row_from_db,
 )
 from entities.bill_intake_prediction.persistence.repo import BillIntakePredictionRepository
 
@@ -46,9 +51,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     repo = BillIntakePredictionRepository()
-    rows = [_row_to_dict(r) for r in repo.read_for_accuracy()]
+    db_rows = repo.read_for_accuracy()
+    rows = [_row_to_dict(r) for r in db_rows]
     report = aggregate_prediction_accuracy(rows)
-    args.output.write_text(format_accuracy_markdown(report), encoding="utf-8")
+    scorecard = build_coding_scorecard([scorecard_row_from_db(r) for r in db_rows])
+    markdown = format_accuracy_markdown(report) + "\n" + format_coding_scorecard_markdown(scorecard)
+    args.output.write_text(markdown, encoding="utf-8")
     print(f"Wrote {len(rows)} rows to {args.output}")
     return 0
 

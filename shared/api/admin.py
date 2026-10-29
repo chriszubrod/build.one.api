@@ -5,7 +5,7 @@ import logging
 import os
 import time
 from contextlib import ExitStack
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Literal, Optional
 
@@ -540,6 +540,26 @@ async def llm_spend(
             "foundry_cap_usd": _money(cap) if cap is not None else None,
         }
     }
+
+
+def _bill_coding_scorecard_rows() -> list[dict]:
+    from entities.bill_intake_prediction.business.coding_scorecard import scorecard_row_from_db
+    from entities.bill_intake_prediction.persistence.repo import BillIntakePredictionRepository
+
+    return [scorecard_row_from_db(r) for r in BillIntakePredictionRepository().read_for_accuracy()]
+
+
+@router.get("/intelligence/bill-coding-scorecard")
+async def bill_coding_scorecard(
+    since: Optional[date] = Query(None, description="Only predictions created on/after this UTC date"),
+    current_user: dict = Depends(require_system_admin()),
+):
+    """U-744: live bill-coding scorecard over finalized intake predictions
+    (ids/counts/percentages only - no vendor names, bill numbers or text)."""
+    from entities.bill_intake_prediction.business.coding_scorecard import build_coding_scorecard
+
+    rows = await asyncio.to_thread(_bill_coding_scorecard_rows)
+    return {"data": build_coding_scorecard(rows, since=since)}
 
 
 # Entities whose sync function accepts a `sync_attachments` kwarg. Others pull

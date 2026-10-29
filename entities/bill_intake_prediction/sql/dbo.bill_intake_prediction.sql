@@ -5,6 +5,9 @@
 --   (IDENTITY keys are never reused). Keeps bill delete, attachment delete, and vendor merge from SQL 547.
 -- Residual: UpsertBillIntakePrediction stamps ExtractedDatetime from the attachment row at upsert time; a
 --   concurrent re-extraction of the same attachment between that read and the MERGE is a known, accepted race.
+-- Depends (read-only): ReadBillIntakePredictionsForAccuracy (U-744) reads dbo.BillTextCodingSuggestion
+--   (one row per BillId, UQ_BillTextCodingSuggestion_BillId) incl. its Escalate* columns: apply
+--   entities/coding_suggestion/sql/bill_text_coding_suggestion.sql before this file.
 -- Sprocs: BindBillIntakePredictionToBill, ReadBillIntakePredictionByAttachmentId, ReadBillIntakePredictionByBillId, ReadBillIntakePredictionsForAccuracy, RecordBillIntakePredictionFinal, UpdateBillIntakePredictionSimilarShadow, UpsertBillIntakePrediction
 --
 -- Run: ./.venv/bin/python scripts/run_sql.py entities/bill_intake_prediction/sql/dbo.bill_intake_prediction.sql
@@ -783,9 +786,38 @@ BEGIN
         p.[FallbackSubCostCodeId],
         p.[FallbackConfidence],
         p.[SimilarNeighbourCount],
-        v.[Name] AS [VendorName]
+        v.[Name] AS [VendorName],
+        -- U-744 (additive; appended so existing ordinal readers are unaffected). The scorecard
+        -- scores code-level rungs; CodingChosenProjectId, TextProjectId and
+        -- TextEscalateProjectId/Confidence are reserved for project-level rungs.
+        p.[ModelVersion],
+        p.[CodingMode],
+        p.[CodingChosenProjectId],
+        p.[FinalizedDatetime],
+        p.[CreatedDatetime],
+        t.[DecisionSource] AS [TextDecisionSource],
+        t.[Status] AS [TextStatus],
+        t.[ModelVersion] AS [TextModelVersion],
+        t.[SubCostCodeId] AS [TextSubCostCodeId],
+        t.[ProjectId] AS [TextProjectId],
+        t.[EscalateModel] AS [TextEscalateModel],
+        t.[EscalateSubCostCodeId] AS [TextEscalateSubCostCodeId],
+        t.[EscalateProjectId] AS [TextEscalateProjectId],
+        t.[EscalateConfidence] AS [TextEscalateConfidence],
+        t.[EscalateError] AS [TextEscalateError]
     FROM dbo.[BillIntakePrediction] p
     LEFT JOIN dbo.[Vendor] v ON v.[Id] = p.[FinalVendorId]
+    -- The bill's background text-tier row. BillId is unique there today; TOP (1) by Id DESC
+    -- keeps one row per prediction even if that index is ever relaxed.
+    OUTER APPLY (
+        SELECT TOP (1)
+            s.[DecisionSource], s.[Status], s.[ModelVersion], s.[SubCostCodeId], s.[ProjectId],
+            s.[EscalateModel], s.[EscalateSubCostCodeId], s.[EscalateProjectId], s.[EscalateConfidence],
+            s.[EscalateError]
+        FROM dbo.[BillTextCodingSuggestion] s
+        WHERE s.[BillId] = p.[BillId]
+        ORDER BY s.[Id] DESC
+    ) t
     WHERE p.[FinalizedDatetime] IS NOT NULL;
 END;
 GO

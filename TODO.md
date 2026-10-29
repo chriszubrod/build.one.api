@@ -197,6 +197,15 @@ Harness-only (`scripts/u654a_text_backtest.py`); none of these touch the app. Lo
 - **Extra bills must be finalized** (`IsDraft = 0`, the U-653b load filter); an in-review bill passed via `--extra-bill-ids` is silently skipped (`extra_bills_selected` shows it).
 - **Quality, deferred from Pass 2:** collapse the five combined/override predictors into one gate (`combined_scc(history, fallback, override_row=None)`), simplify `compute_history_override_metrics` closures and `_history_override_outcome_counts`, reuse `prepare_scored_rows` for extras, single-assign `needs_human`, CSV cell formatters, reuse `_int` in `load_prior_text_results`.
 
+## U-701c deferred — Foundry fallback when the Claude daily cap is hit (booked 2026-10-28; branch unit/u-701c, switch BILL_CODING_FOUNDRY_ON_CLAUDE_CAP_ENABLED off)
+
+- **Foundry spend is not metered or capped** (owner decision 2026-10-28: ship without a cap). Follow-up unit: write Foundry spend into `LlmDailySpend` with `provider="foundry"` (the repo interface already takes a provider) plus an alert. Exposure: about $0.002 per drop typical, $0.02 worst; a large list-drop batch on a capped day about $1-10.
+- **Under the cap, a bill Foundry/vote cannot code is finalized failed** (owner decision): it is not re-asked with Claude after the reset; a Foundry outage on a capped day can fail up to the 200/day count cap. Revisit if that happens.
+- **A cap reached mid-request still returns "paused"** - the drop decides the Foundry fallback only at entry.
+- **Reuse predicate breadth:** the tick reuses any capped-day drop coded by Foundry/vote even when Haiku failed for a reason other than the cap (same kind of answer either way); comment says "drop already coded by Foundry / the vote".
+- **Flag on, not capped:** the tick reads the intake before the eligibility check, one extra DB read for an ineligible bill.
+- **Expense receipt read** does not get the Foundry-on-cap fallback (out of scope by design).
+
 ## U-701b4 deferred — drop + read path on the shared coding decision (booked 2026-10-28; in build, flag off)
 
 - **"Pending" age is dated by the extraction, not the intake write.** `_intake_escalation_pending` (bill_suggestion_service.py) measures the 2 h cut-off from `intake.extracted_datetime` (= `Attachment.ExtractedDatetime`), but a reread / list-drop / drop of an attachment OCR'd > 2 h earlier reuses that extraction, so the editor never polls and Sonnet's code shows only on the next open. Expose `BillIntakePrediction.ModifiedDatetime` on the intake model and use it.

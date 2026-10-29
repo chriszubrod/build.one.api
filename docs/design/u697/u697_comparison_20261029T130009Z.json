@@ -1,0 +1,749 @@
+{
+  "calibration_selection": {
+    "H": {
+      "best_variant": "V_same_vendor",
+      "best_variant_mode_b": "V_same_vendor",
+      "metrics": {
+        "V_any_vendor": {
+          "bill": 0.33458929917106256,
+          "coverage_bill": 0.9962321024868124,
+          "coverage_dollar": 0.9982654778371141,
+          "covered_bill": 0.3358547655068079,
+          "covered_dollar": 0.2628689754325677,
+          "dollar": 0.2624130233687448
+        },
+        "V_any_vendor_same_project": {
+          "bill": 0.2931424265259985,
+          "coverage_bill": 0.9253956292388847,
+          "coverage_dollar": 0.9196942220857067,
+          "covered_bill": 0.31677524429967424,
+          "covered_dollar": 0.23203503896090266,
+          "dollar": 0.213401284653774
+        },
+        "V_other_vendor": {
+          "bill": 0.1039939713639789,
+          "coverage_bill": 0.9947249434815373,
+          "coverage_dollar": 0.9982567274899609,
+          "covered_bill": 0.10454545454545454,
+          "covered_dollar": 0.0543433288311222,
+          "dollar": 0.05424859359986689
+        },
+        "V_same_vendor": {
+          "bill": 0.45742275810097965,
+          "coverage_bill": 0.7814619442351168,
+          "coverage_dollar": 0.6590369729950727,
+          "covered_bill": 0.5853423336547734,
+          "covered_dollar": 0.6811929256731906,
+          "dollar": 0.44893132376131706
+        }
+      },
+      "warnings": []
+    },
+    "V": {
+      "best_variant": "V_same_vendor",
+      "best_variant_mode_b": "V_same_vendor",
+      "metrics": {
+        "V_any_vendor": {
+          "bill": 0.29691032403918616,
+          "coverage_bill": 0.9962321024868124,
+          "coverage_dollar": 0.9982654778371141,
+          "covered_bill": 0.2980332829046899,
+          "covered_dollar": 0.2594531920223003,
+          "dollar": 0.25900316471050616
+        },
+        "V_any_vendor_same_project": {
+          "bill": 0.2863602110022607,
+          "coverage_bill": 0.9253956292388847,
+          "coverage_dollar": 0.9196942220857067,
+          "covered_bill": 0.30944625407166126,
+          "covered_dollar": 0.2147131297186626,
+          "dollar": 0.19747042480819285
+        },
+        "V_other_vendor": {
+          "bill": 0.09419743782969103,
+          "coverage_bill": 0.9947249434815373,
+          "coverage_dollar": 0.9982567274899609,
+          "covered_bill": 0.0946969696969697,
+          "covered_dollar": 0.04908034406704638,
+          "dollar": 0.04899478365245104
+        },
+        "V_same_vendor": {
+          "bill": 0.45139412207987945,
+          "coverage_bill": 0.7814619442351168,
+          "coverage_dollar": 0.6590369729950727,
+          "covered_bill": 0.5776277724204436,
+          "covered_dollar": 0.6841951238858158,
+          "dollar": 0.45090988338369686
+        }
+      },
+      "warnings": []
+    },
+    "W": {
+      "best_variant": "V_any_vendor",
+      "best_variant_mode_b": "V_any_vendor",
+      "metrics": {
+        "V_any_vendor": {
+          "bill": 0.4740015071590053,
+          "coverage_bill": 0.9939713639788997,
+          "coverage_dollar": 0.9974436770313264,
+          "covered_bill": 0.47687642153146326,
+          "covered_dollar": 0.4615125080721444,
+          "dollar": 0.46033273304742944
+        },
+        "V_any_vendor_same_project": {
+          "bill": 0.4167294649585531,
+          "coverage_bill": 0.9238884702336096,
+          "coverage_dollar": 0.9188995344843649,
+          "covered_bill": 0.45106035889070145,
+          "covered_dollar": 0.3695882892572329,
+          "dollar": 0.33961450694934414
+        },
+        "V_other_vendor": {
+          "bill": 0.1386586284853052,
+          "coverage_bill": 0.9917106254709872,
+          "coverage_dollar": 0.9972809111835822,
+          "covered_bill": 0.1398176291793313,
+          "covered_dollar": 0.08817086984705944,
+          "dollar": 0.08793112542092446
+        },
+        "V_same_vendor": {
+          "bill": 0.45742275810097965,
+          "coverage_bill": 0.7776940467219292,
+          "coverage_dollar": 0.6577537061296349,
+          "covered_bill": 0.5881782945736435,
+          "covered_dollar": 0.6961422835831668,
+          "dollar": 0.45789016702037516
+        }
+      },
+      "warnings": []
+    }
+  },
+  "cold_start": {
+    "H": {
+      "history_abstain": {
+        "accuracy": {
+          "V_any_vendor": 0.22988505747126436,
+          "V_any_vendor_same_project": 0.19540229885057472,
+          "V_other_vendor": 0.20689655172413793,
+          "V_same_vendor": 0.2413793103448276
+        },
+        "n": 87,
+        "top1_any_vendor": 0.22988505747126436,
+        "top1_other_vendor": 0.20689655172413793
+      },
+      "no_earlier_same_vendor_pdf_bill": {
+        "any_vendor": {
+          "bill": 0.15,
+          "coverage_bill": 1.0,
+          "coverage_dollar": 1.0,
+          "covered_bill": 0.15,
+          "covered_dollar": 0.16359062864867946,
+          "dollar": 0.16359062864867946,
+          "n": 60
+        },
+        "n": 60,
+        "other_vendor": {
+          "bill": 0.15,
+          "coverage_bill": 1.0,
+          "coverage_dollar": 1.0,
+          "covered_bill": 0.15,
+          "covered_dollar": 0.16359062864867946,
+          "dollar": 0.16359062864867946,
+          "n": 60
+        }
+      },
+      "no_prior_bucket": {
+        "V_any_vendor": {
+          "bill": 0.20689655172413793,
+          "coverage_bill": 1.0,
+          "covered_bill": 0.20689655172413793,
+          "n": 29
+        },
+        "V_any_vendor_same_project": {
+          "bill": 0.1724137931034483,
+          "coverage_bill": 1.0,
+          "covered_bill": 0.1724137931034483,
+          "n": 29
+        },
+        "V_other_vendor": {
+          "bill": 0.20689655172413793,
+          "coverage_bill": 1.0,
+          "covered_bill": 0.20689655172413793,
+          "n": 29
+        },
+        "V_same_vendor": {
+          "bill": 0.0,
+          "coverage_bill": 0.0,
+          "covered_bill": null,
+          "n": 29
+        }
+      }
+    },
+    "V": {
+      "history_abstain": {
+        "accuracy": {
+          "V_any_vendor": 0.22988505747126436,
+          "V_any_vendor_same_project": 0.13793103448275862,
+          "V_other_vendor": 0.19540229885057472,
+          "V_same_vendor": 0.2413793103448276
+        },
+        "n": 87,
+        "top1_any_vendor": 0.22988505747126436,
+        "top1_other_vendor": 0.19540229885057472
+      },
+      "no_earlier_same_vendor_pdf_bill": {
+        "any_vendor": {
+          "bill": 0.1,
+          "coverage_bill": 1.0,
+          "coverage_dollar": 1.0,
+          "covered_bill": 0.1,
+          "covered_dollar": 0.11761164217267232,
+          "dollar": 0.11761164217267232,
+          "n": 60
+        },
+        "n": 60,
+        "other_vendor": {
+          "bill": 0.1,
+          "coverage_bill": 1.0,
+          "coverage_dollar": 1.0,
+          "covered_bill": 0.1,
+          "covered_dollar": 0.11761164217267232,
+          "dollar": 0.11761164217267232,
+          "n": 60
+        }
+      },
+      "no_prior_bucket": {
+        "V_any_vendor": {
+          "bill": 0.1724137931034483,
+          "coverage_bill": 1.0,
+          "covered_bill": 0.1724137931034483,
+          "n": 29
+        },
+        "V_any_vendor_same_project": {
+          "bill": 0.13793103448275862,
+          "coverage_bill": 1.0,
+          "covered_bill": 0.13793103448275862,
+          "n": 29
+        },
+        "V_other_vendor": {
+          "bill": 0.1724137931034483,
+          "coverage_bill": 1.0,
+          "covered_bill": 0.1724137931034483,
+          "n": 29
+        },
+        "V_same_vendor": {
+          "bill": 0.0,
+          "coverage_bill": 0.0,
+          "covered_bill": null,
+          "n": 29
+        }
+      }
+    },
+    "W": {
+      "history_abstain": {
+        "accuracy": {
+          "V_any_vendor": 0.3563218390804598,
+          "V_any_vendor_same_project": 0.2988505747126437,
+          "V_other_vendor": 0.25287356321839083,
+          "V_same_vendor": 0.2413793103448276
+        },
+        "n": 87,
+        "top1_any_vendor": 0.3563218390804598,
+        "top1_other_vendor": 0.25287356321839083
+      },
+      "no_earlier_same_vendor_pdf_bill": {
+        "any_vendor": {
+          "bill": 0.13333333333333333,
+          "coverage_bill": 1.0,
+          "coverage_dollar": 1.0,
+          "covered_bill": 0.13333333333333333,
+          "covered_dollar": 0.0473993803095739,
+          "dollar": 0.0473993803095739,
+          "n": 60
+        },
+        "n": 60,
+        "other_vendor": {
+          "bill": 0.13333333333333333,
+          "coverage_bill": 1.0,
+          "coverage_dollar": 1.0,
+          "covered_bill": 0.13333333333333333,
+          "covered_dollar": 0.0473993803095739,
+          "dollar": 0.0473993803095739,
+          "n": 60
+        }
+      },
+      "no_prior_bucket": {
+        "V_any_vendor": {
+          "bill": 0.13793103448275862,
+          "coverage_bill": 1.0,
+          "covered_bill": 0.13793103448275862,
+          "n": 29
+        },
+        "V_any_vendor_same_project": {
+          "bill": 0.20689655172413793,
+          "coverage_bill": 1.0,
+          "covered_bill": 0.20689655172413793,
+          "n": 29
+        },
+        "V_other_vendor": {
+          "bill": 0.13793103448275862,
+          "coverage_bill": 1.0,
+          "covered_bill": 0.13793103448275862,
+          "n": 29
+        },
+        "V_same_vendor": {
+          "bill": 0.0,
+          "coverage_bill": 0.0,
+          "covered_bill": null,
+          "n": 29
+        }
+      }
+    }
+  },
+  "combined_lift": {
+    "H": {
+      "combined_a": 0.6189247311827957,
+      "combined_b": 0.6060215053763441,
+      "lift_a": 0.03827956989247305,
+      "lift_b": 0.1544086021505377
+    },
+    "V": {
+      "combined_a": 0.6154838709677419,
+      "combined_b": 0.5995698924731183,
+      "lift_a": 0.03483870967741931,
+      "lift_b": 0.14795698924731188
+    },
+    "W": {
+      "combined_a": 0.6232258064516129,
+      "combined_b": 0.6073118279569892,
+      "lift_a": 0.04258064516129023,
+      "lift_b": 0.1556989247311828
+    }
+  },
+  "embedding_spend": {
+    "cache_hits": 321,
+    "cap": 1.0,
+    "deployment": "text-embedding-3-small",
+    "dimensions": 1536,
+    "embedded": 3492,
+    "model": "text-embedding-3-small",
+    "prompt_tokens": 1485785,
+    "requests": 62,
+    "retruncated": 1,
+    "truncated": 3,
+    "unconfirmed_attempts": 0,
+    "unconfirmed_tokens": 0,
+    "usd": 0.0297157,
+    "usd_per_million_tokens": 0.02
+  },
+  "extra": {
+    "missing_vectors": 0,
+    "rrf_depth": 100,
+    "rrf_k": 60,
+    "word_generic_parity_mismatches": 0
+  },
+  "head_to_head": {
+    "H": {
+      "V_any_vendor": {
+        "bill": 0.5045161290322581,
+        "coverage_bill": 0.9991397849462366,
+        "coverage_dollar": 1.0,
+        "covered_bill": 0.504950495049505,
+        "covered_dollar": 0.4752788007728903,
+        "dollar": 0.4752788007728903,
+        "n": 2325
+      },
+      "V_any_vendor_same_project": {
+        "bill": 0.3518279569892473,
+        "coverage_bill": 0.984516129032258,
+        "coverage_dollar": 0.997981504043583,
+        "covered_bill": 0.35736129314110965,
+        "covered_dollar": 0.2761403855792837,
+        "dollar": 0.2755829973275885,
+        "n": 2325
+      },
+      "V_other_vendor": {
+        "bill": 0.2524731182795699,
+        "coverage_bill": 0.9991397849462366,
+        "coverage_dollar": 1.0,
+        "covered_bill": 0.25269048643994835,
+        "covered_dollar": 0.09308512458130774,
+        "dollar": 0.09308512458130774,
+        "n": 2325
+      },
+      "V_same_vendor": {
+        "bill": 0.5991397849462365,
+        "coverage_bill": 0.949247311827957,
+        "coverage_dollar": 0.9256840411338302,
+        "covered_bill": 0.6311735387403715,
+        "covered_dollar": 0.6746797200386089,
+        "dollar": 0.6245402497163806,
+        "n": 2325
+      },
+      "combined": {
+        "bill": 0.6189247311827957,
+        "coverage_bill": 0.9780645161290322,
+        "coverage_dollar": 0.9648958350830152,
+        "covered_bill": 0.6328056288478452,
+        "covered_dollar": 0.6502090669501466,
+        "dollar": 0.6273840206334099,
+        "n": 2325
+      },
+      "combined_mode_b": {
+        "bill": 0.6060215053763441,
+        "coverage_bill": 0.9780645161290322,
+        "coverage_dollar": 0.9648958350830152,
+        "covered_bill": 0.6196130167106421,
+        "covered_dollar": 0.6582582668429083,
+        "dollar": 0.6351506600856862,
+        "n": 2325
+      },
+      "history_a": {
+        "bill": 0.5806451612903226,
+        "coverage_bill": 0.9625806451612903,
+        "coverage_dollar": 0.9537712446949026,
+        "covered_bill": 0.6032171581769437,
+        "covered_dollar": 0.630613203919466,
+        "dollar": 0.6014607404233095,
+        "n": 2325
+      },
+      "history_b": {
+        "bill": 0.45161290322580644,
+        "coverage_bill": 0.9625806451612903,
+        "coverage_dollar": 0.9537712446949026,
+        "covered_bill": 0.4691689008042895,
+        "covered_dollar": 0.5341957377329857,
+        "dollar": 0.5095005336883015,
+        "n": 2325
+      }
+    },
+    "V": {
+      "V_any_vendor": {
+        "bill": 0.4881720430107527,
+        "coverage_bill": 0.9991397849462366,
+        "coverage_dollar": 1.0,
+        "covered_bill": 0.488592337494619,
+        "covered_dollar": 0.42629474054109606,
+        "dollar": 0.42629474054109606,
+        "n": 2325
+      },
+      "V_any_vendor_same_project": {
+        "bill": 0.3303225806451613,
+        "coverage_bill": 0.984516129032258,
+        "coverage_dollar": 0.997981504043583,
+        "covered_bill": 0.33551769331585846,
+        "covered_dollar": 0.2677031158165671,
+        "dollar": 0.26716275815977114,
+        "n": 2325
+      },
+      "V_other_vendor": {
+        "bill": 0.2339784946236559,
+        "coverage_bill": 0.9991397849462366,
+        "coverage_dollar": 1.0,
+        "covered_bill": 0.23417993973310375,
+        "covered_dollar": 0.08649231828834157,
+        "dollar": 0.08649231828834157,
+        "n": 2325
+      },
+      "V_same_vendor": {
+        "bill": 0.5918279569892473,
+        "coverage_bill": 0.949247311827957,
+        "coverage_dollar": 0.9256840411338302,
+        "covered_bill": 0.6234707748074308,
+        "covered_dollar": 0.6632159460582061,
+        "dollar": 0.6139284170915565,
+        "n": 2325
+      },
+      "combined": {
+        "bill": 0.6154838709677419,
+        "coverage_bill": 0.9780645161290322,
+        "coverage_dollar": 0.9648958350830152,
+        "covered_bill": 0.6292875989445911,
+        "covered_dollar": 0.6394259525900922,
+        "dollar": 0.6169794384981695,
+        "n": 2325
+      },
+      "combined_mode_b": {
+        "bill": 0.5995698924731183,
+        "coverage_bill": 0.9780645161290322,
+        "coverage_dollar": 0.9648958350830152,
+        "covered_bill": 0.6130167106420404,
+        "covered_dollar": 0.6460800522254319,
+        "dollar": 0.6233999515225361,
+        "n": 2325
+      },
+      "history_a": {
+        "bill": 0.5806451612903226,
+        "coverage_bill": 0.9625806451612903,
+        "coverage_dollar": 0.9537712446949026,
+        "covered_bill": 0.6032171581769437,
+        "covered_dollar": 0.630613203919466,
+        "dollar": 0.6014607404233095,
+        "n": 2325
+      },
+      "history_b": {
+        "bill": 0.45161290322580644,
+        "coverage_bill": 0.9625806451612903,
+        "coverage_dollar": 0.9537712446949026,
+        "covered_bill": 0.4691689008042895,
+        "covered_dollar": 0.5341957377329857,
+        "dollar": 0.5095005336883015,
+        "n": 2325
+      }
+    },
+    "W": {
+      "V_any_vendor": {
+        "bill": 0.6064516129032258,
+        "coverage_bill": 0.9991397849462366,
+        "coverage_dollar": 1.0,
+        "covered_bill": 0.6069737408523461,
+        "covered_dollar": 0.6494357539705997,
+        "dollar": 0.6494357539705997,
+        "n": 2325
+      },
+      "V_any_vendor_same_project": {
+        "bill": 0.5070967741935484,
+        "coverage_bill": 0.983225806451613,
+        "coverage_dollar": 0.9976244363538801,
+        "covered_bill": 0.515748031496063,
+        "covered_dollar": 0.49234308046905306,
+        "dollar": 0.4911734881456721,
+        "n": 2325
+      },
+      "V_other_vendor": {
+        "bill": 0.26838709677419353,
+        "coverage_bill": 0.9974193548387097,
+        "coverage_dollar": 0.9993197154333245,
+        "covered_bill": 0.2690815006468305,
+        "covered_dollar": 0.09877875092933514,
+        "dollar": 0.09871155326956242,
+        "n": 2325
+      },
+      "V_same_vendor": {
+        "bill": 0.6017204301075268,
+        "coverage_bill": 0.9488172043010753,
+        "coverage_dollar": 0.9256781484609831,
+        "covered_bill": 0.6341795104261106,
+        "covered_dollar": 0.7057942842863699,
+        "dollar": 0.6533383462725516,
+        "n": 2325
+      },
+      "combined": {
+        "bill": 0.6232258064516129,
+        "coverage_bill": 1.0,
+        "coverage_dollar": 1.0,
+        "covered_bill": 0.6232258064516129,
+        "covered_dollar": 0.6458996840340805,
+        "dollar": 0.6458996840340805,
+        "n": 2325
+      },
+      "combined_mode_b": {
+        "bill": 0.6073118279569892,
+        "coverage_bill": 1.0,
+        "coverage_dollar": 1.0,
+        "covered_bill": 0.6073118279569892,
+        "covered_dollar": 0.6543084871738502,
+        "dollar": 0.6543084871738502,
+        "n": 2325
+      },
+      "history_a": {
+        "bill": 0.5806451612903226,
+        "coverage_bill": 0.9625806451612903,
+        "coverage_dollar": 0.9537712446949026,
+        "covered_bill": 0.6032171581769437,
+        "covered_dollar": 0.630613203919466,
+        "dollar": 0.6014607404233095,
+        "n": 2325
+      },
+      "history_b": {
+        "bill": 0.45161290322580644,
+        "coverage_bill": 0.9625806451612903,
+        "coverage_dollar": 0.9537712446949026,
+        "covered_bill": 0.4691689008042895,
+        "covered_dollar": 0.5341957377329857,
+        "dollar": 0.5095005336883015,
+        "n": 2325
+      }
+    }
+  },
+  "model_version": "u697-vector-similar-bills-v1",
+  "paired": {
+    "W_vs_H": {
+      "V_any_vendor": {
+        "both_right": 1128,
+        "both_wrong": 870,
+        "broke": 282,
+        "fixed": 45,
+        "sign_test_p": 4.334832170122033e-43
+      },
+      "V_any_vendor_same_project": {
+        "both_right": 790,
+        "both_wrong": 1118,
+        "broke": 389,
+        "fixed": 28,
+        "sign_test_p": 1.909061778242624e-82
+      },
+      "V_other_vendor": {
+        "both_right": 489,
+        "both_wrong": 1603,
+        "broke": 135,
+        "fixed": 98,
+        "sign_test_p": 0.018161092075719233
+      },
+      "V_same_vendor": {
+        "both_right": 1357,
+        "both_wrong": 890,
+        "broke": 42,
+        "fixed": 36,
+        "sign_test_p": 0.5715867180030725
+      },
+      "combined": {
+        "both_right": 1389,
+        "both_wrong": 826,
+        "broke": 60,
+        "fixed": 50,
+        "sign_test_p": 0.39092745669950485
+      },
+      "combined_mode_b": {
+        "both_right": 1350,
+        "both_wrong": 854,
+        "broke": 62,
+        "fixed": 59,
+        "sign_test_p": 0.8558215992110799
+      }
+    },
+    "W_vs_V": {
+      "V_any_vendor": {
+        "both_right": 1077,
+        "both_wrong": 857,
+        "broke": 333,
+        "fixed": 58,
+        "sign_test_p": 5.278829742513132e-48
+      },
+      "V_any_vendor_same_project": {
+        "both_right": 734,
+        "both_wrong": 1112,
+        "broke": 445,
+        "fixed": 34,
+        "sign_test_p": 1.915657644409859e-92
+      },
+      "V_other_vendor": {
+        "both_right": 445,
+        "both_wrong": 1602,
+        "broke": 179,
+        "fixed": 99,
+        "sign_test_p": 1.8468634516538153e-06
+      },
+      "V_same_vendor": {
+        "both_right": 1340,
+        "both_wrong": 890,
+        "broke": 59,
+        "fixed": 36,
+        "sign_test_p": 0.023488002836921148
+      },
+      "combined": {
+        "both_right": 1382,
+        "both_wrong": 827,
+        "broke": 67,
+        "fixed": 49,
+        "sign_test_p": 0.11408316540850243
+      },
+      "combined_mode_b": {
+        "both_right": 1337,
+        "both_wrong": 856,
+        "broke": 75,
+        "fixed": 57,
+        "sign_test_p": 0.13866800643810315
+      }
+    }
+  },
+  "population": {
+    "all_coded_bills": 19339,
+    "cal_pdf_population": 1327,
+    "delta_vs_u694": {
+      "cal_pdf_population": -11,
+      "eval_pdf_population": -49,
+      "pdf_bills": 56
+    },
+    "eval_pdf_population": 2325,
+    "no_earlier_same_vendor_pdf_bill_eval": 60,
+    "with_usable_pdf_text": 3813
+  },
+  "runtime_seconds": {
+    "embed": 314.60608579195105,
+    "load": 72.6264087909367,
+    "total": 528.8963364171796,
+    "vector_pass": 106.67797308298759,
+    "word_arm": 34.86937270895578
+  },
+  "sample_500": {
+    "arms": {
+      "H": {
+        "best_variant": "V_same_vendor",
+        "best_variant_mode_b": "V_same_vendor",
+        "history_strong_else_vote_a": 0.58,
+        "history_strong_else_vote_b": 0.572,
+        "n": 500
+      },
+      "V": {
+        "best_variant": "V_same_vendor",
+        "best_variant_mode_b": "V_same_vendor",
+        "history_strong_else_vote_a": 0.578,
+        "history_strong_else_vote_b": 0.572,
+        "n": 500
+      },
+      "W": {
+        "best_variant": "V_any_vendor",
+        "best_variant_mode_b": "V_any_vendor",
+        "history_strong_else_vote_a": 0.6,
+        "history_strong_else_vote_b": 0.592,
+        "n": 500
+      }
+    },
+    "dropped": {
+      "calibration_window": 0,
+      "not_in_pdf_population": 0,
+      "not_loaded": 0,
+      "outside_both_windows": 1
+    },
+    "evaluated": 500,
+    "ids_in_file": 501,
+    "source": "u654a_predictions_claude-haiku_20261028T150518Z.csv"
+  },
+  "u694_baseline": {
+    "cal_pdf_population": 1338,
+    "eval_pdf_population": 2374,
+    "pdf_bills": 3757,
+    "top1_bill": {
+      "V_any_vendor": 0.61,
+      "V_any_vendor_same_project": 0.512,
+      "V_other_vendor": 0.276,
+      "V_same_vendor": 0.605,
+      "combined": 0.626,
+      "combined_mode_b": 0.611
+    }
+  },
+  "vendor_reidentification": {
+    "H": {
+      "mean_per_bill": 0.5271631510977202,
+      "neighbour_share": 0.527208541415533,
+      "neighbours": 23228
+    },
+    "V": {
+      "mean_per_bill": 0.5023245802841163,
+      "neighbour_share": 0.5023678319269846,
+      "neighbours": 23228
+    },
+    "W": {
+      "mean_per_bill": 0.6566508824795539,
+      "neighbour_share": 0.6562634709888784,
+      "neighbours": 23198
+    }
+  },
+  "windows": {
+    "cal_since": "2025-10-11",
+    "cal_until": "2026-04-10",
+    "eval_since": "2026-04-11",
+    "eval_until": "2026-10-10"
+  }
+}

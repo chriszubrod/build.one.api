@@ -114,13 +114,18 @@ Estimated effort: ~13,000 candidates × 3–5 s ≈ 11–18 hours of review, in 
 
 ## 6. Data model (new, additive)
 
-- `dbo.AttachmentBackfillRun` — Id, PublicId, Source (`box` | `qbo`), CreatedByUserId, Status,
-  CreatedDatetime, Notes.
-- `dbo.AttachmentBackfillCandidate` — Id, PublicId, RowVersion, RunId, BillId, SourceFileId,
-  SourceFileName, SourceSha256 (filled at verification), MatchTier, AutoVerdict, InvoiceFound,
-  AmountFound, VendorFound, ReviewStatus (`pending` | `approved` | `rejected`), ReviewedByUserId,
-  ReviewedDatetime, RejectReason, AttachmentId, LinkedDatetime. Unique (RunId, SourceFileId) and
-  (RunId, BillId). Approve/reject guarded by RowVersion.
+- `dbo.AttachmentBackfillRun` — Id, PublicId, RowVersion, Source (`box` | `qbo`), Status
+  (`generating` -> `ready` -> `applied`, or -> `cancelled`), Notes, CreatedByUserId, CreatedDatetime,
+  ModifiedDatetime.
+- `dbo.AttachmentBackfillCandidate` — Id, PublicId, RowVersion, RunId (FK), BillId (no FK: a deleted
+  bill leaves a stale candidate), SourceFileId, SourceFileName, SourceFolderId, SourceFileSize,
+  SourceSha256 (filled by the check), MatchTier; **CheckStatus** (`checked` | `unreadable` | `error`,
+  NULL = unchecked) and neutral evidence InvoiceSeenCount, AmountSeenCount, VendorSeen,
+  OtherInvoiceLabelCount, StatementLike, UsedOcr, CheckedDatetime; ReviewStatus (`pending` |
+  `approved` | `rejected`), ReviewedByUserId, ReviewedDatetime, RejectReason, AttachmentId,
+  LinkedDatetime, CreatedDatetime, ModifiedDatetime. Unique (RunId, SourceFileId) and (RunId, BillId);
+  indexes (RunId, ReviewStatus, CheckStatus) and (BillId). Approve/reject guarded by RowVersion.
+  (As built in b1 — see §11; supersedes the AutoVerdict / *Found columns of the original design.)
 
 No change to `BillLineItemAttachment` or `Attachment`.
 
@@ -159,3 +164,108 @@ No change to `BillLineItemAttachment` or `Attachment`.
 
 Read-only probes ran 2026-10-29 from a scratch ops worktree; derived data (inventory, hashes, bill
 fields, verification results) is kept outside the repo in `.data/u535b/` and is never committed.
+
+## 11. b1 as built (2026-10-29, uncommitted — pending review)
+
+- `entities/attachment_backfill/` — pure `filename` / `project_map` / `matcher` (tier A only) / `verify`,
+  read-only `box_inventory` (marker-paginated `folders/{id}/items`), `service` (contract docstring) and
+  `persistence/repo`; SQL in `sql/dbo.attachment_backfill.sql`.
+- Job `scripts/attachment_backfill_candidates.py`: `generate` / `verify` / `summary`, dry-run by default,
+  counts-only output. Writes only the two staging tables; never `Attachment`, BLIA, blob or outbox (pinned by
+  `tests/test_u535b_service.py`).
+- Added beyond §6: `ReadAttachmentBackfillRunByPublicId` (the job addresses runs by public id);
+  `ReadAttachmentBackfillCandidatesForVerification` is keyset-paged (`@AfterId`) with `@IncludeErrors`;
+  `UpdateAttachmentBackfillCandidateVerification` refuses a reviewed or linked candidate; insert is refused
+  unless the run is `generating`.
+- Mutual uniqueness counts every tier-A hit as a claim, so a bill also matched by an ambiguous file is
+  contested. Exact duplicate copies (`name (1).pdf`) of one invoice therefore drop out as contested.
+- OCR runs the whole document through the existing DI `prebuilt-read` path (no page cap) when the text layer
+  has < 40 non-space characters.
+
+### 11.1 Fix round 1 (EM review)
+
+- **Verify:** invoice # on whitespace-token boundaries (alpha prefix <= 7 letters and one separator
+  allowed: `INV-0012`, `Invoice#1001`); a 5-digit token after a US state code is a ZIP; containment
+  only for >= 6-char mixed letter+digit numbers. A $0.00 / NULL bill amount is never evidence.
+  Statement = >= 3 distinct labelled invoice numbers (inline or an `Inv No` column), or a statement
+  keyword anywhere plus >= 2 other bill-number-shaped tokens. OCR when the layer has < 40 non-space
+  chars, or < 400 chars with neither value found; DI gets the first 3 pages (trimmed with pypdf,
+  the existing DI path takes no page range). Files > 25 MB (`SourceFileSize`) are `unverifiable`
+  without download.
+- **Matcher:** same sign required (credit files excluded as `credit`); byte-size-identical copies
+  collapse to the lowest Box id (`duplicate_copy`); 3 head segments parse; `head[3]` retried as the
+  invoice when `head[2]` finds nothing (tier `A_alt`, unique only); alpha-prefix alternate key
+  (`INV0012` <-> `0012`, tier suffix `_altkey`) only when the primary key misses; a bill matches on the
+  filename-prefix project OR the folder project.
+- **SQL/job:** no FK to `dbo.Bill` (dropped from an applied copy; a deleted bill leaves a stale
+  candidate never handed to the verifier); insert refuses a bill with a pending/approved candidate
+  in another non-cancelled run (`RefusedReason`); status moves generating -> ready -> applied or
+  -> cancelled only; verification reads only a `ready` run. `generate --resume-run`, `cancel`.
+
+### 11.2 Fix round 2 (final; strictness over recall)
+
+- **Verdict set:** `verified` (invoice # AND amount, no labelled conflict) / `partial` (exactly one) /
+  `mismatch` / `unverifiable` / `error`. `mismatch` = the PDF prints an invoice number right after an
+  `INVOICE #|NO|NUMBER` or `INV #|NO` label (same line, next token) and none of those equals the bill's;
+  it outranks everything. `statement` is no longer written (still allowed by the CHECK for an
+  applied pre-round-2 copy).
+- **Invoice # found:** exact normalized-token equality only; prefix strip only for the allowlist
+  INV / INVOICE / INVNO / NO / NUM / NBR directly followed by a digit; no substring containment.
+  PO1001, JOB#1001, QUOTE-1001, ACCOUNT#1001, Lot12 no longer find the invoice.
+- **`StatementLike` flag (new column), not a verdict:** >= 3 distinct labelled invoice numbers, or a
+  statement title phrase (STATEMENT OF ACCOUNT, ACCOUNT STATEMENT, ACCOUNT ACTIVITY, AGING, BALANCE
+  FORWARD, OPEN INVOICES, INVOICE REGISTER, or a line that is exactly STATEMENT) with >= 2. The round-1
+  column scan and same-shape rule were deleted: they flagged real single invoices (line-item qtys,
+  ZIPs, street numbers).
+- **Removed alternate tiers** (`A_alt` = next head segment as the invoice; `_altkey` = alpha-prefix
+  alternate key): they turned description / PO segments into unique tier-A candidates and, with the
+  old prefix stripping, into false `verified`. Tier A = the third filename segment's primary
+  normalized invoice # only. The recall loss is accepted.
+- **SQL:** insert refuses a (SourceFileId, BillId) pair rejected in any run (`previously_rejected`);
+  the verification update enforces a `ready` run (refusal row `run_not_ready` / `reviewed_or_linked`
+  / `not_found`); `generate --resume-run` first deletes this run's pending, unverified, unlinked
+  candidates absent from the new plan (`DeleteStaleAttachmentBackfillCandidates`, reported as
+  `pruned_stale`). A pending candidate left in an `applied` run blocks its bill from later runs
+  until b4 resolves it.
+
+### 11.3 Round 3 (Chris): neutral evidence, never a conclusion
+
+The per-PDF check no longer presents a verdict. It stores a **check status** (`AutoVerdict` column (renamed `CheckStatus` in §11.4):
+`checked` = text obtained from the layer or OCR, `unreadable` = < 40 non-space chars or > 25 MB,
+`error` = exception) and **neutral evidence** the reviewer weighs against the highlighted PDF (b3
+highlights the hits live; b1 stores counts/flags only, never text or values):
+
+- `InvoiceSeenCount` — tokens equal to the bill number, both sides normalized the same way
+  (allowlisted INV/INVOICE/INVNO/NO/NUM/NBR prefix + digit stripped, so `INV-1001` = `1001`); NULL
+  when the bill number has < 3 normalized chars.
+- `AmountSeenCount` — standalone occurrences with the bill's sign (`(x)` / `-x` are negative); NULL
+  for a $0 / missing amount.
+- `VendorSeen`, `UsedOcr`.
+- `OtherInvoiceLabelCount` — distinct values after an invoice label (`INVOICE`/`INV` + `#`, `NO`,
+  `NUMBER`, `NUM`, `ID` or `:`; value on the label's line, else the next line) that differ from the
+  bill's; Previous/Original/Prior Invoice labels ignored.
+- `StatementLike` — >= 3 distinct labelled values; or a statement title with >= 2, or with >= 3 lines
+  each carrying a distinct invoice-shaped token and a money amount.
+
+`InvoiceFound`/`AmountFound`/`VendorFound` are dropped. Re-running the SQL file on an applied earlier
+copy maps verified/partial/mismatch/statement -> `checked` and unverifiable -> `unreadable` before the
+new CHECK is added. The run summary reports distributions only (unchecked/checked/unreadable/errored,
+invoice seen 0/1/2+, amount seen 0/1+, other label 0/1+, statement-like, vendor seen, OCR, linked).
+
+### 11.4 Pass 2 refactor (behaviour-preserving, plus small ops changes)
+
+- `AutoVerdict` -> `CheckStatus`, `VerifiedDatetime` -> `CheckedDatetime`, `verify.py` -> `evidence.py`.
+  The round-to-round migration blocks are gone: the CREATE TABLE is the only shape (the tables were
+  never applied outside local test databases).
+- Writes run on one connection per loop (generate inserts; each check batch) and commit after every
+  row. `ReadBillsForAttachmentBackfill` returns only Id, BillNumber, TotalAmount, ProjectIds.
+- Ops: Ctrl-C during `verify` cancels queued downloads and exits (130), leaving unwritten rows
+  unchecked; `@Keep` has a PK; a bill number holding whitespace also matches the same number of
+  consecutive tokens joined; `generate --apply` refuses while a `generating`/`ready` run of the same
+  source exists (`ReadOpenAttachmentBackfillRuns`) unless `--force-new-run`.
+
+### Follow-ups (booked, out of b1 scope)
+
+- Promote the marker-paged Box lister (`entities/attachment_backfill/business/box_inventory.py`
+  `list_folder_items`) to `BoxHttpClient.iter_folder_items`, and repoint
+  `vendor_service._box_list_children` and `BoxHttpClient.find_folder_child_by_name` at it.

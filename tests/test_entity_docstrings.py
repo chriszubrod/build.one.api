@@ -24,6 +24,7 @@ from tests.sproc_text import REPO_ROOT
 from tests.sql_corpus import iter_repo_sql_files
 
 COVERED_ENTITIES = [
+    "attachment_backfill",
     "bill",
     "bill_intake_prediction",
     "expense",

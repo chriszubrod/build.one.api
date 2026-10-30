@@ -151,8 +151,34 @@ def detect_double_bill_by_invoice_number(lines: list[dict]) -> list[dict]:
     cheap `detect_double_bill_pairs` amount/date screen can't see.
 
     Blank numbers and `QBO-<id>` placeholders are ignored — they carry no vendor
-    identity and would false-pair every un-numbered card charge. Pure; no I/O.
+    identity and would false-pair every un-numbered card charge. Two lines of
+    ONE parent at different amounts go to `find_same_parent_splits` instead
+    (`_is_same_parent_split`). Pure; no I/O.
     """
+    return [
+        _invoice_number_pair(a, b)
+        for a, b in _pairs_sharing_invoice_number(lines)
+        if not _is_same_parent_split(a, b)
+    ]
+
+
+def find_same_parent_splits(lines: list[dict]) -> list[dict]:
+    """The number-matched pairs `detect_double_bill_by_invoice_number` exempts
+    (`_is_same_parent_split`). Reported, never a gap: a split across cost codes is
+    the normal case, but an original line left behind after a re-code in QBO also
+    keeps its parent self-consistent, so the reviewer confirms each parent's lines
+    on the draw sum to no more than its vendor document (U-748 Pass 3). Pure; no I/O.
+    """
+    return [
+        _invoice_number_pair(a, b)
+        for a, b in _pairs_sharing_invoice_number(lines)
+        if _is_same_parent_split(a, b)
+    ]
+
+
+def _pairs_sharing_invoice_number(lines: list[dict]):
+    """Yield every pair of DIFFERENT source lines whose extracted vendor invoice
+    numbers are normalized-equal (blank and `QBO-<id>` placeholders excluded)."""
     norm_rows: list[tuple] = []
     for row in lines:
         norm = _normalize_invoice_number(row.get("vendor_invoice_number"))
@@ -160,7 +186,6 @@ def detect_double_bill_by_invoice_number(lines: list[dict]) -> list[dict]:
             continue
         norm_rows.append((_source_identity(row), norm, row))
 
-    pairs: list[dict] = []
     for i, (id_a, num_a, row_a) in enumerate(norm_rows):
         for id_b, num_b, row_b in norm_rows[i + 1:]:
             # Same underlying source line listed twice is not a double-bill.
@@ -168,14 +193,15 @@ def detect_double_bill_by_invoice_number(lines: list[dict]) -> list[dict]:
                 continue
             if num_a != num_b:
                 continue
-            pairs.append(
-                {
-                    "line_a": _double_bill_number_side(row_a),
-                    "line_b": _double_bill_number_side(row_b),
-                    "vendor_invoice_number": row_a.get("vendor_invoice_number"),
-                }
-            )
-    return pairs
+            yield row_a, row_b
+
+
+def _invoice_number_pair(row_a: dict, row_b: dict) -> dict:
+    return {
+        "line_a": _double_bill_number_side(row_a),
+        "line_b": _double_bill_number_side(row_b),
+        "vendor_invoice_number": row_a.get("vendor_invoice_number"),
+    }
 
 
 def find_foreign_project_markers(
@@ -400,6 +426,7 @@ class InvoiceDrawAuditService:
         double_bill_invoice_number_pairs = detect_double_bill_by_invoice_number(
             double_bill_lines
         )
+        same_parent_split_pairs = find_same_parent_splits(double_bill_lines)
         foreign_project_markers = self._scan_foreign_project_markers(
             project, resolved_bindings
         )
@@ -437,6 +464,8 @@ class InvoiceDrawAuditService:
             "coverage": coverage_rows,
             "double_bill_pairs": double_bill_pairs,
             "double_bill_invoice_number_pairs": double_bill_invoice_number_pairs,
+            # Not a gap (never in `sections`): the reviewer confirms each split.
+            "same_parent_split_pairs": same_parent_split_pairs,
             "foreign_project_markers": foreign_project_markers,
             "worksheet_reconcile": dict(_WORKSHEET_RECONCILE_STUB),
         }
@@ -534,7 +563,7 @@ class InvoiceDrawAuditService:
             (b["source_type"], b["source_line_item_id"]) for b in resolved_bindings
         ]
         by_ili = {row["invoice_line_item_id"]: row for row in link_lines}
-        vendor_map = self.invoice_repo.read_vendor_ids_for_source_lines(bindings)
+        parent_map = self.invoice_repo.read_source_parents_for_source_lines(bindings)
         # U-187: hop source line → *LineItemAttachment → dbo.Attachment for the
         # sync-proof vendor invoice number (the KI-41 hard cross-compare signal).
         invoice_number_map = self.invoice_repo.read_vendor_invoice_numbers_for_source_lines(
@@ -544,6 +573,7 @@ class InvoiceDrawAuditService:
         for b in resolved_bindings:
             link_row = by_ili.get(b["invoice_line_item_id"], {})
             key = (b["source_type"], b["source_line_item_id"])
+            parent = parent_map.get(key) or {}
             draft.append(
                 {
                     "invoice_line_item_id": b["invoice_line_item_id"],
@@ -551,7 +581,10 @@ class InvoiceDrawAuditService:
                     "service_date": link_row.get("service_date"),
                     "source_type": b["source_type"],
                     "source_line_item_id": b["source_line_item_id"],
-                    "vendor_id": vendor_map.get(key),
+                    "source_parent_id": parent.get("parent_id"),
+                    "source_parent_total": parent.get("parent_total"),
+                    "source_parent_line_sum": parent.get("parent_line_sum"),
+                    "vendor_id": parent.get("vendor_id"),
                     "vendor_invoice_number": invoice_number_map.get(key),
                 }
             )
@@ -759,11 +792,36 @@ def _source_identity(row: dict) -> Optional[tuple]:
     return None
 
 
+def _is_same_parent_split(row_a: dict, row_b: dict) -> bool:
+    """True when two DIFFERENT lines belong to one parent Bill / Expense /
+    BillCredit whose lines sum to its header total, at different invoice-line
+    amounts — one vendor invoice split across cost codes, so they share the
+    document's number by construction, not a second booking (U-748: Harpeth 7072,
+    Siteworks 26-0205 halted BR-MAIN-31). Still a pair: equal amounts, and a
+    parent whose lines exceed its header — both what a regenerated duplicate line
+    looks like (KI-17 / KI-50). An unresolved parent, total or amount never
+    exempts a pair."""
+    st_a, st_b = row_a.get("source_type"), row_b.get("source_type")
+    parent_a, parent_b = row_a.get("source_parent_id"), row_b.get("source_parent_id")
+    if st_a is None or parent_a is None or (st_a, parent_a) != (st_b, parent_b):
+        return False
+    total, line_sum = row_a.get("source_parent_total"), row_a.get("source_parent_line_sum")
+    amt_a, amt_b = row_a.get("amount"), row_b.get("amount")
+    if None in (total, line_sum, amt_a, amt_b):
+        return False
+    if not _amounts_within_tolerance(Decimal(str(total)), Decimal(str(line_sum))):
+        return False
+    return not _amounts_within_tolerance(Decimal(str(amt_a)), Decimal(str(amt_b)))
+
+
 def _double_bill_number_side(row: dict) -> dict:
+    amount = row.get("amount")
     return {
         "invoice_line_item_id": row.get("invoice_line_item_id"),
         "source_type": row.get("source_type"),
         "source_line_item_id": row.get("source_line_item_id"),
+        "source_parent_id": row.get("source_parent_id"),
+        "amount": None if amount is None else str(amount),
         "vendor_id": row.get("vendor_id"),
         "vendor_invoice_number": row.get("vendor_invoice_number"),
     }

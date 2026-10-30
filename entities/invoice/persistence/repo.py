@@ -39,6 +39,15 @@ def _partition_bindings_by_source_type(
     return bill_ids, expense_ids, credit_ids
 
 
+def _source_parent_row(row) -> dict:
+    return {
+        "parent_id": row.ParentId,
+        "vendor_id": row.VendorId,
+        "parent_total": row.ParentTotal,
+        "parent_line_sum": row.ParentLineSum,
+    }
+
+
 class InvoiceRepository:
     """
     Repository for Invoice persistence operations.
@@ -458,11 +467,16 @@ class InvoiceRepository:
             logger.error(f"Error during duplicate project screen: {error}")
             raise map_database_error(error)
 
-    def read_vendor_ids_for_source_lines(
+    def read_source_parents_for_source_lines(
         self,
         bindings: list[tuple[str, int]],
-    ) -> dict[tuple[str, int], int]:
-        """Resolve VendorId for (SourceType, source_line_item_id) pairs (read-only).
+    ) -> dict[tuple[str, int], dict]:
+        """Resolve each (SourceType, source_line_item_id) pair's parent Bill / Expense /
+        BillCredit as ``{"parent_id", "vendor_id", "parent_total", "parent_line_sum"}``
+        (read-only). ``parent_line_sum`` is the sum of ALL the parent's line Amounts, or
+        NULL when any line's Amount is NULL. The KI-41 screen uses these to tell one
+        vendor invoice split across lines of a single, self-consistent parent from the
+        same invoice booked twice (U-748).
 
         Inline read SQL with dynamic IN-list (no sproc/TVP), same convention as
         entities.invoice.business.enrichment.enrich_line_items — intentional; do not convert.
@@ -470,7 +484,7 @@ class InvoiceRepository:
         if not bindings:
             return {}
         bill_ids, expense_ids, credit_ids = _partition_bindings_by_source_type(bindings)
-        out: dict[tuple[str, int], int] = {}
+        out: dict[tuple[str, int], dict] = {}
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -478,7 +492,10 @@ class InvoiceRepository:
                     placeholders = ",".join("?" for _ in bill_ids)
                     cursor.execute(
                         f"""
-                        SELECT bli.[Id], b.[VendorId]
+                        SELECT bli.[Id], b.[Id] AS [ParentId], b.[VendorId],
+                               b.[TotalAmount] AS [ParentTotal],
+                               (SELECT CASE WHEN COUNT(*) = COUNT(x.[Amount]) THEN SUM(x.[Amount]) END
+                                FROM dbo.[BillLineItem] x WHERE x.[BillId] = b.[Id]) AS [ParentLineSum]
                         FROM dbo.[BillLineItem] bli
                         INNER JOIN dbo.[Bill] b ON b.[Id] = bli.[BillId]
                         WHERE bli.[Id] IN ({placeholders})
@@ -486,12 +503,15 @@ class InvoiceRepository:
                         *bill_ids,
                     )
                     for row in cursor.fetchall():
-                        out[("BillLineItem", row.Id)] = row.VendorId
+                        out[("BillLineItem", row.Id)] = _source_parent_row(row)
                 if expense_ids:
                     placeholders = ",".join("?" for _ in expense_ids)
                     cursor.execute(
                         f"""
-                        SELECT eli.[Id], e.[VendorId]
+                        SELECT eli.[Id], e.[Id] AS [ParentId], e.[VendorId],
+                               e.[TotalAmount] AS [ParentTotal],
+                               (SELECT CASE WHEN COUNT(*) = COUNT(x.[Amount]) THEN SUM(x.[Amount]) END
+                                FROM dbo.[ExpenseLineItem] x WHERE x.[ExpenseId] = e.[Id]) AS [ParentLineSum]
                         FROM dbo.[ExpenseLineItem] eli
                         INNER JOIN dbo.[Expense] e ON e.[Id] = eli.[ExpenseId]
                         WHERE eli.[Id] IN ({placeholders})
@@ -499,12 +519,15 @@ class InvoiceRepository:
                         *expense_ids,
                     )
                     for row in cursor.fetchall():
-                        out[("ExpenseLineItem", row.Id)] = row.VendorId
+                        out[("ExpenseLineItem", row.Id)] = _source_parent_row(row)
                 if credit_ids:
                     placeholders = ",".join("?" for _ in credit_ids)
                     cursor.execute(
                         f"""
-                        SELECT bcli.[Id], bc.[VendorId]
+                        SELECT bcli.[Id], bc.[Id] AS [ParentId], bc.[VendorId],
+                               bc.[TotalAmount] AS [ParentTotal],
+                               (SELECT CASE WHEN COUNT(*) = COUNT(x.[Amount]) THEN SUM(x.[Amount]) END
+                                FROM dbo.[BillCreditLineItem] x WHERE x.[BillCreditId] = bc.[Id]) AS [ParentLineSum]
                         FROM dbo.[BillCreditLineItem] bcli
                         INNER JOIN dbo.[BillCredit] bc ON bc.[Id] = bcli.[BillCreditId]
                         WHERE bcli.[Id] IN ({placeholders})
@@ -512,10 +535,10 @@ class InvoiceRepository:
                         *credit_ids,
                     )
                     for row in cursor.fetchall():
-                        out[("BillCreditLineItem", row.Id)] = row.VendorId
+                        out[("BillCreditLineItem", row.Id)] = _source_parent_row(row)
             return out
         except Exception as error:
-            logger.error(f"Error during read vendor ids for source lines: {error}")
+            logger.error(f"Error during read source parents for source lines: {error}")
             raise map_database_error(error)
 
     # (SourceType, line_table, link_table, link_column) for the three linkable
@@ -536,7 +559,7 @@ class InvoiceRepository:
         NULLs/blank ignored) — the KI-41 hard double-bill cross-compare signal.
 
         Inline read SQL with dynamic IN-list (no sproc/TVP), same convention as
-        read_vendor_ids_for_source_lines / enrich_line_items — intentional; do not convert.
+        read_source_parents_for_source_lines / enrich_line_items — intentional; do not convert.
         (Table/column names below are fixed literals from _SOURCE_ATTACHMENT_SPECS,
         never caller input — no injection surface.)
         """

@@ -236,3 +236,119 @@ class AttachmentBackfillRepository:
         except Exception as error:
             raise map_database_error(error)
 
+
+    # -- b2: review API ------------------------------------------------------------------------- #
+
+    def read_runs_for_review(self) -> list[dict]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(cursor=cursor, name="ReadAttachmentBackfillRunsForReview", params={})
+                return _all(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+
+    def read_run_facets(self, *, run_public_id: str) -> list[dict]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor, name="ReadAttachmentBackfillRunFacets", params={"RunPublicId": run_public_id}
+                )
+                return _all(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+
+    def read_queue(
+        self,
+        *,
+        run_public_id: str,
+        evidence_group: Optional[str] = None,
+        project_public_id: Optional[str] = None,
+        no_project: bool = False,
+        bill_year: Optional[int] = None,
+        no_bill_year: bool = False,
+        review_status: Optional[str] = None,
+        after_public_id: Optional[str] = None,
+        top: int = 50,
+    ) -> list[dict]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadAttachmentBackfillQueue",
+                    params={
+                        "RunPublicId": run_public_id,
+                        "EvidenceGroup": evidence_group,
+                        "ProjectPublicId": project_public_id,
+                        "NoProject": _bit(no_project),
+                        "BillYear": bill_year,
+                        "NoBillYear": _bit(no_bill_year),
+                        "ReviewStatus": review_status,
+                        "AfterPublicId": after_public_id,
+                        "Top": top,
+                    },
+                )
+                rows = _all(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+        for row in rows:
+            row["TotalAmount"] = to_decimal_or_none(row.get("TotalAmount"))
+        return rows
+
+    def read_candidate_detail(self, *, public_id: str) -> Optional[dict]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor, name="ReadAttachmentBackfillCandidateDetail", params={"PublicId": public_id}
+                )
+                row = _first(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+        if row is not None:
+            row["TotalAmount"] = to_decimal_or_none(row.get("TotalAmount"))
+        return row
+
+    def update_candidate_review(
+        self,
+        *,
+        public_id: str,
+        decision: str,
+        reject_reason: Optional[str],
+        row_version: bytes,
+        reviewed_by_user_id: int,
+    ) -> Optional[dict]:
+        """Updated review columns; a refusal is a row with Id None and a RefusedReason."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="UpdateAttachmentBackfillCandidateReview",
+                    params={
+                        "PublicId": public_id,
+                        "Decision": decision,
+                        "RejectReason": reject_reason,
+                        "RowVersion": row_version,
+                        "ReviewedByUserId": reviewed_by_user_id,
+                    },
+                )
+                return _first(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+
+    def undo_candidate_review(self, *, public_id: str, row_version: bytes) -> Optional[dict]:
+        """Review columns back to pending; a refusal is a row with Id None and a RefusedReason."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="UndoAttachmentBackfillCandidateReview",
+                    params={"PublicId": public_id, "RowVersion": row_version},
+                )
+                return _first(cursor)
+        except Exception as error:
+            raise map_database_error(error)

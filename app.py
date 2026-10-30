@@ -36,6 +36,7 @@ from entities.user.api.router import router as user_api_router
 from entities.role.api.router import router as role_api_router
 from entities.user_role.api.router import router as user_role_api_router
 from shared.api.admin_users import router as admin_users_api_router
+from entities.attachment_backfill.api.router import router as attachment_backfill_admin_api_router
 from entities.user_project.api.router import router as user_project_api_router
 from entities.user_organization.api.router import router as user_organization_api_router
 from entities.user_company.api.router import router as user_company_api_router
@@ -242,6 +243,7 @@ app.include_router(user_api_router)
 app.include_router(role_api_router)
 app.include_router(user_role_api_router)
 app.include_router(admin_users_api_router)
+app.include_router(attachment_backfill_admin_api_router)
 app.include_router(user_project_api_router)
 app.include_router(user_organization_api_router)
 app.include_router(user_company_api_router)

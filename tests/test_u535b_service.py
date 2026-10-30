@@ -442,19 +442,58 @@ _FORBIDDEN_NAMES = frozenset(
 )
 
 
+# `post` / `put` / `delete` are allowed ONLY as the FastAPI route decorator on the Name `router`
+# (`@router.post(...)` in api/router.py, U-535b b2); on any other object they stay banned.
+_ROUTE_VERBS = frozenset({"post", "put", "delete"})
+
+
+def _write_path_violations(source: str, filename: str = "<src>") -> list[tuple[str, str]]:
+    """(filename, offending name) for every write-path reference in `source`; empty = clean."""
+    found: list[tuple[str, str]] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom):
+            if _FORBIDDEN_MODULE.search(node.module or ""):
+                found.append((filename, node.module))
+            found.extend((filename, n) for n in sorted({a.name for a in node.names} & _FORBIDDEN_NAMES))
+        elif isinstance(node, ast.Import):
+            found.extend((filename, a.name) for a in node.names if _FORBIDDEN_MODULE.search(a.name))
+        elif isinstance(node, ast.Attribute) and node.attr in _FORBIDDEN_NAMES:
+            is_route_decorator = (
+                node.attr in _ROUTE_VERBS and isinstance(node.value, ast.Name) and node.value.id == "router"
+            )
+            if not is_route_decorator:
+                found.append((filename, node.attr))
+    return found
+
+
 def test_package_never_references_write_paths():
     """Code (not prose): no import of a link/attachment/blob/outbox module, no Box write verb."""
     for path in sorted(PACKAGE.rglob("*.py")) + [SCRIPT]:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom):
-                assert not _FORBIDDEN_MODULE.search(node.module or ""), (path.name, node.module)
-                assert not {a.name for a in node.names} & _FORBIDDEN_NAMES, (path.name, node.module)
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    assert not _FORBIDDEN_MODULE.search(alias.name), (path.name, alias.name)
-            elif isinstance(node, ast.Attribute):
-                assert node.attr not in _FORBIDDEN_NAMES, (path.name, node.attr)
+        assert _write_path_violations(path.read_text(encoding="utf-8"), path.name) == []
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "client.post('files/1/content')",
+        "box.delete('files/1')",
+        "self.client.put('x')",
+        "router.client.post('x')",
+        "routers.post('x')",
+        "box.upload_file(b'x')",
+        "from integrations.box.base.client import upload_file",
+        "from integrations.box.outbox.service import BoxOutboxService",
+        "import shared.storage",
+    ],
+)
+def test_write_path_guard_still_catches_writes(source):
+    assert _write_path_violations(source)
+
+
+def test_write_path_guard_allows_only_the_router_route_decorator():
+    src = "@router.post('/x')\ndef f():\n    pass\n\n@router.delete('/y')\ndef g():\n    pass\n"
+    assert _write_path_violations(src) == []
+    assert _write_path_violations(src + "box.post('z')\n") == [("<src>", "post")]
 
 
 def _sql_code() -> str:

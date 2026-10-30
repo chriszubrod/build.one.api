@@ -2,6 +2,22 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-535b b2 follow-ups - attachment-backfill review API (booked 2026-10-30)
+
+b2 added the system-admin review API (`/api/v1/admin/attachment-backfill`). Deferred from its review passes:
+
+- [ ] **Counts and hits from one source (Pass 2 #1, altitude):** `snippets.py` mirrors `evidence.py`'s four counting rules (invoice, amount, vendor, other labels), held equal only by tests (a 30k-seed differential fuzz passed). Move the hit finders into `evidence.py` and derive each count as `len(hits)`; b1 evidence tests plus a parity test must stay green. Do it before any change to the counting rules.
+- [ ] **One text path (Pass 2 #4):** `review.py::_read_text` re-implements b1's `service.py::_evaluate` text step (size gate, text layer, needs_ocr, OCR append, unreadable threshold) and imports the private `_non_space_len`. Factor a shared `read_text(...)` with typed ExtractFailed/OcrFailed.
+- [ ] **Detail cost per view (Pass 2 #3 / Pass 1):** each detail view re-downloads from Box and, for scans, re-OCRs (owner approved, <= ~$8.50 if all 1,894 opened); the PDF route downloads again. Options: branch on stored `UsedOcr` when the hash matches; a short in-process bytes cache keyed (SourceFileId, sha) (policy call: is that "storing"?). Watch DI spend in the first review sessions.
+- [ ] **Memory cap when SourceFileSize is NULL/stale (Pass 1, low):** `BoxHttpClient.download_file` buffers the whole body before the 25 MB post-check. Stream with a byte limit, or size-check via Box file info when the stored size is NULL. Admin-only, stored-id-only.
+- [ ] **Undo audit trail (Pass 3, below bar):** undo clears ReviewedByUserId/ReviewedDatetime without recording who undid it. Add an UndoneByUserId/UndoneDatetime pair or an event row before b4 relies on the review history.
+- [ ] **`Cache-Control: no-store` on detail/queue JSON (Pass 3, below bar):** snippets carry document text; set no-store explicitly.
+- [ ] **`bill_claimed_elsewhere` written three times with lock hints** (Insert, review UPDATE, undo UPDATE); a TVF cannot carry the table hints. Each copy names its siblings; keep them in sync.
+- [ ] **Primary-project APPLY in three procs** (Facets, Queue, Detail) - an inline TVF breaks b1's SQL fixture (no dbo.Project); each copy names its siblings.
+- [ ] **Queue paging cost:** every page evaluates the primary-project APPLY for every candidate of the run before TOP (~13.7k seeks). Measure on prod during the first review session; add a persisted sort key if slow.
+- [ ] **For b4 (not b2 defects):** set AttachmentId only with `ReviewStatus='approved'` + the RowVersion in the same UPDATE (or move the run out of 'ready' first) so an undo cannot race the link; re-check SourceSha256 on the bytes actually linked; refuse a bill that gained a BLIA since generation; refuse stale (bill gone) candidates.
+- [ ] Shared Docker test DB: the b2 SQL fixture drops/recreates `dbo.[User]` (u701b/u744 fixtures also use it) - never run those SQL files concurrently.
+
 ## U-746 follow-ups - push-draw Suspense (00.02) gate (booked 2026-10-30)
 
 U-746 made a holding-coded line or source unbillable on every invoice path: `draw-audit` reports a `holding_code` halt gap, `push_draw` halts on it whatever `force` says (before linking, and again after linking before billing), and `_mark_source_as_billed` raises `HoldingCodeRefused`. Deferred from its three review passes:

@@ -269,3 +269,30 @@ invoice seen 0/1/2+, amount seen 0/1+, other label 0/1+, statement-like, vendor 
 - Promote the marker-paged Box lister (`entities/attachment_backfill/business/box_inventory.py`
   `list_folder_items`) to `BoxHttpClient.iter_folder_items`, and repoint
   `vendor_service._box_list_children` and `BoxHttpClient.find_folder_child_by_name` at it.
+
+## 12. b2 as built (2026-10-30) — review API
+
+Gate 1 (Chris, 2026-10-30): b2 then b3; scans are re-OCR'd when opened (snippets never stored); the queue opens on the clean group; no bulk approve.
+
+- Routes (all `require_system_admin`, prefix `/api/v1/admin/attachment-backfill`): `GET /runs`, `GET /runs/{run}/facets`,
+  `GET /runs/{run}/queue` (keyset by PublicId cursor; filters group, project PublicId or `none`, year or `none`, review status),
+  `GET /candidates/{id}` (row + live snippets + `content_matches_check`), `GET /candidates/{id}/pdf`, `POST /candidates/{id}/review`,
+  `POST /candidates/{id}/undo`.
+- Evidence groups are one SQL function, `dbo.AttachmentBackfillEvidenceGroup`: clean, flagged, invoice_only, amount_only, neither.
+  They are filter labels, not conclusions.
+- Each candidate has one primary project (lowest Name, then Id), so facet totals equal queue totals.
+- Review and undo are each one atomic UPDATE, checking:
+  - the RowVersion;
+  - the run is 'ready';
+  - the candidate is unlinked;
+  - on approve, the bill still exists;
+  - on approve, or on undo of a rejected candidate, no other non-cancelled run holds the bill as pending or approved
+    (`NOT EXISTS ... UPDLOCK, HOLDLOCK`). This keeps it to one claim per bill.
+- Refusal order: invalid, not_found, run_not_ready, bill_missing, bill_claimed_elsewhere, linked, not_pending/not_reviewed, stale.
+  not_found returns 404, invalid returns 422, and every other refusal returns 409.
+- The PDF is fetched only by the stored SourceFileId and capped at 25 MB, with a `%PDF-` check.
+  - Response headers: `application/pdf`, `inline; filename="candidate.pdf"`, nosniff, `CSP: sandbox`, no-store,
+    `X-Content-Matches-Check` (SHA-256 of the served bytes vs the stored SourceSha256).
+  - If the file has changed since the check, the detail returns no snippets and `snippet_error: content_changed`.
+- Responses carry no internal int ids; the reviewer is identified by User PublicId.
+- Follow-ups are in `TODO.md` under "U-535b b2 follow-ups".

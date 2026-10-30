@@ -16,17 +16,27 @@ Invariants
   Files over 25 MB (no download), and PDFs with < 40 non-space chars of text after OCR, are 'unreadable'. OCR (existing Document Intelligence read path, first 3 pages) runs only when the text layer has < 40 non-space chars, or < 400 chars and neither the invoice # nor the amount was seen in it.
   BillId carries no FK (a deleted bill leaves a stale candidate that b2/b4 treat as stale).
   Writes run on one connection per loop and commit after every row, so an interrupted pass resumes where it stopped; Ctrl-C cancels pending downloads and leaves unwritten rows unchecked (NULL).
+  b2 review API (business/review.py, api/router.py; system admin only): approve/reject writes only ReviewStatus, RejectReason, ReviewedByUserId, ReviewedDatetime of a pending, unlinked candidate of a 'ready' run at the caller's RowVersion (reject needs an allowlisted reason, approve forbids one); undo returns an approved/rejected, unlinked candidate of a 'ready' run to pending. Refusals, in order: invalid, not_found, run_not_ready, bill_missing (approve only), bill_claimed_elsewhere (approve, or undo of a rejected row, while another candidate for the bill is pending/approved in a different non-cancelled run -- checked atomically inside the UPDATE, so one bill never holds two approvals), linked, not_pending / not_reviewed, stale. No Attachment, BillLineItemAttachment or Bill write. Responses carry the reviewer's User PublicId, never the internal user id.
+  The evidence group (clean / flagged / invoice_only / amount_only / neither) is defined once in SQL (dbo.AttachmentBackfillEvidenceGroup) and used by both facets and queue; it is a filter label, not a conclusion.
+  Box's current file is compared with the SourceSha256 b1 checked: on a mismatch the detail returns no snippets (snippet_error content_changed) and the PDF route still serves the bytes with X-Content-Matches-Check: false.
+  Snippets are computed live per detail read (business/snippets.py, same primitives as evidence.py) and never stored or logged; the PDF is fetched only by the candidate's stored SourceFileId.
 External writes
-  None. Reads only: Box folder listing and file download (scripts/attachment_backfill_candidates.py), Document Intelligence read for scans.
+  None. Reads only: Box folder listing and file download (scripts/attachment_backfill_candidates.py, and the b2 review API's PDF/snippet reads), Document Intelligence read for scans.
 Sprocs
   CreateAttachmentBackfillRun
   DeleteStaleAttachmentBackfillCandidates
   InsertAttachmentBackfillCandidate
+  ReadAttachmentBackfillCandidateDetail
   ReadAttachmentBackfillCandidatesForVerification
+  ReadAttachmentBackfillQueue
   ReadAttachmentBackfillRunByPublicId
+  ReadAttachmentBackfillRunFacets
+  ReadAttachmentBackfillRunsForReview
   ReadAttachmentBackfillRunSummary
   ReadBillsForAttachmentBackfill
   ReadOpenAttachmentBackfillRuns
+  UndoAttachmentBackfillCandidateReview
+  UpdateAttachmentBackfillCandidateReview
   UpdateAttachmentBackfillCandidateVerification
   UpdateAttachmentBackfillRunStatus
 """

@@ -245,7 +245,7 @@ Supplement the audit endpoint with these checks:
 
 **Phase 2 — resolve the decision batch.** Present material gaps with concrete proposed resolutions, any target skips, and remaining authorization needs together. Apply authorization already given in the session. If preparation writes are needed (scoped sync, identity repair, document intake), perform them within that scope and repeat the affected audit reads before approving a packet or publishing. A report based on absent or stale rows is provisional.
 
-**Phase 3 — execute and verify.** Apply approved repairs/linkage, validate the packet, and run Steps 5–10. Continue through planned drain waits/resumptions without a new approval round. Pause for unresolved blockers or new facts requiring a user decision; report runtime failures clearly. `force=true` on `push-draw` bypasses the **entire** audit verdict — not a subset of checks: `evaluate_gates` drops the `audit_verdict != "clear"` gate wholesale, so every coverage, duplicate and cross-project finding the audit raised is waived in one flag. The write gates are still enforced. On `clear-removals` the flag is currently **accepted and never read** — it changes nothing. Use `force` only for a specific reviewed exception within the authorized scope, never to hide a failed invariant.
+**Phase 3 — execute and verify.** Apply approved repairs/linkage, validate the packet, and run Steps 5–10. Continue through planned drain waits/resumptions without a new approval round. Pause for unresolved blockers or new facts requiring a user decision; report runtime failures clearly. `force=true` on `push-draw` bypasses the **entire** audit verdict — not a subset of checks: `evaluate_gates` drops the `audit_verdict != "clear"` gate wholesale, so every coverage, duplicate and cross-project finding the audit raised is waived in one flag. The write gates are still enforced, and so is the **holding-code gate (U-746)**: a line or source on the Suspense sub cost code 00.02 halts `push-draw` with reason `holding_code` whatever `force` says — once before linking (from the audit's `holding_code` gaps) and again after linking, before anything is marked billed. On `clear-removals` the flag is currently **accepted and never read** — it changes nothing. Use `force` only for a specific reviewed exception within the authorized scope, never to hide a failed invariant.
 
 ## Write gates and preview side effects
 
@@ -334,6 +334,8 @@ print(f"matches={len(matches)}  Purchase-refs seen anywhere={seen_of_type}")  # 
 - Re-read source attachment links and inspect the actual PDFs, including foreign-project pages and duplicate vendor invoice numbers (KI-40/KI-41). A successful sync or empty text-screen result does not prove complete document coverage.
 
 ### 6. Every billed vendor source must have a SubCostCode
+
+**And it must not be the Suspense code 00.02** (`SubCostCode.IsHoldingCode`, U-632). A holding code is a parking spot, never billable: `draw-audit` reports it as a `holding_code` halt gap (source SCC or the invoice line's own SCC), `push-draw` refuses it even under `force`, `complete_invoice` refuses it, and `_mark_source_as_billed` raises `HoldingCodeRefused` rather than bill it (U-746). The fix is upstream: recode the source in QBO (and the invoice line's item), or remove the line from the draw.
 
 Check the proposed and persisted `BillLineItem` / `ExpenseLineItem` / `BillCreditLineItem` sources before packet generation or workbook writes. A missing SubCostCode is a blocker, just like a missing attachment. **`EmployeeLaborLineItem` is a fourth source type and is out of scope for both gates** — it carries no vendor PDF and is not one of the three vendor source tables; the Step 5 coverage query does not cover it, so read a labor line's zero/NULL columns there as "not applicable", never as a gap. An uncoded source can leave a blank cost code in DETAILS and disappear from the AIA rollup even while its amount remains in the ledger (KI-36).
 
@@ -817,7 +819,7 @@ finally:
 
 The connector creates `dbo.Invoice` with `IsDraft=False` but does NOT call `complete_invoice` — source `IsBilled` flags remain `False` after Step 4 linkage. Skipping this step leaves the sources surfacing in the project's "billable items" list, riskable for double-billing.
 
-`InvoiceService._mark_source_as_billed(line_item)` handles all three source types (BillLineItem, ExpenseLineItem, BillCreditLineItem), is a no-op if already `True`, and is safe for Manual lines:
+`InvoiceService._mark_source_as_billed(line_item)` handles all three source types (BillLineItem, ExpenseLineItem, BillCreditLineItem), is a no-op if already `True`, is safe for Manual lines, and raises `HoldingCodeRefused` for a source still on the Suspense code 00.02 (U-746 — CRITICAL #6; a loop that hits it has already billed the lines before it, so clear holding codes first):
 
 ```python
 from entities.invoice.business.service import InvoiceService
@@ -826,6 +828,8 @@ from entities.invoice_line_item.business.service import InvoiceLineItemService
 inv_svc = InvoiceService()
 invoice = inv_svc.read_by_public_id(public_id=invoice_public_id)
 line_items = InvoiceLineItemService().read_by_invoice_id(invoice_id=invoice.id)
+holding = inv_svc.holding_line_item_ids(line_items)  # check ALL lines before billing ANY
+assert not holding, f"lines on Suspense 00.02 - recode upstream first: {holding}"
 for li in line_items:
     inv_svc._mark_source_as_billed(li)  # safe no-op for Manual lines
 ```
@@ -1014,7 +1018,7 @@ Collect known findings in the Phase 2 decision batch. Reuse decisions already ma
 - Missing/ambiguous current QBO project or invoice identity; conflicting duplicate project/invoice rows.
 - An external target is missing or unmapped without an acknowledged skip, or a required write gate is closed.
 - Proposed source belongs to another project, is already billed elsewhere, remains ambiguous, or would duplicate a charge.
-- A vendor source lacks a supporting readable document or SubCostCode, or a document contains another project's charge/pages.
+- A vendor source lacks a supporting readable document or SubCostCode, sits on the Suspense code 00.02, or a document contains another project's charge/pages.
 - An unexplained Manual line lacks a documented disposition; paired markup and agreed fee lines must remain explicitly classified and reconciled.
 - QBO/dbo line identity/count/total mismatch, incorrect parent/source values, incomplete IsBilled updates, or missing/incorrect packet pages and totals.
 - Unresolved extra draw tags, duplicate col-Z keys, stale Box values, or AIA-vs-ledger differences. Apply only the explicitly documented rounding tolerance in Step 10.

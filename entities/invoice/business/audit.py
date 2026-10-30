@@ -7,7 +7,7 @@ import logging
 import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from entities.invoice.business.reconciliation import (
     InvoiceReconciliationService,
@@ -90,6 +90,14 @@ def compute_coverage_gaps(
         for r in rows
         if r["attachment_count"] < 1 or r["sub_cost_code_id"] is None
     ]
+
+
+def compute_holding_code_gaps(
+    coverage_rows: list[dict],
+    is_holding_code: Callable[[Optional[int]], bool],
+) -> list[dict]:
+    """Resolved sources on a holding SCC (00.02) — never billable, `force` cannot waive (U-746)."""
+    return [r for r in coverage_rows if is_holding_code(r["sub_cost_code_id"])]
 
 
 def detect_double_bill_pairs(lines: list[dict]) -> list[dict]:
@@ -271,6 +279,18 @@ def assemble_audit_report(sections: dict) -> dict:
             }
         )
 
+    for row in sections.get("holding_code_gaps") or []:
+        gaps.append(
+            {
+                "class": "holding_code",
+                "severity": "halt",
+                "invoice_line_item_id": row.get("invoice_line_item_id"),
+                "source_type": row.get("source_type"),
+                "source_line_item_id": row.get("source_line_item_id"),
+                "sub_cost_code_id": row.get("sub_cost_code_id"),
+            }
+        )
+
     for pair in sections.get("double_bill_pairs") or []:
         gaps.append(
             {
@@ -362,6 +382,16 @@ class InvoiceDrawAuditService:
         coverage_map = self.invoice_repo.read_source_line_coverage(binding_keys)
         coverage_gaps = compute_coverage_gaps(resolved_bindings, coverage_map)
         coverage_rows = _coverage_rows_from_bindings(resolved_bindings, coverage_map)
+        # Proposed sources, plus the invoice line's own SCC (complete_invoice checks both).
+        is_holding = self.invoice_service.holding_scc_service().is_holding_code
+        invoice_lines = self.invoice_service.invoice_line_item_service.read_by_invoice_id(
+            invoice_id=invoice.id
+        )
+        holding_code_gaps = compute_holding_code_gaps(coverage_rows, is_holding) + [
+            {"invoice_line_item_id": li.id, "sub_cost_code_id": li.sub_cost_code_id}
+            for li in invoice_lines
+            if is_holding(li.sub_cost_code_id)
+        ]
 
         double_bill_lines = self._build_double_bill_lines(
             link_payload["lines"], resolved_bindings
@@ -382,6 +412,7 @@ class InvoiceDrawAuditService:
             "staging_stale": staging.get("stale") or [],
             "link_lines": link_payload["lines"],
             "coverage_gaps": coverage_gaps,
+            "holding_code_gaps": holding_code_gaps,
             "double_bill_pairs": double_bill_pairs,
             "double_bill_invoice_number_pairs": double_bill_invoice_number_pairs,
             "foreign_project_markers": foreign_project_markers,

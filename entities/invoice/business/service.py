@@ -5,6 +5,8 @@ Owns
 Invariants
   RBAC: Modules.INVOICES require_module_api; by-id paths assert_can_access_project on invoice.project_id.
   Concurrency: UpdateInvoiceById passes @RowVersion.
+  Holding SCC (U-632/U-746): a source line on a holding sub cost code (00.02) is never marked billed;
+    _mark_source_as_billed raises HoldingCodeRefused whatever path calls it.
 External writes
   MS sharepoint_upload on packet/attachment fan-out (ALLOW_MS_WRITES).
   Box push_blob / draw-stamp excel helpers (ALLOW_BOX_WRITES).
@@ -49,6 +51,7 @@ from shared.api.money import to_decimal_or_none
 from shared.lifecycle.terminal_lock import assert_editable
 from shared.lifecycle.completion_gate import HoldingCodeRefused
 from entities.sub_cost_code.business.service import SubCostCodeService
+from entities.sub_cost_code.business.holding_lines import assert_no_holding_sub_cost_codes
 
 QBO_DELETE_REFUSAL = (
     "This invoice came from QuickBooks; delete it in QuickBooks instead."
@@ -275,6 +278,7 @@ class InvoiceService:
         self._drive_repo: Optional[Any] = None
         self._project_module_connector: Optional[Any] = None
         self._project_excel_connector: Optional[Any] = None
+        self._scc_service: Optional[SubCostCodeService] = None
 
     @property
     def driveitem_service(self):
@@ -547,19 +551,32 @@ class InvoiceService:
             return cli.sub_cost_code_id if cli else None
         return None
 
-    def invoice_has_holding_line(self, invoice_id: int) -> bool:
-        """True when any line's own SCC OR its source line's SCC is a holding code.
+    def holding_scc_service(self) -> SubCostCodeService:
+        """One SubCostCodeService per InvoiceService, so its holding-id memo is read once."""
+        svc = getattr(self, "_scc_service", None)
+        if svc is None:
+            svc = self._scc_service = SubCostCodeService()
+        return svc
+
+    def _line_on_holding_code(self, line_item) -> bool:
+        """The line's own SCC OR its source line's SCC is a holding code.
 
         Both are checked: the QBO push resolves a source-backed line's item from the
         source line, so a real code stamped on the invoice line does not clear it.
         """
-        line_items = self.invoice_line_item_service.read_by_invoice_id(invoice_id=invoice_id)
-        scc_svc = SubCostCodeService()
-        return any(
-            scc_svc.is_holding_code(li.sub_cost_code_id)
-            or scc_svc.is_holding_code(self._source_line_sub_cost_code_id(li))
-            for li in line_items
+        scc_svc = self.holding_scc_service()
+        return scc_svc.is_holding_code(line_item.sub_cost_code_id) or scc_svc.is_holding_code(
+            self._source_line_sub_cost_code_id(line_item)
         )
+
+    def holding_line_item_ids(self, line_items) -> list[int]:
+        """Ids of the given invoice lines that sit on a holding code (own or source SCC)."""
+        return [li.id for li in line_items if self._line_on_holding_code(li)]
+
+    def invoice_has_holding_line(self, invoice_id: int) -> bool:
+        """True when any line's own SCC OR its source line's SCC is a holding code."""
+        line_items = self.invoice_line_item_service.read_by_invoice_id(invoice_id=invoice_id)
+        return any(self._line_on_holding_code(li) for li in line_items)
 
     def _assert_no_holding_code_on_complete(self, invoice_id: int) -> None:
         if self.invoice_has_holding_line(invoice_id):
@@ -648,6 +665,10 @@ class InvoiceService:
             # Mark source line item as billed
             try:
                 self._mark_source_as_billed(line_item)
+            except HoldingCodeRefused:
+                # A recode to 00.02 raced the up-front check: stop before the packet
+                # and uploads put the line in front of the client (U-746).
+                raise
             except Exception as e:
                 logger.warning(f"Error marking source as billed for line item {line_item.id}: {e}")
                 errors.append({"line_item_id": line_item.id, "error": f"mark_billed: {str(e)}"})
@@ -1917,13 +1938,28 @@ class InvoiceService:
                     f"QBO Purchase HasBeenBilled update not yet implemented"
                 )
 
+    def _refuse_holding_source(self, line_item, source) -> None:
+        """U-746: never bill a source when the line or the source is on a holding SCC (00.02).
+
+        Same own-OR-source rule as ``_line_on_holding_code``, using the source already read.
+        """
+        assert_no_holding_sub_cost_codes(
+            [line_item.sub_cost_code_id, source.sub_cost_code_id],
+            message="A line on the suspense sub cost code cannot be marked billed. Recode it first.",
+            scc_svc=self.holding_scc_service(),
+        )
+
     def _mark_source_as_billed(self, line_item) -> None:
-        """Mark the source line item (BillLineItem, ExpenseLineItem, BillCreditLineItem) as billed."""
+        """Mark the source line item (BillLineItem, ExpenseLineItem, BillCreditLineItem) as billed.
+
+        Raises HoldingCodeRefused, writing nothing, when the source is on a holding SCC.
+        """
         if line_item.source_type == "BillLineItem" and line_item.bill_line_item_id:
             from entities.bill_line_item.business.service import BillLineItemService
             svc = BillLineItemService()
             source = svc.read_by_id(id=line_item.bill_line_item_id)
             if source and not source.is_billed:
+                self._refuse_holding_source(line_item, source)
                 from entities.bill.business.service import BillService
                 bill = BillService().read_by_id(id=source.bill_id) if source.bill_id else None
                 bill_public_id = bill.public_id if bill else None
@@ -1947,6 +1983,7 @@ class InvoiceService:
             svc = ExpenseLineItemService()
             source = svc.read_by_id(id=line_item.expense_line_item_id)
             if source and not source.is_billed:
+                self._refuse_holding_source(line_item, source)
                 from entities.expense.business.service import ExpenseService
                 expense = ExpenseService().read_by_id(id=source.expense_id) if source.expense_id else None
                 expense_public_id = expense.public_id if expense else None
@@ -1969,6 +2006,7 @@ class InvoiceService:
             svc = BillCreditLineItemService()
             source = svc.read_by_id(id=line_item.bill_credit_line_item_id)
             if source and not source.is_billed:
+                self._refuse_holding_source(line_item, source)
                 from entities.bill_credit.business.service import BillCreditService
                 credit = BillCreditService().read_by_id(id=source.bill_credit_id) if source.bill_credit_id else None
                 credit_public_id = credit.public_id if credit else None

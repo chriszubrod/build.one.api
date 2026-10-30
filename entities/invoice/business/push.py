@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from decimal import Decimal
 from typing import Any, Callable, Optional
@@ -15,6 +16,8 @@ from entities.invoice.business.reconciliation import InvoiceReconciliationServic
 from entities.invoice.business.service import InvoiceService
 from entities.invoice.persistence.repo import InvoiceRepository
 from entities.invoice_line_item.business.service import InvoiceLineItemService
+
+logger = logging.getLogger(__name__)
 
 _PUSH_NOTE = (
     "Box/MS steps record enqueue (or MS direct Graph stamp) only — external "
@@ -283,14 +286,20 @@ def evaluate_gates(
     box_writes: Optional[str],
     audit_verdict: str,
     force: bool,
+    *,
+    holding_code: bool,
 ) -> str:
     """
     Pure gate evaluation for draw push.
 
-    Returns 'proceed', 'writes_disabled', or 'audit_not_clear'.
+    Returns 'proceed', 'writes_disabled', 'holding_code', or 'audit_not_clear'.
+    ``holding_code`` outranks the audit verdict and ``force`` does not waive it:
+    a source on a holding SCC (00.02) can never be billed (U-632, U-746).
     """
     if not (_env_writes_enabled(ms_writes) and _env_writes_enabled(box_writes)):
         return "writes_disabled"
+    if holding_code:
+        return "holding_code"
     if audit_verdict != "clear" and not force:
         return "audit_not_clear"
     return "proceed"
@@ -456,13 +465,20 @@ class InvoiceDrawPushService:
         # c. Audit gate
         audit_report = self.audit_service.audit(invoice_public_id)
         audit_verdict = audit_report.get("verdict")
+        holding_gaps = [
+            g for g in audit_report.get("gaps") or [] if g.get("class") == "holding_code"
+        ]
         gate = evaluate_gates(
             os.getenv("ALLOW_MS_WRITES"),
             os.getenv("ALLOW_BOX_WRITES"),
             audit_verdict=audit_verdict or "halt",
             force=force,
+            holding_code=bool(holding_gaps),
         )
         steps.append({"step": "audit", "status": "ok", "verdict": audit_verdict})
+        if gate == "holding_code":
+            steps.append({"step": "holding_code_gate", "status": "halt"})
+            return _halt("holding_code", holding_lines=holding_gaps)
         if gate == "audit_not_clear":
             steps.append({"step": "audit_gate", "status": "halt"})
             return _halt("audit_not_clear", audit=audit_report)
@@ -484,6 +500,25 @@ class InvoiceDrawPushService:
             return _halt("apply_links_failed")
 
         line_items = self.line_item_service.read_by_invoice_id(invoice_id=invoice.id)
+
+        # d2. holding SCC re-check on the persisted links, before anything is billed
+        # (U-746): apply_links re-proposes at apply time, so the audit's view of the
+        # sources can be stale. Same predicate complete_invoice uses.
+        try:
+            holding_ids = self.invoice_service.holding_line_item_ids(line_items)
+        except Exception as exc:
+            # The type only: an access error's text would name another project's row.
+            logger.exception("push_draw holding-code recheck failed for %s", invoice_public_id)
+            steps.append(
+                {"step": "holding_code_recheck", "status": "halt", "error": type(exc).__name__}
+            )
+            return _halt("holding_code_check_failed")
+        if holding_ids:
+            steps.append({"step": "holding_code_recheck", "status": "halt"})
+            return _halt(
+                "holding_code",
+                holding_lines=[{"invoice_line_item_id": i} for i in holding_ids],
+            )
 
         # e. mark IsBilled
         try:

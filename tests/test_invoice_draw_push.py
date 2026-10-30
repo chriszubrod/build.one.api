@@ -25,21 +25,21 @@ def test_writes_enabled_either_off():
 
 
 def test_evaluate_gates_writes_disabled_when_either_gate_off():
-    assert evaluate_gates(None, "true", "clear", False) == "writes_disabled"
-    assert evaluate_gates("true", None, "clear", False) == "writes_disabled"
-    assert evaluate_gates("false", "true", "clear", False) == "writes_disabled"
+    assert evaluate_gates(None, "true", "clear", False, holding_code=False) == "writes_disabled"
+    assert evaluate_gates("true", None, "clear", False, holding_code=False) == "writes_disabled"
+    assert evaluate_gates("false", "true", "clear", False, holding_code=False) == "writes_disabled"
 
 
 def test_evaluate_gates_audit_halt_without_force():
-    assert evaluate_gates("true", "true", "halt", False) == "audit_not_clear"
+    assert evaluate_gates("true", "true", "halt", False, holding_code=False) == "audit_not_clear"
 
 
 def test_evaluate_gates_audit_halt_with_force_proceeds():
-    assert evaluate_gates("true", "true", "halt", True) == "proceed"
+    assert evaluate_gates("true", "true", "halt", True, holding_code=False) == "proceed"
 
 
 def test_evaluate_gates_clear_proceeds():
-    assert evaluate_gates("true", "true", "clear", False) == "proceed"
+    assert evaluate_gates("true", "true", "clear", False, holding_code=False) == "proceed"
 
 
 def _counts(**overrides):
@@ -94,6 +94,7 @@ def _push_service_with_mocks(**kwargs):
     invoice.is_draft = False
     invoice_service = Mock()
     invoice_service.read_by_public_id.return_value = invoice
+    invoice_service.holding_line_item_ids.return_value = []
     invoice_repo = Mock()
     invoice_repo.read_source_lines_missing_readable_blob.return_value = []
     invoice_repo.compute_invoice_draw_matrix.return_value = _counts()

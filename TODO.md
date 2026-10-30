@@ -2,6 +2,16 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-746 follow-ups - push-draw Suspense (00.02) gate (booked 2026-10-30)
+
+U-746 made a holding-coded line or source unbillable on every invoice path: `draw-audit` reports a `holding_code` halt gap, `push_draw` halts on it whatever `force` says (before linking, and again after linking before billing), and `_mark_source_as_billed` raises `HoldingCodeRefused`. Deferred from its three review passes:
+
+- [ ] **A generic `waivable` flag on audit gaps.** `push_draw` picks out the non-waivable gap by matching the class string `"holding_code"`, and `evaluate_gates` takes a domain-specific `holding_code` bool. A second non-waivable class (a foreign-project page leak is the obvious candidate) would mean another string match. Better: the audit marks each gap `waivable`, `force` waives only waivable halts, and `evaluate_gates` takes one `unwaivable_halt` input. This is the same work as the "narrower waiver than all-or-nothing" item booked from SHT-25.
+- [ ] **Push now reads each source line twice.** The d2 recheck (`holding_line_item_ids` → `_source_line_sub_cost_code_id`) and step e (`_mark_source_as_billed`) each `read_by_id` the same source row, so a 50-line draw costs ~100 source reads. Fold this into **U-632a item 1** (one set-based read for the own-or-source predicate, which `InvoiceRepository.read_source_line_coverage` nearly is) rather than forking a second implementation for push only.
+- [ ] **The audit reads the invoice's line items a second time** for their own SCC, although `propose_links` → `ReadInvoiceSourceLinkLines` already selects every line. Adding `ili.SubCostCodeId` to that sproc removes the read. Skipped because it is a SQL change plus a prod apply.
+- [ ] **`POST /generate/invoice/{id}/packet` has no holding gate** (Pass 3 residual, pre-existing). It renders a client packet that can include a 00.02 line. It writes only the stored packet Attachment, plus the Box draw-request enqueue when `ALLOW_BOX_WRITES` is set, and the route is INVOICES `can_read`. The playbook now says a 00.02 line never reaches a client document, so either gate this route on `holding_line_item_ids` or narrow that wording.
+- [ ] **Shared push fixtures.** `tests/test_u746_push_draw_holding_gate.py` imports `_push_service_with_mocks` / `_gates_open` / `_audit_clear` from `tests/test_invoice_draw_push.py`. Move them to a shared module when either file is next touched.
+
 ## U-745 follow-ups - M0 shadow + switched last rung (booked 2026-10-29, shipped `cea3c8d6`, switch BILL_CODING_M0_RUNG_ENABLED off)
 
 - [ ] **Switch-on bar:** turn BILL_CODING_M0_RUNG_ENABLED on only when the U-744 scorecard shows rung `m0` >= `similar_vote` on the same u701b-text-v2 rows where M0 ran (drop-row NULLs = M0 lost the no-wait race, mostly on the history short-circuit; compare on rows where M0 answered). Ask Chris before flipping.

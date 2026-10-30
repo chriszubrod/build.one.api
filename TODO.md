@@ -2,6 +2,31 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-535b b4 follow-ups - attachment-backfill apply/undo (booked 2026-10-30)
+
+b4 added `scripts/attachment_backfill_apply.py` + `entities/attachment_backfill/sql/b4_apply.sql` (DESIGN §13). Open items:
+
+- [ ] **Gate 2 apply order:** `dbo.attachment_backfill.sql` (undo-audit columns + proc) THEN `b4_apply.sql`. Run the CLI dry run first and read the database-size line.
+- [x] **Undo of an `applied` run cannot be re-applied:** FIXED in fix round 1 (R7): undo reopens `applied` -> `ready`.
+- [ ] **Reused attachment blob not health-checked:** the QBO attachable connector re-uploads a hash-matched attachment whose blob is missing; b4 links it as is. Add an `exists` probe (and heal from the downloaded bytes) if any reuse shows up in the dry run.
+- [ ] **No text fingerprint at create:** the web upload path calls `persist_text_fingerprint_failure_isolated`; b4 relies on the extraction timer only (pending mark). Confirm the timer builds the fingerprint / word-hash rows for these attachments.
+- [ ] **b1 write-surface guard is package-wide:** `tests/test_u535b_service.py::test_package_never_references_write_paths` still passes only because blob I/O is injected from the script. Narrow that guard to the b1/b2 modules explicitly and give `business/apply.py` its own allowlist.
+- [ ] **Apply-proc lock footprint:** `ApplyAttachmentBackfillCandidateLink` reads `BillLineItem` by BillId with UPDLOCK+HOLDLOCK; confirm prod has an index on `BillLineItem(BillId)` so the range lock stays on one bill.
+- [ ] **Multi-tenant attachment reuse:** `pick_reusable` reuses any same-hash Attachment; `dbo.Attachment` has no CompanyId. Single-company today; scope reuse by company before a 2nd Company (Phase 5b).
+- [ ] **RCSI behavioural test:** R8's READCOMMITTEDLOCK is pinned by proc text only (the shared Docker DB has RCSI off). Add a two-connection test on a throwaway RCSI database.
+- [ ] **Unregistered created attachments:** if registration fails right after create (`error_register`) or Ctrl-C lands between create and register, the attachment is left unlinked and outside the registry (logged by id / blob name). Reconcile by FileHash against the run's candidates if any show up.
+- [ ] **Download buffering** (same as the b2 item): `BoxHttpClient.download_file` buffers the whole body before the 25 MB post-check when SourceFileSize is NULL.
+
+- [ ] **[Pass 1 r2 residual, P3] Review/close lock-order deadlock:** the review procs take the run UPDLOCK after the candidate lock (plan: candidate by PublicId first) while Close/Apply/Undo go run -> candidate => a rare 1205 deadlock (a review save errors, or the close is counted `close_error`). Fix: in both review procs BEGIN TRAN; read RunId; lock the run (UPDLOCK, HOLDLOCK); then the existing UPDATE. Also fix the "whatever plan" comment.
+- [ ] **[Pass 1 r2 residual, P3] `_has_errors` misses `mark_pending_extraction_failed` and `*_kept_unknown`:** add them to the exit-4 predicate and the docs.
+- [ ] **[Pass 2] Undo sweep cost:** the per-attachment dynamic reference count scans ~15 un-indexed loose-pointer tables; a full-run undo is ~11k x 15 scans on Basic. Set-based sweep proc (or AttachmentId indexes, after checking the 2 GB cap).
+- [ ] **[Pass 2] No index on dbo.Attachment.FileHash:** ReadAttachmentBackfillAttachmentsByHash scans per candidate (apply + dry run). Filtered NC index (FileHash) INCLUDE (IsArchived, Status, ExpirationDate, ExtractionStatus, QboId) after a space check.
+- [ ] **[Pass 2] Two definitions of "attachment is referenced":** b4 catalog discovery vs ReadAttachmentLinkState's hand list, and the text-index tables are named twice in the delete proc. One shared predicate, or a guard test that they agree.
+- [ ] **[Pass 2] AttachmentCreatedByApply duplicates the registry:** record it once.
+- [ ] **[Pass 2] EXISTS instead of COUNT** in ReadAttachmentBackfillCandidatesForApply (BillAttachmentCount), and an OR EXISTS chain in the delete proc (keep the fail-closed ISNULL).
+- [ ] **[Pass 2] Small reuse/cleanup:** a shared `pdf_content_refusal(content)` for the apply.py / review.py post-download checks; shared `_positive_int` / `_print_counts` CLI helpers with the b1 script; drop the unused AttachmentId / SourceSha256 columns from ReadAttachmentBackfillLinkedCandidates; the sweep's registry read is unpaged.
+- [ ] **[Pass 2] Round trips:** each call opens a connection with a liveness probe, ~10 round trips per created candidate. Add a per-candidate connection context only if the run proves DB-bound.
+
 ## U-535b b2 follow-ups - attachment-backfill review API (booked 2026-10-30)
 
 b2 added the system-admin review API (`/api/v1/admin/attachment-backfill`). Deferred from its review passes:
@@ -10,12 +35,12 @@ b2 added the system-admin review API (`/api/v1/admin/attachment-backfill`). Defe
 - [ ] **One text path (Pass 2 #4):** `review.py::_read_text` re-implements b1's `service.py::_evaluate` text step (size gate, text layer, needs_ocr, OCR append, unreadable threshold) and imports the private `_non_space_len`. Factor a shared `read_text(...)` with typed ExtractFailed/OcrFailed.
 - [ ] **Detail cost per view (Pass 2 #3 / Pass 1):** each detail view re-downloads from Box and, for scans, re-OCRs (owner approved, <= ~$8.50 if all 1,894 opened); the PDF route downloads again. Options: branch on stored `UsedOcr` when the hash matches; a short in-process bytes cache keyed (SourceFileId, sha) (policy call: is that "storing"?). Watch DI spend in the first review sessions.
 - [ ] **Memory cap when SourceFileSize is NULL/stale (Pass 1, low):** `BoxHttpClient.download_file` buffers the whole body before the 25 MB post-check. Stream with a byte limit, or size-check via Box file info when the stored size is NULL. Admin-only, stored-id-only.
-- [ ] **Undo audit trail (Pass 3, below bar):** undo clears ReviewedByUserId/ReviewedDatetime without recording who undid it. Add an UndoneByUserId/UndoneDatetime pair or an event row before b4 relies on the review history.
+- [x] **Undo audit trail (Pass 3, below bar):** DONE in b4 (UndoneByUserId/UndoneDatetime, set by the undo proc from the request user). undo clears ReviewedByUserId/ReviewedDatetime without recording who undid it. Add an UndoneByUserId/UndoneDatetime pair or an event row before b4 relies on the review history.
 - [ ] **`Cache-Control: no-store` on detail/queue JSON (Pass 3, below bar):** snippets carry document text; set no-store explicitly.
 - [ ] **`bill_claimed_elsewhere` written three times with lock hints** (Insert, review UPDATE, undo UPDATE); a TVF cannot carry the table hints. Each copy names its siblings; keep them in sync.
 - [ ] **Primary-project APPLY in three procs** (Facets, Queue, Detail) - an inline TVF breaks b1's SQL fixture (no dbo.Project); each copy names its siblings.
 - [ ] **Queue paging cost:** every page evaluates the primary-project APPLY for every candidate of the run before TOP (~13.7k seeks). Measure on prod during the first review session; add a persisted sort key if slow.
-- [ ] **For b4 (not b2 defects):** set AttachmentId only with `ReviewStatus='approved'` + the RowVersion in the same UPDATE (or move the run out of 'ready' first) so an undo cannot race the link; re-check SourceSha256 on the bytes actually linked; refuse a bill that gained a BLIA since generation; refuse stale (bill gone) candidates.
+- [x] **For b4 (not b2 defects):** DONE in b4 (RowVersion + approved + unlinked re-checked inside the link transaction; SHA-256 of the linked bytes = SourceSha256; bill_has_attachment; bill_missing). set AttachmentId only with `ReviewStatus='approved'` + the RowVersion in the same UPDATE (or move the run out of 'ready' first) so an undo cannot race the link; re-check SourceSha256 on the bytes actually linked; refuse a bill that gained a BLIA since generation; refuse stale (bill gone) candidates.
 - [ ] Shared Docker test DB: the b2 SQL fixture drops/recreates `dbo.[User]` (u701b/u744 fixtures also use it) - never run those SQL files concurrently.
 
 ## U-746 follow-ups - push-draw Suspense (00.02) gate (booked 2026-10-30)

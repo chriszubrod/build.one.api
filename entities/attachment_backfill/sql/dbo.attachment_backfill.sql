@@ -20,6 +20,8 @@
 --   returns an approved/rejected, unlinked candidate of a 'ready' run to pending at the caller's RowVersion. Both write only the
 --   review columns. The evidence group (clean / flagged / invoice_only / amount_only / neither) is defined once, in
 --   dbo.AttachmentBackfillEvidenceGroup, and used by both the facets and the queue; it is a filter label, not a conclusion.
+--   b4: UndoAttachmentBackfillCandidateReview also records UndoneByUserId / UndoneDatetime (additive columns) in the same UPDATE.
+--   The b4 apply/undo objects (link writes, AttachmentBackfillCandidateLink) live in b4_apply.sql, applied after this file.
 -- Depends (read-only): dbo.Bill, dbo.Vendor, dbo.BillLineItem, dbo.BillLineItemAttachment, dbo.Project.
 -- Sprocs: CreateAttachmentBackfillRun, DeleteStaleAttachmentBackfillCandidates, InsertAttachmentBackfillCandidate, ReadAttachmentBackfillCandidateDetail, ReadAttachmentBackfillCandidatesForVerification, ReadAttachmentBackfillQueue, ReadAttachmentBackfillRunByPublicId, ReadAttachmentBackfillRunFacets, ReadAttachmentBackfillRunsForReview, ReadAttachmentBackfillRunSummary, ReadBillsForAttachmentBackfill, ReadOpenAttachmentBackfillRuns, UndoAttachmentBackfillCandidateReview, UpdateAttachmentBackfillCandidateReview, UpdateAttachmentBackfillCandidateVerification, UpdateAttachmentBackfillRunStatus
 --
@@ -757,7 +759,10 @@ BEGIN
                INSERTED.[ReviewedByUserId], INSERTED.[ReviewedDatetime]
             INTO @Updated
         FROM dbo.[AttachmentBackfillCandidate] AS c
-        INNER JOIN dbo.[AttachmentBackfillRun] AS r ON r.[Id] = c.[RunId] AND r.[Status] = N'ready'
+        -- UPDLOCK: under READ_COMMITTED_SNAPSHOT a plain read could see a stale 'ready' while
+        -- CloseAttachmentBackfillRunIfDone commits 'applied'. A U lock on the run row conflicts with the closure's U/X
+        -- lock whatever plan is chosen, so this waits and then sees 'applied' (b4 R8 / S2).
+        INNER JOIN dbo.[AttachmentBackfillRun] AS r WITH (UPDLOCK) ON r.[Id] = c.[RunId] AND r.[Status] = N'ready'
         WHERE c.[PublicId] = @PublicId
           AND c.[ReviewStatus] = N'pending'
           AND c.[AttachmentId] IS NULL
@@ -823,14 +828,33 @@ BEGIN
 END
 GO
 
+-- b4 (undo audit trail): who last undid a review, and when. Additive, nullable, idempotent. Written only by
+-- UndoAttachmentBackfillCandidateReview, from the reviewer it is about to clear; a later approve/reject leaves them as is.
+IF OBJECT_ID('dbo.AttachmentBackfillCandidate', 'U') IS NOT NULL
+   AND COL_LENGTH('dbo.AttachmentBackfillCandidate', 'UndoneByUserId') IS NULL
+BEGIN
+    ALTER TABLE dbo.[AttachmentBackfillCandidate] ADD [UndoneByUserId] BIGINT NULL;
+END
+GO
+
+IF OBJECT_ID('dbo.AttachmentBackfillCandidate', 'U') IS NOT NULL
+   AND COL_LENGTH('dbo.AttachmentBackfillCandidate', 'UndoneDatetime') IS NULL
+BEGIN
+    ALTER TABLE dbo.[AttachmentBackfillCandidate] ADD [UndoneDatetime] DATETIME2(3) NULL;
+END
+GO
+
 -- Undo one review: approved/rejected -> pending, clearing RejectReason, ReviewedByUserId and ReviewedDatetime. Only on a
 -- 'ready' run, while AttachmentId IS NULL, at the caller's RowVersion. Same row shape as the review proc. Refused, in this
 -- order: 'not_found'; 'run_not_ready'; 'bill_claimed_elsewhere' (undo of a REJECTED row only, when another candidate for the
 -- same bill is pending or approved in a different non-cancelled run -- checked inside the UPDATE's WHERE; undo of an approved
 -- row is unaffected); 'linked'; 'not_reviewed' (already pending); 'stale'.
+-- b4: the same UPDATE records UndoneByUserId (the caller; NULL when the caller passes none) and UndoneDatetime before it
+-- clears the reviewer, so the review history keeps who undid what.
 CREATE OR ALTER PROCEDURE dbo.UndoAttachmentBackfillCandidateReview
-    @PublicId   UNIQUEIDENTIFIER,
-    @RowVersion BINARY(8)
+    @PublicId       UNIQUEIDENTIFIER,
+    @RowVersion     BINARY(8),
+    @UndoneByUserId BIGINT = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -843,6 +867,8 @@ BEGIN
     UPDATE c
     SET [ReviewStatus]     = N'pending',
         [RejectReason]     = NULL,
+        [UndoneByUserId]   = @UndoneByUserId,
+        [UndoneDatetime]   = SYSUTCDATETIME(),
         [ReviewedByUserId] = NULL,
         [ReviewedDatetime] = NULL,
         [ModifiedDatetime] = SYSUTCDATETIME()
@@ -850,7 +876,8 @@ BEGIN
            INSERTED.[ReviewedByUserId], INSERTED.[ReviewedDatetime]
         INTO @Updated
     FROM dbo.[AttachmentBackfillCandidate] AS c
-    INNER JOIN dbo.[AttachmentBackfillRun] AS r ON r.[Id] = c.[RunId] AND r.[Status] = N'ready'
+    -- UPDLOCK: see UpdateAttachmentBackfillCandidateReview (b4 R8 / S2).
+    INNER JOIN dbo.[AttachmentBackfillRun] AS r WITH (UPDLOCK) ON r.[Id] = c.[RunId] AND r.[Status] = N'ready'
     WHERE c.[PublicId] = @PublicId
       AND c.[ReviewStatus] IN (N'approved', N'rejected')
       AND c.[AttachmentId] IS NULL

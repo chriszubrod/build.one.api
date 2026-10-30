@@ -4,7 +4,7 @@ Owns
   dbo.AttachmentBackfillRun — one generation pass of the U-535b Bill -> PDF backfill (source box|qbo, status).
   dbo.AttachmentBackfillCandidate — one proposed (Box file, Bill) link per row, its check status + neutral evidence and (b2+) its review.
 Invariants
-  b1 is staging only: nothing here writes Attachment, BillLineItemAttachment, blob storage or any outbox.
+  b1 (generation, check) and b2 (review) are staging only: they never write Attachment, BillLineItemAttachment, blob storage or any outbox. Only b4 (below) links.
   Only tier A is generated: normalized invoice # + amount exact and same sign + bill project = filename-prefix or folder project, mutually unique.
   Insert is idempotent on (RunId, SourceFileId). It is refused (RefusedReason) when: the run is not 'generating'; another file already claims the bill in this run; the same (SourceFileId, BillId) pair was rejected in any run; or the bill has a pending/approved candidate in another non-cancelled run (an 'applied' run counts, so a pending candidate left in an applied run blocks that bill until b4 resolves it).
   Resume (prune_stale) deletes this generating run's candidates that are pending, unchecked, unlinked and absent from the new plan, before inserting.
@@ -20,14 +20,29 @@ Invariants
   The evidence group (clean / flagged / invoice_only / amount_only / neither) is defined once in SQL (dbo.AttachmentBackfillEvidenceGroup) and used by both facets and queue; it is a filter label, not a conclusion.
   Box's current file is compared with the SourceSha256 b1 checked: on a mismatch the detail returns no snippets (snippet_error content_changed) and the PDF route still serves the bytes with X-Content-Matches-Check: false.
   Snippets are computed live per detail read (business/snippets.py, same primitives as evidence.py) and never stored or logged; the PDF is fetched only by the candidate's stored SourceFileId.
+  b2 undo also records UndoneByUserId (the request's user) and UndoneDatetime in the same UPDATE, before it clears the reviewer.
+  b4 apply (business/apply.py, scripts/attachment_backfill_apply.py, sql/b4_apply.sql; CLI system caller only): only an APPROVED, unlinked candidate of a 'ready' run is linked, and only after (1) DB pre-checks -- bill exists, has >= 1 line, has no BillLineItemAttachment on any line (bill_has_attachment), a SourceSha256 was stored, size <= 25 MB -- and (2) the Box bytes, fetched by the stored SourceFileId, are a PDF and hash to the stored SourceSha256 (else content_changed). The dry run (default) does DB reads only: no download, no write.
+  b4 store: a usable Attachment with the same FileHash (not archived, Status NULL/active, not expired; lowest Id) is reused, never duplicated (single-company assumption); else the unmodified bytes go to one new blob + Attachment (category bill_line_item), registered at once in AttachmentBackfillCreatedAttachment. The link is ONE transaction (ApplyAttachmentBackfillCandidateLink): Attachment -> Bill -> run -> candidate locks, full re-check (refusals in order: not_found, run_not_ready, linked, not_approved, stale, bill_missing, no_line_items, bill_has_attachment, attachment_missing, attachment_hash_mismatch), then one BillLineItemAttachment per bill line, each recorded in AttachmentBackfillCandidateLink, and the candidate's AttachmentId / LinkedDatetime / AttachmentCreatedByApply / LinkedBillStatus. Add-only on completed bills too: no Bill, line, amount, status or coding change.
+  b4 orphans: an attachment created for a candidate whose link is then refused or fails is deleted at once (row first, blob after the commit). The delete proc removes only REGISTERED attachments with no QboId and no reference from any table with an FK to Attachment or a column named AttachmentId (fail closed); a reused attachment is never deleted.
+  b4 undo by run: deletes exactly the recorded BillLineItemAttachment rows that still point at the candidate's attachment (a pre-existing link is never recorded, so never removed), clears the link columns, leaves ReviewStatus approved, and reopens an 'applied' run to 'ready'. Refused (attachment_pushed) when the attachment has a QboId, and (bill_completed_since_apply) when the bill is completed now but was not at link time. It ends with a sweep of the run's registry (created attachments deleted when nothing references them).
+  b4 run closure: the apply moves a 'ready' run to 'applied' once no candidate in it is pending or approved-unlinked (atomic check). The apply refuses to start, and stops between candidates, when the database is at/over --max-db-percent of its max size (or the size is unknown).
 External writes
-  None. Reads only: Box folder listing and file download (scripts/attachment_backfill_candidates.py, and the b2 review API's PDF/snippet reads), Document Intelligence read for scans.
+  b1/b2: none. Reads only: Box folder listing and file download (scripts/attachment_backfill_candidates.py, and the b2 review API's PDF/snippet reads), Document Intelligence read for scans.
+  b4 apply/undo: Azure blob storage (new attachment blobs; deleting only blobs of attachments it created) via the CLI-injected blob store. No outbox row, SharePoint, Box write, Excel, QBO or email. The extraction timer picks up the pending mark later.
 Sprocs
+  ApplyAttachmentBackfillCandidateLink
+  CloseAttachmentBackfillRunIfDone
   CreateAttachmentBackfillRun
+  DeleteAttachmentBackfillCreatedAttachment
   DeleteStaleAttachmentBackfillCandidates
   InsertAttachmentBackfillCandidate
+  ReadAttachmentBackfillAttachmentsByHash
   ReadAttachmentBackfillCandidateDetail
+  ReadAttachmentBackfillCandidatesForApply
   ReadAttachmentBackfillCandidatesForVerification
+  ReadAttachmentBackfillCreatedAttachmentsToSweep
+  ReadAttachmentBackfillDatabaseSize
+  ReadAttachmentBackfillLinkedCandidates
   ReadAttachmentBackfillQueue
   ReadAttachmentBackfillRunByPublicId
   ReadAttachmentBackfillRunFacets
@@ -35,6 +50,8 @@ Sprocs
   ReadAttachmentBackfillRunSummary
   ReadBillsForAttachmentBackfill
   ReadOpenAttachmentBackfillRuns
+  RegisterAttachmentBackfillCreatedAttachment
+  UndoAttachmentBackfillCandidateLink
   UndoAttachmentBackfillCandidateReview
   UpdateAttachmentBackfillCandidateReview
   UpdateAttachmentBackfillCandidateVerification

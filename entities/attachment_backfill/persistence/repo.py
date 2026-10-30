@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from entities.attachment_backfill.business.matcher import BillRow
 from shared.api.money import to_decimal_or_none
+from shared.authz import current_user_id
 from shared.database import call_procedure, conn_ctx, get_connection, map_database_error
 
 logger = logging.getLogger(__name__)
@@ -339,16 +340,171 @@ class AttachmentBackfillRepository:
         except Exception as error:
             raise map_database_error(error)
 
-    def undo_candidate_review(self, *, public_id: str, row_version: bytes) -> Optional[dict]:
-        """Review columns back to pending; a refusal is a row with Id None and a RefusedReason."""
+    def undo_candidate_review(
+        self, *, public_id: str, row_version: bytes, undone_by_user_id: Optional[int] = None
+    ) -> Optional[dict]:
+        """Review columns back to pending; a refusal is a row with Id None and a RefusedReason.
+
+        The proc records UndoneByUserId/UndoneDatetime (b4 audit trail). The actor is the explicit argument, else the
+        request's authenticated user (shared.authz current_user_id, set by the auth dependency) -- the same ContextVar
+        threading other repos use for ActorUserId.
+        """
+        actor = undone_by_user_id if undone_by_user_id is not None else current_user_id.get()
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="UndoAttachmentBackfillCandidateReview",
-                    params={"PublicId": public_id, "RowVersion": row_version},
+                    params={"PublicId": public_id, "RowVersion": row_version, "UndoneByUserId": actor},
                 )
                 return _first(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+
+
+    # -- b4: apply / undo (b4_apply.sql) -------------------------------------------------------- #
+
+    def read_database_size(self) -> Optional[dict]:
+        """{UsedBytes, MaxSizeBytes}; MaxSizeBytes None when the cap cannot be determined."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(cursor=cursor, name="ReadAttachmentBackfillDatabaseSize", params={})
+                return _first(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+
+    def read_candidates_for_apply(self, *, run_id: int, after_id: int = 0, top: int = 100) -> list[dict]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadAttachmentBackfillCandidatesForApply",
+                    params={"RunId": run_id, "AfterId": after_id, "Top": top},
+                )
+                return _all(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+
+    def apply_candidate_link(
+        self,
+        *,
+        candidate_id: int,
+        row_version: bytes,
+        attachment_id: int,
+        attachment_created: bool,
+        created_by_user_id: Optional[int] = None,
+    ) -> Optional[dict]:
+        """One atomic link write; the row's RefusedReason is None when linked (b4_apply.sql documents the order)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ApplyAttachmentBackfillCandidateLink",
+                    params={
+                        "CandidateId": candidate_id,
+                        "RowVersion": row_version,
+                        "AttachmentId": attachment_id,
+                        "AttachmentCreated": _bit(attachment_created),
+                        "CreatedByUserId": created_by_user_id,
+                    },
+                )
+                return _first(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+
+    def read_linked_candidates(self, *, run_id: int, after_id: int = 0, top: int = 100) -> list[dict]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadAttachmentBackfillLinkedCandidates",
+                    params={"RunId": run_id, "AfterId": after_id, "Top": top},
+                )
+                return _all(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+
+    def undo_candidate_link(self, *, candidate_id: int) -> Optional[dict]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor, name="UndoAttachmentBackfillCandidateLink", params={"CandidateId": candidate_id}
+                )
+                return _first(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+
+    def delete_created_attachment(self, *, attachment_id: int, file_hash: str) -> Optional[dict]:
+        """{Deleted, BlobUrl, ExtractedTextBlobUrl, RefusedReason}; blobs are the caller's to delete after this commits."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="DeleteAttachmentBackfillCreatedAttachment",
+                    params={"AttachmentId": attachment_id, "FileHash": file_hash},
+                )
+                return _first(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+
+    def close_run_if_done(self, *, run_id: int) -> Optional[dict]:
+        """The run row when it moved 'ready' -> 'applied', else None."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(cursor=cursor, name="CloseAttachmentBackfillRunIfDone", params={"RunId": run_id})
+                return _first(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+
+    def read_attachments_by_hash(self, *, file_hash: str) -> list[dict]:
+        """Every Attachment row with this hash, lowest Id first, with the reuse facts (IsArchived, Status, ...)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor, name="ReadAttachmentBackfillAttachmentsByHash", params={"FileHash": file_hash}
+                )
+                return _all(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+
+    def register_created_attachment(
+        self, *, run_id: int, candidate_id: Optional[int], attachment_id: int, file_hash: str, blob_url: Optional[str]
+    ) -> Optional[dict]:
+        """Record an attachment the apply created (the only kind the delete proc will remove). Idempotent."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="RegisterAttachmentBackfillCreatedAttachment",
+                    params={
+                        "RunId": run_id,
+                        "CandidateId": candidate_id,
+                        "AttachmentId": attachment_id,
+                        "FileHash": file_hash,
+                        "BlobUrl": blob_url,
+                    },
+                )
+                return _first(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+
+    def read_created_attachments_to_sweep(self, *, run_id: int) -> list[dict]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor, name="ReadAttachmentBackfillCreatedAttachmentsToSweep", params={"RunId": run_id}
+                )
+                return _all(cursor)
         except Exception as error:
             raise map_database_error(error)

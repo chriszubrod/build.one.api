@@ -37,6 +37,10 @@ logger = logging.getLogger(__name__)
 DECISIONS = ("approved", "rejected")
 REJECT_REASONS = ("wrong_bill", "statement", "multiple_invoices", "duplicate", "unreadable", "other")
 EVIDENCE_GROUPS = ("clean", "flagged", "invoice_only", "amount_only", "neither")
+# b5: the queue also filters by 'sample' (members of the run's OPEN review sample, b5_bulk.sql), and the facets add rows with
+# evidence_group 'sample' (the members counted a second time, same shape). It is a filter, not an evidence group.
+SAMPLE_GROUP = "sample"
+QUEUE_GROUPS = EVIDENCE_GROUPS + (SAMPLE_GROUP,)
 REVIEW_STATUSES = ("pending", "approved", "rejected")
 QUEUE_DEFAULT_LIMIT = 50
 QUEUE_MAX_LIMIT = 200

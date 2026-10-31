@@ -15,7 +15,7 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, model_validator
 
 from entities.attachment_backfill.business.review import (
     DECISIONS,
-    EVIDENCE_GROUPS,
+    QUEUE_GROUPS,
     QUEUE_DEFAULT_LIMIT,
     QUEUE_MAX_LIMIT,
     REJECT_REASONS,
@@ -35,7 +35,7 @@ router = APIRouter(prefix="/api/v1/admin/attachment-backfill", tags=["api", "adm
 
 # Built from review.py's tuples (Literal[tuple] == Literal[*items]): one Python source for each value set.
 Decision = Literal[DECISIONS]
-EvidenceGroup = Literal[EVIDENCE_GROUPS]
+QueueGroup = Literal[QUEUE_GROUPS]  # the evidence groups + 'sample' (b5: the open review sample)
 ReviewStatusFilter = Literal[REVIEW_STATUSES + ("all",)]
 RejectReason = Literal[REJECT_REASONS]
 # Base64 in the JSON body, decoded once at validation to the 8-byte ROWVERSION (ValueError -> 422).
@@ -152,7 +152,7 @@ def run_facets(
 @router.get("/runs/{run_public_id}/queue")
 def run_queue(
     run_public_id: str,
-    group: Optional[EvidenceGroup] = Query(default=None),
+    group: Optional[QueueGroup] = Query(default=None),
     project_id: Optional[str] = Query(default=None, description="Project PublicId, or 'none' for no project"),
     year: Optional[str] = Query(default=None, description="Bill year, or 'none' for candidates whose bill is gone"),
     review_status: ReviewStatusFilter = Query(default="pending"),

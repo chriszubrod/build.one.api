@@ -508,3 +508,132 @@ class AttachmentBackfillRepository:
                 return _all(cursor)
         except Exception as error:
             raise map_database_error(error)
+
+
+    # -- b5: review sample + sample-gated bulk approval (b5_bulk.sql) ---------------------------- #
+
+    def draw_sample(
+        self, *, run_id: int, sample_size: int, created_by_user_id: Optional[int], dry_run: bool, seed: Optional[str] = None
+    ) -> Optional[dict]:
+        """{SamplePublicId, SampleSize, Seed, EligibleCount, Drawn, RefusedReason}; dry_run decides and counts only.
+
+        The seed is server-generated when None (the only path the CLI uses); passing one is for tests.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="DrawAttachmentBackfillSample",
+                    params={
+                        "RunId": run_id,
+                        "SampleSize": sample_size,
+                        "Seed": seed,
+                        "CreatedByUserId": created_by_user_id,
+                        "DryRun": _bit(dry_run),
+                    },
+                )
+                return _first(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+
+    def close_sample(self, *, run_id: int) -> Optional[dict]:
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(cursor=cursor, name="CloseAttachmentBackfillSample", params={"RunId": run_id})
+                return _first(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+
+    def read_sample_status(self, *, run_id: int) -> Optional[dict]:
+        """The run's open (else latest) sample with counts only; None when the run never had a sample."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(cursor=cursor, name="ReadAttachmentBackfillSampleStatus", params={"RunId": run_id})
+                return _first(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+
+    def read_sample_members(self, *, run_id: int) -> list[dict]:
+        """The open sample's members for the blind export (no human review status by construction)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(cursor=cursor, name="ReadAttachmentBackfillSampleMembers", params={"RunId": run_id})
+                rows = _all(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+        for row in rows:
+            row["TotalAmount"] = to_decimal_or_none(row.get("TotalAmount"))
+        return rows
+
+    def record_second_reviews(self, *, sample_public_id: str, rows: list, reviewer: str) -> Optional[dict]:
+        """One all-or-nothing batch of second verdicts: {Recorded, SecondMissing, BadRow, RefusedReason}.
+
+        `rows` carry candidate_public_id / verdict / reason attributes; the proc validates and writes them in one transaction.
+        """
+        rows_json = json.dumps(
+            [{"candidate_public_id": r.candidate_public_id, "verdict": r.verdict, "reason": r.reason} for r in rows]
+        )
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="RecordAttachmentBackfillSampleSecondReviews",
+                    params={"SamplePublicId": sample_public_id, "RowsJson": rows_json, "Reviewer": reviewer},
+                )
+                return _first(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+
+    def bulk_approve(
+        self,
+        *,
+        run_id: int,
+        approved_by_user_id: Optional[int],
+        batch_size: int,
+        bulk_approval_public_id: Optional[str] = None,
+        dry_run: bool = False,
+    ) -> Optional[dict]:
+        """One batch: {BulkApprovalPublicId, Approved, Remaining, ExcludedBillMissing, ExcludedClaimedElsewhere,
+        SampleMembers, RefusedReason}."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="BulkApproveAttachmentBackfillCandidates",
+                    params={
+                        "RunId": run_id,
+                        "ApprovedByUserId": approved_by_user_id,
+                        "BatchSize": batch_size,
+                        "BulkApprovalPublicId": bulk_approval_public_id,
+                        "DryRun": _bit(dry_run),
+                    },
+                )
+                return _first(cursor)
+        except Exception as error:
+            raise map_database_error(error)
+
+    def undo_bulk_approval(
+        self, *, bulk_approval_public_id: str, undone_by_user_id: Optional[int], dry_run: bool
+    ) -> Optional[dict]:
+        """{BulkApprovalPublicId, Reverted, KeptLinked, Completed, RefusedReason}."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="UndoAttachmentBackfillBulkApproval",
+                    params={
+                        "BulkApprovalPublicId": bulk_approval_public_id,
+                        "UndoneByUserId": undone_by_user_id,
+                        "DryRun": _bit(dry_run),
+                    },
+                )
+                return _first(cursor)
+        except Exception as error:
+            raise map_database_error(error)

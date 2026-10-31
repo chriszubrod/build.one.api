@@ -22,6 +22,12 @@
 --   dbo.AttachmentBackfillEvidenceGroup, and used by both the facets and the queue; it is a filter label, not a conclusion.
 --   b4: UndoAttachmentBackfillCandidateReview also records UndoneByUserId / UndoneDatetime (additive columns) in the same UPDATE.
 --   The b4 apply/undo objects (link writes, AttachmentBackfillCandidateLink) live in b4_apply.sql, applied after this file.
+--   b5: ApprovalMethod (NULL = individual, 'bulk') and BulkApprovalId are additive columns here; the review and review-undo
+--   procs set both to NULL, so only BulkApproveAttachmentBackfillCandidates (b5_bulk.sql, applied after b4_apply.sql) marks a
+--   row 'bulk'. The queue accepts @EvidenceGroup = 'sample' (members of the run's OPEN sample) and the facets add 'sample' rows
+--   (the members counted again, same shape); both read the sample tables only when they exist, other groups are unchanged.
+--   b5 (sticky rejection): RejectCount counts every reject the review proc ever wrote (never decremented, not even by an undo);
+--   b5_bulk.sql compares it with the count at draw time, so a reject later undone still blocks the bulk / a redraw.
 -- Depends (read-only): dbo.Bill, dbo.Vendor, dbo.BillLineItem, dbo.BillLineItemAttachment, dbo.Project.
 -- Sprocs: CreateAttachmentBackfillRun, DeleteStaleAttachmentBackfillCandidates, InsertAttachmentBackfillCandidate, ReadAttachmentBackfillCandidateDetail, ReadAttachmentBackfillCandidatesForVerification, ReadAttachmentBackfillQueue, ReadAttachmentBackfillRunByPublicId, ReadAttachmentBackfillRunFacets, ReadAttachmentBackfillRunsForReview, ReadAttachmentBackfillRunSummary, ReadBillsForAttachmentBackfill, ReadOpenAttachmentBackfillRuns, UndoAttachmentBackfillCandidateReview, UpdateAttachmentBackfillCandidateReview, UpdateAttachmentBackfillCandidateVerification, UpdateAttachmentBackfillRunStatus
 --
@@ -531,6 +537,17 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
+    -- b5: members of the run's OPEN review sample (b5_bulk.sql) are counted a second time under the group 'sample'. The
+    -- sample tables are created by b5_bulk.sql, applied after this file: the read is guarded, so this proc works without them.
+    DECLARE @Sample TABLE ([CandidateId] BIGINT NOT NULL PRIMARY KEY);
+    IF OBJECT_ID(N'dbo.AttachmentBackfillSampleMember', N'U') IS NOT NULL
+        INSERT INTO @Sample ([CandidateId])
+        SELECT m.[CandidateId]
+        FROM dbo.[AttachmentBackfillSampleMember] AS m
+        INNER JOIN dbo.[AttachmentBackfillSample] AS s ON s.[Id] = m.[SampleId] AND s.[Status] = N'open'
+        INNER JOIN dbo.[AttachmentBackfillRun] AS sr ON sr.[Id] = s.[RunId]
+        WHERE sr.[PublicId] = @RunPublicId;
+
     SELECT
         eg.[EvidenceGroup],
         pp.[ProjectPublicId],
@@ -550,8 +567,15 @@ BEGIN
         WHERE li.[BillId] = b.[Id]
         ORDER BY p.[Name], p.[Id]
     ) AS pp
-    CROSS APPLY dbo.AttachmentBackfillEvidenceGroup(
-        c.[InvoiceSeenCount], c.[AmountSeenCount], c.[OtherInvoiceLabelCount], c.[StatementLike]
+    CROSS APPLY (
+        -- The candidate's evidence group, plus 'sample' when it is a member of the open sample ('sample' sorts after
+        -- every evidence group, so the other groups' rows and their order are unchanged).
+        SELECT g.[EvidenceGroup]
+        FROM dbo.AttachmentBackfillEvidenceGroup(
+            c.[InvoiceSeenCount], c.[AmountSeenCount], c.[OtherInvoiceLabelCount], c.[StatementLike]
+        ) AS g
+        UNION ALL
+        SELECT CAST(N'sample' AS NVARCHAR(16)) WHERE EXISTS (SELECT 1 FROM @Sample AS sm WHERE sm.[CandidateId] = c.[Id])
     ) AS eg
     WHERE r.[PublicId] = @RunPublicId
     GROUP BY eg.[EvidenceGroup], pp.[ProjectId], pp.[ProjectPublicId], pp.[ProjectName], YEAR(b.[BillDate]), c.[ReviewStatus]
@@ -579,6 +603,16 @@ BEGIN
     SET NOCOUNT ON;
 
     DECLARE @RunId BIGINT = (SELECT r.[Id] FROM dbo.[AttachmentBackfillRun] AS r WHERE r.[PublicId] = @RunPublicId);
+
+    -- b5: @EvidenceGroup = 'sample' selects the members of the run's OPEN review sample (any evidence group / review
+    -- status filter still applies on top). Guarded: the sample tables come from b5_bulk.sql, applied after this file.
+    DECLARE @Sample TABLE ([CandidateId] BIGINT NOT NULL PRIMARY KEY);
+    IF @EvidenceGroup = N'sample' AND OBJECT_ID(N'dbo.AttachmentBackfillSampleMember', N'U') IS NOT NULL
+        INSERT INTO @Sample ([CandidateId])
+        SELECT m.[CandidateId]
+        FROM dbo.[AttachmentBackfillSampleMember] AS m
+        INNER JOIN dbo.[AttachmentBackfillSample] AS s ON s.[Id] = m.[SampleId] AND s.[Status] = N'open'
+        WHERE s.[RunId] = @RunId;
 
     -- k: filter + sort keys for every candidate of the run; page: the TOP (@Top) keys after the cursor. Display columns
     -- (vendor, reviewer, the ProjectNames STRING_AGG) are joined back for the page rows only.
@@ -615,7 +649,11 @@ BEGIN
         SELECT TOP (@Top) k.*
         FROM k
         LEFT JOIN a ON 1 = 1
-        WHERE (@EvidenceGroup IS NULL OR k.[EvidenceGroup] = @EvidenceGroup)
+        WHERE (
+              @EvidenceGroup IS NULL
+              OR k.[EvidenceGroup] = @EvidenceGroup
+              OR (@EvidenceGroup = N'sample' AND EXISTS (SELECT 1 FROM @Sample AS sm WHERE sm.[CandidateId] = k.[Id]))
+          )
           AND (@ProjectPublicId IS NULL OR k.[ProjectPublicId] = @ProjectPublicId)
           AND (ISNULL(@NoProject, 0) = 0 OR k.[ProjectPublicId] IS NULL)
           AND (@BillYear IS NULL OR k.[BillYear] = @BillYear)
@@ -714,6 +752,36 @@ BEGIN
 END
 GO
 
+-- b5 (bulk approval, b5_bulk.sql): how a candidate was approved. NULL = an individual decision (b2); 'bulk' = by
+-- BulkApproveAttachmentBackfillCandidates, with BulkApprovalId naming the dbo.AttachmentBackfillBulkApproval row (its FK
+-- is added by b5_bulk.sql). Additive, nullable, idempotent. Here because the b2 review and review-undo procs below clear
+-- them: an individual decision or an undo always leaves ApprovalMethod/BulkApprovalId NULL, so a bulk undo can never
+-- revert a decision a human made by hand.
+IF OBJECT_ID('dbo.AttachmentBackfillCandidate', 'U') IS NOT NULL
+   AND COL_LENGTH('dbo.AttachmentBackfillCandidate', 'ApprovalMethod') IS NULL
+BEGIN
+    ALTER TABLE dbo.[AttachmentBackfillCandidate] ADD [ApprovalMethod] NVARCHAR(16) NULL
+        CONSTRAINT [CK_AttachmentBackfillCandidate_ApprovalMethod] CHECK ([ApprovalMethod] IS NULL OR [ApprovalMethod] = N'bulk');
+END
+GO
+
+IF OBJECT_ID('dbo.AttachmentBackfillCandidate', 'U') IS NOT NULL
+   AND COL_LENGTH('dbo.AttachmentBackfillCandidate', 'BulkApprovalId') IS NULL
+BEGIN
+    ALTER TABLE dbo.[AttachmentBackfillCandidate] ADD [BulkApprovalId] BIGINT NULL;
+END
+GO
+
+-- b5 (sticky rejection): how many times this candidate was ever rejected by the review proc. Additive, idempotent; only
+-- ever incremented (the undo leaves it), so b5_bulk.sql can tell a sampled candidate was rejected while its sample was open.
+IF OBJECT_ID('dbo.AttachmentBackfillCandidate', 'U') IS NOT NULL
+   AND COL_LENGTH('dbo.AttachmentBackfillCandidate', 'RejectCount') IS NULL
+BEGIN
+    ALTER TABLE dbo.[AttachmentBackfillCandidate] ADD [RejectCount] INT NOT NULL
+        CONSTRAINT [DF_AttachmentBackfillCandidate_RejectCount] DEFAULT 0;
+END
+GO
+
 -- Approve or reject one candidate. Writes ReviewStatus, RejectReason, ReviewedByUserId, ReviewedDatetime only -- no link, no
 -- Attachment, no Bill. Allowed only from ReviewStatus 'pending', on a 'ready' run, while AttachmentId IS NULL, at the caller's
 -- RowVersion. Returns (Id, PublicId, RowVersion, ReviewStatus, RejectReason, ReviewedByUserPublicId, ReviewedDatetime,
@@ -754,6 +822,9 @@ BEGIN
             [RejectReason]     = CASE WHEN @Decision = N'rejected' THEN @RejectReason ELSE NULL END,
             [ReviewedByUserId] = @ReviewedByUserId,
             [ReviewedDatetime] = SYSUTCDATETIME(),
+            [ApprovalMethod]   = NULL,  -- b5: an individual decision
+            [BulkApprovalId]   = NULL,
+            [RejectCount]      = c.[RejectCount] + CASE WHEN @Decision = N'rejected' THEN 1 ELSE 0 END,  -- b5: sticky
             [ModifiedDatetime] = SYSUTCDATETIME()
         OUTPUT INSERTED.[Id], INSERTED.[PublicId], INSERTED.[RowVersion], INSERTED.[ReviewStatus], INSERTED.[RejectReason],
                INSERTED.[ReviewedByUserId], INSERTED.[ReviewedDatetime]
@@ -871,6 +942,8 @@ BEGIN
         [UndoneDatetime]   = SYSUTCDATETIME(),
         [ReviewedByUserId] = NULL,
         [ReviewedDatetime] = NULL,
+        [ApprovalMethod]   = NULL,  -- b5: an undone bulk approval is no longer the bulk's to revert
+        [BulkApprovalId]   = NULL,
         [ModifiedDatetime] = SYSUTCDATETIME()
     OUTPUT INSERTED.[Id], INSERTED.[PublicId], INSERTED.[RowVersion], INSERTED.[ReviewStatus], INSERTED.[RejectReason],
            INSERTED.[ReviewedByUserId], INSERTED.[ReviewedDatetime]

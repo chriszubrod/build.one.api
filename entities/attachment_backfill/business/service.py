@@ -26,15 +26,22 @@ Invariants
   b4 orphans: an attachment created for a candidate whose link is then refused or fails is deleted at once (row first, blob after the commit). The delete proc removes only REGISTERED attachments with no QboId and no reference from any table with an FK to Attachment or a column named AttachmentId (fail closed); a reused attachment is never deleted.
   b4 undo by run: deletes exactly the recorded BillLineItemAttachment rows that still point at the candidate's attachment (a pre-existing link is never recorded, so never removed), clears the link columns, leaves ReviewStatus approved, and reopens an 'applied' run to 'ready'. Refused (attachment_pushed) when the attachment has a QboId, and (bill_completed_since_apply) when the bill is completed now but was not at link time. It ends with a sweep of the run's registry (created attachments deleted when nothing references them).
   b4 run closure: the apply moves a 'ready' run to 'applied' once no candidate in it is pending or approved-unlinked (atomic check). The apply refuses to start, and stops between candidates, when the database is at/over --max-db-percent of its max size (or the size is unknown).
+  b5 sample-gated bulk approval (business/bulk.py, scripts/attachment_backfill_bulk.py, sql/b5_bulk.sql; CLI system caller only, dry run by default): DrawAttachmentBackfillSample draws ONE open sample per 'ready' run from a POPULATION read once under lock and stored (AttachmentBackfillSamplePopulation): candidates that are 'clean', unlinked, whose bill exists and is not claimed pending/approved by another non-cancelled run, never bulk-approved -- any human review status. Order SHA2_256(seed + PublicId) then Id; the seed is server-generated (CRYPT_GEN_RANDOM) and stored, never chosen by the CLI. Refused: invalid, not_found, run_not_ready, sample_open, prior_sample_rejection (an earlier sample of the run recorded at close, shows now, or ever flagged -- sticky: Candidate.RejectCount (incremented by every b2 reject, never decremented) above the member's RejectCountAtDraw, or EverRejectedSecond -- a human rejection or a second 'reject'), prior_sample_incomplete (a sample closed with a human decision or second verdict missing and no active bulk approval), too_few_clean. The bulk gate counts the same sticky rejections on the open sample (sample_has_rejection), so a reject later undone or a second 'reject' later overwritten still blocks. The queue accepts group 'sample' (the open sample's members) and the facets add 'sample' rows; the other groups are unchanged.
+  b5 second review (blind): one all-or-nothing batch per CSV (RecordAttachmentBackfillSampleSecondReviews), only to members of an OPEN sample with no bulk approval (not undone); once every member has a verdict the verdicts FREEZE (second_review_complete). Until then the status returns the human side as NULL and the bulk gate answers only second_review_incomplete. The export (ReadAttachmentBackfillSampleMembers + manifest.json) carries no human review status, reviewer or reject reason; the CLI refuses an export directory in any git checkout or under build.one.
+  b5 bulk approval, one transaction per batch, run -> sample -> candidate locks: refused, in order, invalid, not_found, run_not_ready, no_open_sample, second_review_incomplete, prior_sample_rejection, sample_size_mismatch, sample_has_rejection, sample_incomplete (human pending, or a member approved by bulk), bulk_partially_undone, bulk_not_found. Targets: the open sample's stored population minus its members, still pending, unlinked, clean now, bill exists, not claimed (the b2 claim rule under UPDLOCK, HOLDLOCK); set approved with ApprovalMethod 'bulk' + BulkApprovalId. Undo returns that approval's unlinked bulk-approved candidates to pending (ApprovedCount decremented), keeps linked ones and marks the approval PartiallyUndone (bulk refuses until the undo completes); the b2 review and review-undo clear ApprovalMethod / BulkApprovalId, so a bulk undo never reverts an individual decision.
 External writes
+  b5: none outside the database (the export writes local files only, outside the repo; Box is read by stored file id).
   b1/b2: none. Reads only: Box folder listing and file download (scripts/attachment_backfill_candidates.py, and the b2 review API's PDF/snippet reads), Document Intelligence read for scans.
   b4 apply/undo: Azure blob storage (new attachment blobs; deleting only blobs of attachments it created) via the CLI-injected blob store. No outbox row, SharePoint, Box write, Excel, QBO or email. The extraction timer picks up the pending mark later.
 Sprocs
   ApplyAttachmentBackfillCandidateLink
+  BulkApproveAttachmentBackfillCandidates
   CloseAttachmentBackfillRunIfDone
+  CloseAttachmentBackfillSample
   CreateAttachmentBackfillRun
   DeleteAttachmentBackfillCreatedAttachment
   DeleteStaleAttachmentBackfillCandidates
+  DrawAttachmentBackfillSample
   InsertAttachmentBackfillCandidate
   ReadAttachmentBackfillAttachmentsByHash
   ReadAttachmentBackfillCandidateDetail
@@ -48,9 +55,13 @@ Sprocs
   ReadAttachmentBackfillRunFacets
   ReadAttachmentBackfillRunsForReview
   ReadAttachmentBackfillRunSummary
+  ReadAttachmentBackfillSampleMembers
+  ReadAttachmentBackfillSampleStatus
   ReadBillsForAttachmentBackfill
   ReadOpenAttachmentBackfillRuns
+  RecordAttachmentBackfillSampleSecondReviews
   RegisterAttachmentBackfillCreatedAttachment
+  UndoAttachmentBackfillBulkApproval
   UndoAttachmentBackfillCandidateLink
   UndoAttachmentBackfillCandidateReview
   UpdateAttachmentBackfillCandidateReview

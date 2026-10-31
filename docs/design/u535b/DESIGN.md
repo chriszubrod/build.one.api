@@ -465,3 +465,170 @@ database-size guard, undo by run, and the b2 undo audit trail.
     it: R2's registry does not hold it, and R1's sweep had already kept it as `referenced`.
   - To free it, undo R2, then re-run R1's undo (`--run <R1> --undo --apply`). R1's sweep then finds the attachment
     unreferenced and deletes it.
+
+## 14. b5 as built (2026-10-30, uncommitted — pending review) — sample-gated bulk approval
+
+Gate 1 (Chris, 2026-10-30): Chris reviews a truly random sample of 300 clean candidates on the b3 page; Claude (the EM)
+reviews the same sample blind as a second reviewer. Only if BOTH approved EVERY sampled candidate may the remaining
+pending clean candidates be bulk-approved, marked as bulk, and undoable. No new API write route: every write is the CLI.
+
+- **Files:** `entities/attachment_backfill/sql/b5_bulk.sql` (applied after `b4_apply.sql`), `business/bulk.py`, new repo
+  methods, `scripts/attachment_backfill_bulk.py`. In `dbo.attachment_backfill.sql`: the candidate columns
+  `ApprovalMethod` (NULL = individual, `'bulk'`) and `BulkApprovalId` (guarded ALTERs; the FK is added by b5), the b2
+  review and review-undo procs now set both to NULL, and the queue/facets accept the `sample` group.
+- **Why the columns live in the base file:** the b2 review and undo procs must clear them (a proc cannot be created
+  against a missing column), and clearing is what keeps a bulk undo from ever reverting a decision a human made by hand
+  (undo a bulk-approved row individually, re-approve it: it is now individual and the bulk undo leaves it alone).
+- **Tables:** `AttachmentBackfillSample` (one OPEN per run: refusal + filtered unique index; Seed stored),
+  `AttachmentBackfillSampleMember` (Ordinal = draw rank; second-review verdict/reason/reviewer/datetime on the member row),
+  `AttachmentBackfillBulkApproval` (RunId, SampleId, ApprovedByUserId, ApprovedCount, Undone*).
+- **Draw** (`DrawAttachmentBackfillSample`, one transaction, run locked): every candidate of the run whose evidence group
+  is `clean` now, whatever its review status (a prior individual decision counts as the human review; linked ones
+  included). Order `HASHBYTES('SHA2_256', CONCAT(@Seed, CONVERT(NVARCHAR(36), PublicId)))` then Id — reproducible in
+  Python as SHA-256 over the UTF-16LE of seed + upper-case PublicId (pinned by a SQL test). Refusals: invalid, not_found,
+  run_not_ready, sample_open, too_few_clean. (Superseded by §14.1: the seed is server-generated; the population is clean, unlinked, bill present, unclaimed, never bulk.)
+- **Blind export** (`--export-sample <dir>`, read-only): `ReadAttachmentBackfillSampleMembers` returns no review status,
+  reviewer, reject reason or second verdict; the manifest is built from a whitelist (`MANIFEST_FIELDS`): ordinal,
+  candidate id, bill number/amount/date, vendor, primary project, line count, bill_exists, the evidence counts, and the
+  PDF outcome (`pdf_file`, `pdf_error` too_large/fetch_failed/not_pdf, `content_matches_check` vs SourceSha256 — a
+  mismatched PDF is written and marked). Refused when the dir is inside the repo or not empty.
+- **Second review** (`--record-second-review <csv>`): columns candidate_public_id, verdict (approve|reject), reason
+  (required for reject, ≤ 200). Every row is validated (members of the open sample only, no duplicates) before any write;
+  the proc refuses invalid, sample_not_found, sample_closed, bulk_approved (an active bulk approval exists: the gate was
+  already passed), not_member. Overwrite is allowed until then.
+- **Status** (`--status`): members, human pending/approved/rejected, second missing/approve/reject, disagreements (one
+  approved and the other rejected), linked, and the active bulk approval.
+- **Bulk approve** (`BulkApproveAttachmentBackfillCandidates`, one transaction per batch, `--batch` default 500):
+  - locks run (UPDLOCK, HOLDLOCK — the b2 review procs read the run WITH (UPDLOCK), so no human decision changes
+    mid-batch) → sample → members/candidates;
+  - gate refusals, in order: `invalid`, `not_found`, `run_not_ready`, `no_open_sample`, `sample_has_rejection` (any
+    human reject or second `reject` — ranked before incomplete because finishing the review cannot clear it),
+    `sample_incomplete` (any human pending or missing second review), `bulk_not_found`;
+  - targets: pending, unlinked, clean NOW, not a sample member, bill exists, bill not held pending/approved by another
+    non-cancelled run (the b2 claim rule under UPDLOCK, HOLDLOCK). Excluded counts: `ExcludedBillMissing`,
+    `ExcludedClaimedElsewhere`;
+  - sets approved, ReviewedByUserId (`--as-user-id`, default 17), ReviewedDatetime, ApprovalMethod `bulk`,
+    BulkApprovalId; RowVersion bumps. A sample has at most one active bulk approval; later batches continue it. The
+    dry run reports the gate and `would_approve`.
+- **Undo bulk** (`UndoAttachmentBackfillBulkApproval`): run must be `ready`; reverts that approval's still-bulk,
+  unlinked, approved candidates to pending (reviewer/method/id cleared, UndoneBy/UndoneDatetime set); linked ones are
+  kept (`KeptLinked`; b4 undo first, then re-run). The approval row is marked undone only when no candidate still
+  carries it. Refusals: not_found, already_undone, run_not_ready.
+- **API change for the web:** `GET /runs/{run}/queue?group=sample` (any `review_status`, use `all` to see decided
+  members) returns the open sample's members (rows keep their real `evidence_group`, `clean`). `GET /runs/{run}/facets`
+  adds rows of the same shape with `evidence_group: "sample"` (members counted a second time; they sort after every
+  evidence group). No sample → no rows / empty queue. Other groups are unchanged.
+- **CLI exit codes** (see §14.1 for exit 4 on content_changed): 0 ok; 1 failed (type name only); 2 unknown run / run not ready / bad dir or args; 3 refused by
+  the database; 4 invalid CSV (nothing written) or export with per-member errors; 130 Ctrl-C.
+- Follow-ups are in `TODO.md` under "U-535b b5 follow-ups".
+
+### 14.1 Fix round 1 (EM review)
+
+- **B1 — blindness is enforced, not procedural.**
+  - `ReadAttachmentBackfillSampleStatus` returns the human side (HumanPending/Approved/Rejected, Disagreements, Linked) as
+    NULL until every member has a second verdict (`SecondComplete`); `--status` prints only the member count and the
+    second-review progress until then.
+  - `BulkApproveAttachmentBackfillCandidates` answers the generic `second_review_incomplete` (ranked right after
+    `no_open_sample`) until then, and the CLI dry run prints `gate: not_passed (second review incomplete)` with no counts.
+  - **Freeze:** once every member has a verdict, `RecordAttachmentBackfillSampleSecondReviews` refuses
+    `second_review_complete` for any further write in that sample, so no verdict can change after the human side becomes
+    visible.
+  - **All or nothing:** the single-row proc is replaced by `RecordAttachmentBackfillSampleSecondReviews` (JSON rows via
+    OPENJSON). The whole CSV is validated and written in ONE transaction; any bad row refuses the lot (`BadRow` names the
+    first). So the completing write can never land half-applied.
+  - Residual: the b3 web queue (`group=sample`) shows the human's own decisions to any system admin. The second
+    reviewer works from the CLI export only; this is procedural and booked in TODO.
+- **B2 — no sample shopping.**
+  - The seed is always server-generated (`CRYPT_GEN_RANDOM(16)`, 32 hex chars) and stored. The CLI has no `--seed`;
+    the proc keeps an optional `@Seed` only as the test path for determinism.
+  - `CloseAttachmentBackfillSample` records `HumanRejectedAtClose` / `SecondRejectedAtClose` on the sample row (no
+    reason is asked).
+  - A draw is refused `prior_sample_rejection` when any closed sample of the run recorded a rejection at its close, or
+    shows one now (a member currently rejected, or a second 'reject'). Undoing a rejection after the close does not
+    clear the record. The bulk gate refuses the same way.
+- **B3 — population snapshot.** `AttachmentBackfillSamplePopulation(SampleId, CandidateId)` stores the population at draw
+  time. Bulk targets = that population minus the members, still pending, unlinked, clean now, bill exists, not claimed.
+  A candidate that becomes clean, or is created, after the draw is never bulk-approved.
+- **B4 — population rule.** The population is clean, unlinked, bill exists, not claimed by another non-cancelled run
+  (the target rule), and never bulk-approved (`ApprovalMethod` NULL). The gate counts a member approved by bulk as NOT
+  human-approved (`sample_incomplete`).
+- **B5 — partial undo.** Undo subtracts the reverted rows from `ApprovedCount`. If linked rows are kept, the approval is
+  marked `PartiallyUndone`, and the bulk refuses `bulk_partially_undone` until the undo completes, so the reverted rows
+  are never silently re-approved. The second-review lock (`bulk_approved`) counts every approval not fully undone,
+  partial ones included.
+- **B6 — size check.** The gate refuses `sample_size_mismatch` when members <> SampleSize. The draw reads the population
+  once (UPDLOCK, HOLDLOCK) into a table variable, so its count, the stored population and the members all come from the
+  same read.
+- **Bulk refusal order now:** invalid, not_found, run_not_ready, no_open_sample, second_review_incomplete,
+  prior_sample_rejection, sample_size_mismatch, sample_has_rejection, sample_incomplete, bulk_partially_undone,
+  bulk_not_found.
+- **Draw refusal order now:** invalid, not_found, run_not_ready, sample_open, prior_sample_rejection, too_few_clean.
+- **Second-review refusal order:** invalid, sample_not_found, sample_closed, bulk_approved, second_review_complete,
+  not_member.
+- **B7 — deadlocks.** The bulk loop retries a deadlocked batch once (each batch is one transaction, so a victim rolled back
+  whole) and counts `deadlock_retried`; a second deadlock fails (exit 1). Avoid reviewing on the web page during a bulk
+  apply.
+- **B8 — reason length.** The reason is limited to 200 UTF-16 code units, as NVARCHAR counts them, in both the CSV check
+  and the proc.
+  - Found while testing: under the DB's `SQL_Latin1_General_CP1_CI_AS` collation, a string of emoji compares EQUAL to
+    `N''`, so `NULLIF(x, N'')` dropped it as "no reason". The procs use `DATALENGTH` for every emptiness check.
+- **B9 — export directory.** Refused when it, or any ancestor, holds a `.git` entry (any checkout or worktree), or when
+  any ancestor is named `build.one`.
+- **B10 — content changed.** An export with any `content_changed` member prints a WARN count and exits 4; the manifest
+  keeps the per-member flag.
+- **B11 — undo hint.** A mid-way bulk refusal names `--undo-bulk <id>` only when a bulk approval exists.
+- **B12 — reviewer identity.** The second reviewer is a free-text label (`--reviewer`, default `claude-em`): the CLI runs
+  as the system caller, so the label is not an authenticated identity. Verdict history is not kept; an overwrite before
+  the freeze replaces the earlier verdict (TODO).
+
+### 14.2 Fix round 2 (EM, final)
+
+- **C1 — sample shopping by closing.** Round 1 left three gaps: close while pending; a human reject, then the b2 undo,
+  then close; and a second 'reject' overwritten before the freeze, then close.
+  - **(a) Rejections are sticky.**
+    - **Human side — deviation from the requested shape.** It is not an `EverRejectedHuman` flag written by the base
+      review proc. The b1 write-surface guard (`tests/test_u535b_service.py::test_sql_writes_only_the_staging_tables`,
+      out of this unit's scope) forbids the base file writing any table but Run/Candidate.
+      - Instead, `UpdateAttachmentBackfillCandidateReview` increments `Candidate.RejectCount` on every reject. The undo
+        never decrements it.
+      - The draw stores each member's `RejectCountAtDraw`.
+      - A member was rejected while its sample existed iff `RejectCount > RejectCountAtDraw`.
+      - **Round 3 (D1):** a member that is REJECTED when it is drawn is stored with `RejectCountAtDraw = RejectCount - 1`.
+        So it counts as rejected during the sample however it is later undone or re-approved. Pre-migration rows with
+        RejectCount 0 and status rejected get -1, so they count too.
+      - A reject made before the draw and already undone does not count.
+    - **Second side:** `EverRejectedSecond` is set whenever a second 'reject' is recorded.
+    - Neither the flag nor the counter is ever cleared.
+    - The bulk gate (`sample_has_rejection`) and `prior_sample_rejection` (draw and bulk, any closed sample of the run)
+      count them, alongside the close snapshots and the current state.
+  - **(b) Closing an incomplete sample blocks the redraw.**
+    - Close records `HumanPendingAtClose` (pending, or approved by bulk) and `SecondMissingAtClose`.
+    - A draw is refused `prior_sample_incomplete` when any closed sample of the run had either > 0 and no active
+      (not undone) bulk approval.
+    - The CLI close dry run warns when the sample is incomplete.
+  - Draw refusal order: invalid, not_found, run_not_ready, sample_open, prior_sample_rejection, prior_sample_incomplete,
+    too_few_clean.
+  - Consequence: a run gets a second sample only after a COMPLETE, rejection-free first sample was closed. Once a run has
+    a rejection, the remainder is reviewed individually.
+- **C2.** `--status` prints `WARN: gate no longer holds; consider --undo-bulk <id>` (exit 0) when an active bulk approval
+  exists and the members are no longer all approved by both reviewers.
+- **C3.** The status `BulkApprovedCount` is live: it counts the candidates that still carry the approval. The stored
+  `ApprovedCount` is kept as history.
+- **C4.** `--reviewer` is limited to 50 UTF-16 units (as NVARCHAR(50) counts them).
+
+### 14.3 Round 3 (EM, owner-approved, narrow)
+
+- **D1.** A member that is rejected when drawn counts as rejected during the sample; see the §14.2 C1(a) wording.
+- **D2.** `ReadAttachmentBackfillSampleStatus` returns `StickyRejections`: members with `RejectCount > RejectCountAtDraw`
+  or `EverRejectedSecond = 1`. It is masked like the other human columns until the second review is complete.
+  - The CLI `gate no longer holds` WARN also fires when it is > 0.
+  - The WARN is advisory only: the SQL gate re-checks everything under lock on every batch.
+- **D3 — a deleted bill strands the sample.** Suppose a member's bill is deleted after the draw.
+  - The member cannot be approved: b2 refuses `bill_missing`.
+  - So the sample can never complete, and closing it blocks every redraw (`prior_sample_incomplete`).
+  - That run can no longer be bulk-approved. Its remainder goes to individual review, or to a new generation run.
+- **Pass 2 cleanups (behaviour-preserving):**
+  - the export's hash comparison reuses `review.content_matches_check`;
+  - `export_sample` takes the rows the CLI already read;
+  - the router's queue alias is renamed `QueueGroup`;
+  - the `bulk.py` constants are grouped.

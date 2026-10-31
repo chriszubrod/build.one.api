@@ -2,6 +2,48 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-535b b5 follow-ups - sample-gated bulk approval (booked 2026-10-30)
+
+- [ ] **[b5][Pass 2]** shared inline TVFs for the SQL predicates copied across procs: the prior-rejection EXISTS (x2,
+  draw + bulk), the sticky-rejection CASE (x2, close + bulk; plus the status StickyRejections), the cross-run claim NOT
+  EXISTS (x4: b2 review, draw, bulk, b2 undo/insert family), the open-sample loader (x2, facets + queue).
+- [ ] **[b5][Pass 2]** one capped-fetch helper (25 MB cap, %PDF- check, hash compare) for review.py / apply.py / bulk.py.
+- [ ] **[b5][Pass 2]** a shared CLI helpers module (StopFlag, counts printing, Box fetch factory, exit codes) for the
+  b1/b4/b5 scripts.
+- [ ] **[b5][Pass 2][perf]** the bulk proc rebuilds @Base (every population row + the claim probe) on every batch:
+  ~13k probes x batches. Raise --batch for the real run, or redesign (keyset over the population, or claim check only on
+  the TOP rows).
+- [ ] **[b5][Pass 2]** ReadAttachmentBackfillSampleStatus: compute SecondComplete once (CROSS APPLY) instead of repeating
+  the CASE per masked column.
+- [ ] **[b5][Pass 2]** the status should return the SQL gate's own verdict (GateHolds / RefusedReason from the bulk
+  proc's dry run) instead of the CLI re-deriving "gate no longer holds".
+- [ ] **[b5][D3][runbook]** a member whose bill is deleted after the draw can be neither approved nor closed without
+  blocking redraws: that run can no longer be bulk-approved; review the rest individually or generate a new run.
+
+- [ ] **[b5][web]** b3 page: add a "Review sample" entry (queue `group=sample`, `review_status=all`; facets rows with
+  `evidence_group: "sample"`). The page must NOT show the second reviewer's verdicts (the API never returns them).
+- [ ] **[b5][deploy]** apply order: `dbo.attachment_backfill.sql` (adds ApprovalMethod/BulkApprovalId + the review/undo
+  and queue/facets changes) -> `b4_apply.sql` -> `b5_bulk.sql`. Check OBJECT_ID of the three new tables first.
+- [ ] **[b5][test]** the bulk proc's "not a sample member" target filter is unreachable while the gate holds (every member
+  is approved, so not 'pending'): a mutant removing it survives. Kept as defence in depth; no test can pin it.
+- [ ] **[b5][concurrency]** bulk approve locks run -> sample -> candidates; the b2 review UPDATE takes the run with UPDLOCK
+  while touching its candidate row, so a deadlock between a live review click and a bulk batch is possible (the CLI
+  retries a deadlocked batch once; no partial write). Runbook: avoid web review during a bulk apply. Not exercised
+  under RCSI (the Docker DB has RCSI off, like b4 R8).
+- [ ] **[b5][audit]** second-review verdict history is not kept: an overwrite before the freeze replaces the earlier
+  verdict. The reviewer is a free-text label (CLI system caller), not an authenticated identity. Add a history table if
+  the audit needs it.
+- [ ] **[b5][blindness]** the b3 web queue (`group=sample`) shows the human's decisions to any system admin, Claude's
+  agent user included; the second review's blindness on that surface is procedural (the second reviewer uses the CLI
+  export only). Enforce if the second reviewer ever gets web access.
+  The same holds for other CLIs that print run-wide aggregates (the candidates job summary, the b4 apply dry run's
+  would_apply / refusal counts): the second reviewer must not run them on the sampled run until its verdicts are
+  recorded (the freeze), since they reveal how many candidates the human approved/rejected.
+- [ ] **[b5][ops]** a bulk approval of ~13k candidates leaves them approved-unlinked: the b4 apply then links them
+  (database-size guard applies). Undo order if needed: b4 `--undo --apply` first, then `--undo-bulk <id> --apply`.
+- [ ] **[b5]** closing a sample does not touch an active bulk approval; a closed sample's bulk approval can still be
+  undone, but not continued (the gate needs an open sample).
+
 ## U-535b b4 follow-ups - attachment-backfill apply/undo (booked 2026-10-30)
 
 b4 added `scripts/attachment_backfill_apply.py` + `entities/attachment_backfill/sql/b4_apply.sql` (DESIGN §13). Open items:

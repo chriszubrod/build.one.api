@@ -14,6 +14,7 @@ from shared.database import (
     conn_ctx,
     get_connection,
     map_database_error,
+    retry_on_transient,
 )
 from shared.lifecycle.terminal_lock import (
     reraise_if_sproc_holding_code,
@@ -183,13 +184,34 @@ class ExpenseLineItemRepository:
             logger.error(f"Error during read expense line item by public ID: {error}")
             raise map_database_error(error)
 
-    def read_by_expense_id(self, expense_id: int) -> list[ExpenseLineItem]:
+    def read_by_expense_id(
+        self, expense_id: int, *, conn: Optional[pyodbc.Connection] = None
+    ) -> list[ExpenseLineItem]:
         """
-        Read all expense line items for a specific expense.
+        Read all expense line items for a specific expense. With no `conn` the
+        read owns its connection and is retried on transient errors; with a
+        caller-owned `conn` it runs once, un-retried.
         """
+        if conn is not None:
+            return self._read_by_expense_id(expense_id, conn=conn)
+        return self._read_by_expense_id_retried(expense_id)
+
+    @retry_on_transient()
+    def _read_by_expense_id_retried(self, expense_id: int) -> list[ExpenseLineItem]:
+        return self._read_by_expense_id(expense_id)
+
+    def _read_by_expense_id(
+        self, expense_id: int, *, conn: Optional[pyodbc.Connection] = None
+    ) -> list[ExpenseLineItem]:
+        # No retry inside a caller's transaction — a deadlock retry would
+        # silently run outside the locks the caller holds (U-551b r2, F2 P2).
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            # conn_ctx(None) would call shared.database.get_connection and bypass
+            # repo-module patches in tests/test_u446b_terminal_lock.py and
+            # tests/test_u457_lifecycle_for_expense_billcredit_invoice.py.
+            cm = conn_ctx(conn) if conn is not None else get_connection()
+            with cm as c:
+                cursor = c.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="ReadExpenseLineItemsByExpenseId",

@@ -105,6 +105,10 @@ from shared.database import (
 from shared.db_constraints import UNIQUE
 from shared.api.errors import ErrorCode
 
+from entities.review.business.decision_errors import (
+    ReviewDecisionApplyError as BillReviewDecisionApplyError,
+    review_decision_apply_error as _review_decision_apply_error,
+)
 from shared.authz.delegation import assert_may_act_as
 
 logger = logging.getLogger(__name__)
@@ -158,48 +162,17 @@ class DuplicateBillError(ValueError):
         self.existing_bill_public_id = existing_bill_public_id
 
 
-class BillReviewDecisionApplyError(Exception):
-    """HTTP-mappable refusal for POST /apply/review-decision/bill/{id}."""
-
-    def __init__(self, *, status_code: int, detail: str, error_code: str):
-        self.status_code = status_code
-        self.detail = detail
-        self.error_code = error_code
-        super().__init__(detail)
-
-    @property
-    def code(self) -> str:
-        """Alias for tests and transitional callers."""
-        return self.error_code
-
-
-_BILL_REVIEW_DECISION_APPLY_DETAILS: dict[str, str] = {
-    "not_a_reviewer": "You are not a reviewer for this bill.",
-    "line_row_version_stale": (
-        "The bill line was updated by someone else; refetch and re-present."
-    ),
-    "review_state_stale": (
-        "The review state has changed; drop this queued action."
-    ),
-    "idempotency_key_conflict": (
-        "This idempotency key was already used for a different bill."
-    ),
-    "multi_line_not_supported": (
-        "Multi-line bills are not supported for reviewer decisions in the app."
-    ),
-}
-
-
 def _bill_review_decision_apply_error(
     error_code: str,
     *,
     status_code: int = 409,
     detail: str | None = None,
 ) -> BillReviewDecisionApplyError:
-    return BillReviewDecisionApplyError(
+    return _review_decision_apply_error(
+        error_code,
         status_code=status_code,
-        detail=detail or _BILL_REVIEW_DECISION_APPLY_DETAILS[error_code],
-        error_code=error_code,
+        detail=detail,
+        parent="bill",
     )
 
 
@@ -1643,21 +1616,8 @@ class BillService:
                 ErrorCode.NOT_A_REVIEWER, status_code=403
             )
 
-        bli_service = BillLineItemService()
-        # Fast path + IndexError guard; multi-line refusal stays here so we do
-        # not take UPDLOCK on Bill/BillLineItem before refusing (U-541).
-        line_items = bli_service.read_by_bill_id(bill_id=bill.id)
-        if len(line_items) != 1:
-            if not line_items:
-                raise ValueError(
-                    f"Bill {bill_public_id} has no line items; a reviewer "
-                    "decision cannot be applied."
-                )
-            raise _bill_review_decision_apply_error(
-                ErrorCode.MULTI_LINE_NOT_SUPPORTED, status_code=422
-            )
-        sole_line = line_items[0]
-
+        # U-632: resolve the SCC and refuse the suspense code (00.02) BEFORE any
+        # repo read, lock or write (trunk order; the idempotent replay follows).
         scc_id: Optional[int] = None
         if decision == "approved":
             if not sub_cost_code_public_id:
@@ -1678,6 +1638,65 @@ class BillService:
                     "sub cost code. Recode those lines first."
                 )
 
+        review_repo = ReviewRepository()
+
+        def _assert_idempotency_key_matches_bill(existing) -> None:
+            if existing is not None and existing.bill_id != bill.id:
+                raise _bill_review_decision_apply_error(
+                    ErrorCode.IDEMPOTENCY_KEY_CONFLICT
+                )
+
+        def _payload_from_review(
+            review,
+            *,
+            replayed: bool,
+            review_status_name: Optional[str] = None,
+        ) -> dict:
+            if review_status_name is None:
+                review_status_name = getattr(review, "status_name", None)
+                if review_status_name is None and review.review_status_id:
+                    rs = ReviewStatusService().read_by_id(
+                        id=review.review_status_id
+                    )
+                    review_status_name = rs.name if rs else None
+            applied = (
+                "rejected"
+                if (review.review_kind or "").lower() == "declined"
+                else "approved"
+            )
+            return {
+                "decision_applied": applied,
+                "review_status": review_status_name,
+                "reviewer_user_id": review.user_id,
+                "is_draft": True,
+                "bill_public_id": bill_public_id,
+                "review_public_id": str(review.public_id),
+                "replayed": replayed,
+            }
+
+        def _require_sole_line(count: int) -> None:
+            if count == 1:
+                return
+            if count == 0:
+                raise ValueError(
+                    f"Bill {bill_public_id} has no line items; a reviewer "
+                    "decision cannot be applied."
+                )
+            raise _bill_review_decision_apply_error(
+                ErrorCode.MULTI_LINE_NOT_SUPPORTED, status_code=422
+            )
+
+        pre_tx_idem = review_repo.read_by_idempotency_key(idempotency_key)
+        if pre_tx_idem is not None:
+            _assert_idempotency_key_matches_bill(pre_tx_idem)
+            return _payload_from_review(pre_tx_idem, replayed=True)
+
+        bli_service = BillLineItemService()
+        # Fast path + IndexError guard; multi-line refusal stays here so we do
+        # not take UPDLOCK on Bill/BillLineItem before refusing (U-541).
+        line_items = bli_service.read_by_bill_id(bill_id=bill.id)
+        _require_sole_line(len(line_items))
+
         rs_service = ReviewStatusService()
         if decision == "approved":
             target = rs_service.get_approved_status()
@@ -1694,42 +1713,6 @@ class BillService:
                 )
             target = declined_statuses[0]
 
-        review_repo = ReviewRepository()
-
-        def _assert_idempotency_key_matches_bill(existing) -> None:
-            if existing is not None and existing.bill_id != bill.id:
-                raise _bill_review_decision_apply_error(
-                    ErrorCode.IDEMPOTENCY_KEY_CONFLICT
-                )
-
-        def _payload_from_review(
-            review,
-            *,
-            replayed: bool,
-            review_status_name: Optional[str] = None,
-        ) -> dict:
-            if review_status_name is None:
-                rs = (
-                    ReviewStatusService().read_by_id(id=review.review_status_id)
-                    if review.review_status_id
-                    else None
-                )
-                review_status_name = rs.name if rs else None
-            kind = (review.review_kind or "").lower()
-            if kind == "declined":
-                applied = "rejected"
-            else:
-                applied = "approved"
-            return {
-                "decision_applied": applied,
-                "review_status": review_status_name,
-                "reviewer_user_id": review.user_id,
-                "is_draft": True,
-                "bill_public_id": bill_public_id,
-                "review_public_id": str(review.public_id),
-                "replayed": replayed,
-            }
-
         def _replay_payload_if_key_exists(conn):
             existing = review_repo.read_by_idempotency_key(
                 idempotency_key, conn=conn
@@ -1739,10 +1722,7 @@ class BillService:
             _assert_idempotency_key_matches_bill(existing)
             return _payload_from_review(existing, replayed=True)
 
-        def _assert_expected_review_current(conn) -> None:
-            current = review_repo.read_current_by_bill_id_for_update(
-                bill.id, conn=conn
-            )
+        def _assert_expected_review_current(current) -> None:
             if expected_review_public_id is None:
                 if current is not None:
                     raise _bill_review_decision_apply_error(
@@ -1756,28 +1736,35 @@ class BillService:
                     ErrorCode.REVIEW_STATE_STALE
                 )
 
+        def _assert_locked_line_row_version(locked_line) -> None:
+            if locked_line.row_version != line_row_version:
+                raise _bill_review_decision_apply_error(
+                    ErrorCode.LINE_ROW_VERSION_STALE
+                )
+
         try:
             with get_connection() as conn:
+                current = review_repo.read_current_by_bill_id_for_update(
+                    bill.id, conn=conn
+                )
                 replay = _replay_payload_if_key_exists(conn)
                 if replay is not None:
                     return replay
-                _assert_expected_review_current(conn)
+                _assert_expected_review_current(current)
                 line_count = bli_service.count_by_bill_id_for_update(
                     bill.id, conn=conn
                 )
-                if line_count != 1:
-                    if line_count == 0:
-                        raise ValueError(
-                            f"Bill {bill_public_id} has no line items; a reviewer "
-                            "decision cannot be applied."
-                        )
-                    raise _bill_review_decision_apply_error(
-                        ErrorCode.MULTI_LINE_NOT_SUPPORTED, status_code=422
-                    )
+                _require_sole_line(line_count)
+                locked_lines = bli_service.read_by_bill_id_in_transaction(
+                    bill_id=bill.id, conn=conn
+                )
+                _require_sole_line(len(locked_lines))
+                locked_line = locked_lines[0]
+                _assert_locked_line_row_version(locked_line)
                 if decision == "approved":
                     try:
                         bli_service.update_coding_in_transaction(
-                            line_item=sole_line,
+                            line_item=locked_line,
                             row_version=line_row_version,
                             sub_cost_code_id=scc_id,
                             description=description,
@@ -1812,10 +1799,10 @@ class BillService:
                 return _payload_from_review(existing, replayed=True)
             raise
         except StatusLockedError as exc:
-            raise BillReviewDecisionApplyError(
+            raise _bill_review_decision_apply_error(
+                ErrorCode.STATUS_LOCKED,
                 status_code=422,
                 detail=str(exc),
-                error_code=ErrorCode.STATUS_LOCKED,
             ) from exc
 
         return _payload_from_review(

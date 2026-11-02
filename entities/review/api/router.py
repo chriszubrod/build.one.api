@@ -7,6 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from entities.review.api.schemas import (
     BillReviewDecisionApplyEnvelope,
     BillReviewDecisionApplyRequest,
+    ExpenseReviewDecisionApplyEnvelope,
+    ExpenseReviewDecisionApplyRequest,
     ReviewAdvanceRequest,
     ReviewDeclineRequest,
     ReviewSubmitRequest,
@@ -31,10 +33,9 @@ from shared.api.responses import (
     raise_workflow_error,
 )
 from entities.review_status.business.service import ReviewStatusShapeError
-from entities.bill.business.service import (
-    BillReviewDecisionApplyError,
-    BillService,
-)
+from entities.bill.business.service import BillService
+from entities.expense.business.service import ExpenseService
+from entities.review.business.decision_errors import ReviewDecisionApplyError
 from shared.lifecycle.terminal_lock import StatusLockedError
 from shared.lifecycle.completion_gate import HoldingCodeRefused
 from shared.rbac import require_module_api
@@ -152,6 +153,33 @@ def _do_list(parent_type: str, parent_public_id: str):
     return list_response([r.to_dict() for r in reviews])
 
 
+def _apply_transactional_review_decision(*, service_call):
+    """Shared try/except for POST /apply/review-decision/{bill,expense}/{id}."""
+    try:
+        result = service_call()
+    except ReviewDecisionApplyError as err:
+        raise ApiError(
+            status_code=err.status_code,
+            detail=err.detail,
+            error_code=err.error_code,
+        )
+    except HoldingCodeRefused:
+        # U-632: 422 holding_code, mapped by the app-level ApiError handler.
+        raise
+    except ReviewStatusShapeError as exc:
+        raise_workflow_error(str(exc), "Failed to apply review decision")
+    except StatusLockedError as locked:
+        # Defensive: services map in-transaction terminal-lock refusals to
+        # ReviewDecisionApplyError; pre-transaction paths here do not raise it.
+        raise_workflow_error(str(locked), "Failed to apply review decision")
+    except ValueError as err:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(err),
+        )
+    return item_response(result)
+
+
 # =============================================================================
 # Bill
 # =============================================================================
@@ -220,8 +248,8 @@ def apply_review_decision_bill_router(
 ):
     """Transactional edit-and-decide for the iOS reviewer queue (U-541)."""
     caller_user_id = resolve_user_id(current_user)
-    try:
-        result = BillService().apply_transactional_reviewer_decision(
+    return _apply_transactional_review_decision(
+        service_call=lambda: BillService().apply_transactional_reviewer_decision(
             bill_public_id=public_id,
             decision=body.decision,
             sub_cost_code_public_id=body.sub_cost_code_public_id,
@@ -231,29 +259,37 @@ def apply_review_decision_bill_router(
             expected_review_public_id=body.expected_review_public_id,
             caller_user_id=caller_user_id,
         )
-    except BillReviewDecisionApplyError as err:
-        raise ApiError(
-            status_code=err.status_code,
-            detail=err.detail,
-            error_code=err.error_code,
-        )
-    except HoldingCodeRefused:
-        raise
-    except ReviewStatusShapeError as exc:
-        raise_workflow_error(str(exc), "Failed to apply review decision")
-    except StatusLockedError as locked:
-        raise_workflow_error(str(locked), "Failed to apply review decision")
-    except ValueError as err:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(err),
-        )
-    return item_response(result)
+    )
 
 
 # =============================================================================
 # Expense
 # =============================================================================
+
+@router.post(
+    "/apply/review-decision/expense/{public_id}",
+    response_model=ExpenseReviewDecisionApplyEnvelope,
+)
+def apply_review_decision_expense_router(
+    public_id: str,
+    body: ExpenseReviewDecisionApplyRequest,
+    current_user: dict = Depends(require_module_api(Modules.EXPENSES, "can_approve")),
+):
+    """Transactional edit-and-decide for the iOS reviewer queue (U-551b)."""
+    caller_user_id = resolve_user_id(current_user)
+    return _apply_transactional_review_decision(
+        service_call=lambda: ExpenseService().apply_transactional_reviewer_decision(
+            expense_public_id=public_id,
+            decision=body.decision,
+            sub_cost_code_public_id=body.sub_cost_code_public_id,
+            description=body.description,
+            idempotency_key=body.idempotency_key,
+            line_row_version=body.line_row_version,
+            expected_review_public_id=body.expected_review_public_id,
+            caller_user_id=caller_user_id,
+        )
+    )
+
 
 @router.post("/submit/review/expense/{public_id}")
 def submit_review_expense_router(

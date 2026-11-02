@@ -189,14 +189,34 @@ class BillLineItemRepository:
             logger.error(f"Error during read bill line item by public ID: {error}")
             raise map_database_error(error)
 
+    def read_by_bill_id(
+        self, bill_id: int, *, conn: Optional[pyodbc.Connection] = None
+    ) -> list[BillLineItem]:
+        """
+        Read all bill line items for a specific bill. With no `conn` the read
+        owns its connection and is retried on transient errors; with a
+        caller-owned `conn` it runs once, un-retried.
+        """
+        if conn is not None:
+            return self._read_by_bill_id(bill_id, conn=conn)
+        return self._read_by_bill_id_retried(bill_id)
+
     @retry_on_transient()
-    def read_by_bill_id(self, bill_id: int) -> list[BillLineItem]:
-        """
-        Read all bill line items for a specific bill.
-        """
+    def _read_by_bill_id_retried(self, bill_id: int) -> list[BillLineItem]:
+        return self._read_by_bill_id(bill_id)
+
+    def _read_by_bill_id(
+        self, bill_id: int, *, conn: Optional[pyodbc.Connection] = None
+    ) -> list[BillLineItem]:
+        # No retry inside a caller's transaction — a deadlock retry would
+        # silently run outside the locks the caller holds (U-551b r2, F2 P2).
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            # conn_ctx(None) would call shared.database.get_connection and bypass
+            # repo-module patches in tests/test_u446b_terminal_lock.py and
+            # tests/test_u457_lifecycle_for_expense_billcredit_invoice.py.
+            cm = conn_ctx(conn) if conn is not None else get_connection()
+            with cm as c:
+                cursor = c.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="ReadBillLineItemsByBillId",

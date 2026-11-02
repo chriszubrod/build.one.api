@@ -44,7 +44,7 @@ class ReviewDeclineRequest(BaseModel):
     )
 
 
-class BillReviewDecisionApplyRequest(BaseModel):
+class ReviewDecisionApplyRequestBase(BaseModel):
     decision: Literal["approved", "rejected"] = Field(
         description="Terminal reviewer decision; approval carries the SCC coding."
     )
@@ -59,12 +59,21 @@ class BillReviewDecisionApplyRequest(BaseModel):
     idempotency_key: str = Field(
         description="Client UUID for this queued gesture; reused on offline retries."
     )
-    line_row_version: str = Field(
-        description="ROWVERSION of the sole bill line item being recoded."
-    )
     expected_review_public_id: Optional[str] = Field(
         default=None,
         description="Latest review the client knew about, or null when none.",
+    )
+
+
+class BillReviewDecisionApplyRequest(ReviewDecisionApplyRequestBase):
+    line_row_version: str = Field(
+        description="ROWVERSION of the sole bill line item being recoded."
+    )
+
+
+class ExpenseReviewDecisionApplyRequest(ReviewDecisionApplyRequestBase):
+    line_row_version: str = Field(
+        description="ROWVERSION of the sole expense line item being recoded."
     )
 
 
@@ -80,3 +89,17 @@ class BillReviewDecisionApplyResponse(BaseModel):
 
 class BillReviewDecisionApplyEnvelope(BaseModel):
     data: BillReviewDecisionApplyResponse
+
+
+class ExpenseReviewDecisionApplyResponse(BaseModel):
+    decision_applied: str
+    review_status: Optional[str] = None
+    reviewer_user_id: int
+    is_draft: bool
+    expense_public_id: str
+    review_public_id: str
+    replayed: bool = False
+
+
+class ExpenseReviewDecisionApplyEnvelope(BaseModel):
+    data: ExpenseReviewDecisionApplyResponse

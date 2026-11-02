@@ -175,6 +175,16 @@ class ExpenseLineItemService:
         assert_can_access_expense(expense_id)
         return self.repo.read_invoice_linked_line_ids_for_expense(expense_id)
 
+    def read_by_expense_id_in_transaction(
+        self, expense_id: int, *, conn
+    ) -> list[ExpenseLineItem]:
+        """Read expense lines inside a caller-owned transaction.
+
+        No access assert — caller must already have authorized the parent;
+        used only inside the transactional reviewer decision.
+        """
+        return self.repo.read_by_expense_id(expense_id=expense_id, conn=conn)
+
     def read_by_qbo_identity(self, expense_id: int, qbo_id: str) -> Optional[ExpenseLineItem]:
         """
         Read an expense line item directly by its dbo-native QBO identity,

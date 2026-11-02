@@ -183,6 +183,16 @@ class BillLineItemService:
         assert_can_access_bill(bill_id)
         return self.repo.read_by_bill_id(bill_id=bill_id)
 
+    def read_by_bill_id_in_transaction(
+        self, bill_id: int, *, conn
+    ) -> list[BillLineItem]:
+        """Read bill lines inside a caller-owned transaction.
+
+        No access assert — caller must already have authorized the parent;
+        used only inside the transactional reviewer decision.
+        """
+        return self.repo.read_by_bill_id(bill_id=bill_id, conn=conn)
+
     def read_by_qbo_identity(self, bill_id: int, qbo_id: str) -> Optional[BillLineItem]:
         """
         Read a bill line item directly by its dbo-native QBO identity,

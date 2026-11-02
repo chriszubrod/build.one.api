@@ -269,3 +269,44 @@ class ContractLaborLineItemRepository:
         except Exception as error:
             logger.error(f"Error during delete line items by contract labor id: {error}")
             raise map_database_error(error)
+
+    def read_sub_cost_code_counts(
+        self,
+        *,
+        vendor_id: int,
+        project_id: Optional[int],
+        as_of_date: str,
+        exclude_contract_labor_id: Optional[int],
+    ) -> tuple[dict[int, int], dict[int, int]]:
+        """U-749: prior labelled-line counts per SubCostCodeId for a vendor.
+
+        Returns ``(project_counts, vendor_counts)`` — each ``{sub_cost_code_id:
+        line_count}``. Visibility filters live in the sproc; ranking in
+        ``business/code_suggestions.py``.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadContractLaborSubCostCodeCounts",
+                    params={
+                        "VendorId": vendor_id,
+                        "ProjectId": project_id,
+                        "AsOfDate": as_of_date,
+                        "ExcludeContractLaborId": exclude_contract_labor_id,
+                    },
+                )
+                rows = cursor.fetchall()
+            by_scope: dict[str, dict[int, int]] = {"project": {}, "vendor": {}}
+            for row in rows:
+                target = by_scope.get(row.Scope)
+                if target is not None:
+                    target[int(row.SubCostCodeId)] = int(row.LineCount)
+            return by_scope["project"], by_scope["vendor"]
+        except Exception as error:
+            logger.error(
+                f"Error during read sub cost code counts (vendor_id={vendor_id}, "
+                f"project_id={project_id}): {error}"
+            )
+            raise map_database_error(error)

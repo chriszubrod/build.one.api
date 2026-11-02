@@ -1,7 +1,7 @@
 -- Contract: dbo.ContractLabor   (U-631; mirror of entities/contract_labor/business/service.py docstring)
 -- Owns: ContractLabor header and ContractLaborLineItem child sprocs in one base file.
 -- Invariants: Update*ById @RowVersion; UpdateContractLaborAggregates SUMs stored line values (no ROUND) — two-shot cent rounding happens in Python (labor_price_two_shot) before storage.
--- Sprocs: CountContractLabors, CountPendingContractLaborByWorkDate, CreateContractLabor, CreateContractLaborLineItem, DeleteContractLaborById, DeleteContractLaborLineItemById, DeleteContractLaborLineItemsByContractLaborId, FindContractLaborForReviewerReply, ReadContractLaborById, ReadContractLaborByNaturalKey, ReadContractLaborByPublicId, ReadContractLaborDailySummary, ReadContractLaborLineItemById, ReadContractLaborLineItemByPublicId, ReadContractLaborLineItemsByContractLaborId, ReadContractLabors, ReadContractLaborsByBillLineItemId, ReadContractLaborsByBillingPeriod, ReadContractLaborsByImportBatchId, ReadContractLaborsByStatus, ReadContractLaborsByVendorId, ReadContractLaborsPaginated, ReadLastRateForVendor, ReadReviewableContractLaborByProjectAndDate, ReadSubmittedContractLaborLinesByWorkDate, UpdateContractLaborAggregates, UpdateContractLaborBillInfo, UpdateContractLaborById, UpdateContractLaborLineItemById, UpdateContractLaborStatusAndLink, UpdateContractLaborStatusByIds
+-- Sprocs: CountContractLabors, CountPendingContractLaborByWorkDate, CreateContractLabor, CreateContractLaborLineItem, DeleteContractLaborById, DeleteContractLaborLineItemById, DeleteContractLaborLineItemsByContractLaborId, FindContractLaborForReviewerReply, ReadContractLaborById, ReadContractLaborByNaturalKey, ReadContractLaborByPublicId, ReadContractLaborDailySummary, ReadContractLaborLineItemById, ReadContractLaborLineItemByPublicId, ReadContractLaborLineItemsByContractLaborId, ReadContractLaborSubCostCodeCounts, ReadContractLabors, ReadContractLaborsByBillLineItemId, ReadContractLaborsByBillingPeriod, ReadContractLaborsByImportBatchId, ReadContractLaborsByStatus, ReadContractLaborsByVendorId, ReadContractLaborsPaginated, ReadLastRateForVendor, ReadReviewableContractLaborByProjectAndDate, ReadSubmittedContractLaborLinesByWorkDate, UpdateContractLaborAggregates, UpdateContractLaborBillInfo, UpdateContractLaborById, UpdateContractLaborLineItemById, UpdateContractLaborStatusAndLink, UpdateContractLaborStatusByIds
 -- ContractLabor Table
 -- Stores time log entries imported from Excel for contract labor billing
 
@@ -1999,5 +1999,67 @@ BEGIN
         FROM dbo.[ContractLabor]
         WHERE [Id] = @Id;
     END
+END;
+GO
+
+
+-- ─────────────────────────────────────────────────────────────────────
+-- U-749: ReadContractLaborSubCostCodeCounts — read-only prior counts for
+-- the CL edit page's "suggested cost codes" (U-673 signal S0 vendor x
+-- project). Counts labelled ContractLaborLineItem lines per SubCostCodeId
+-- for one vendor, in two scopes:
+--   'vendor'  — every eligible line for the vendor
+--   'project' — the subset with li.ProjectId = @ProjectId
+-- Eligible = parent Status in the U-673 labelled set
+-- (approved/completed/ready/billed), non-NULL non-holding SubCostCodeId,
+-- line date (COALESCE(li.LineDate, cl.WorkDate)) at least 2 days before
+-- @AsOfDate (U-673's coding lag), and not the entry being edited.
+-- Vendor match is COALESCE(cl.VendorId, cl.BillVendorId) = @VendorId,
+-- written as the equivalent OR so IX_ContractLabor_VendorId stays usable.
+-- One scan: aggregate once, unpivot the two counts; zero-count rows dropped.
+-- Ranking (>= 3 priors, top 3, count desc / id asc) lives in Python:
+-- entities/contract_labor/business/code_suggestions.py.
+-- ─────────────────────────────────────────────────────────────────────
+
+CREATE OR ALTER PROCEDURE dbo.ReadContractLaborSubCostCodeCounts
+(
+    @VendorId BIGINT,
+    @ProjectId BIGINT = NULL,
+    @AsOfDate DATE,
+    @ExcludeContractLaborId BIGINT = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @VisibleThrough DATE = DATEADD(day, -2, @AsOfDate);
+
+    SELECT
+        CAST(s.[Scope] AS NVARCHAR(10)) AS [Scope],
+        a.[SubCostCodeId],
+        s.[LineCount]
+    FROM (
+        SELECT
+            li.[SubCostCodeId],
+            COUNT(*) AS [VendorCount],
+            SUM(CASE WHEN li.[ProjectId] = @ProjectId THEN 1 ELSE 0 END) AS [ProjectCount]
+        FROM dbo.[ContractLabor] cl
+        INNER JOIN dbo.[ContractLaborLineItem] li ON li.[ContractLaborId] = cl.[Id]
+        INNER JOIN dbo.[SubCostCode] scc ON scc.[Id] = li.[SubCostCodeId]
+        WHERE (cl.[VendorId] = @VendorId
+               OR (cl.[VendorId] IS NULL AND cl.[BillVendorId] = @VendorId))
+          AND cl.[Status] IN (N'approved', N'completed', N'ready', N'billed')
+          AND li.[SubCostCodeId] IS NOT NULL
+          AND ISNULL(scc.[IsHoldingCode], 0) = 0
+          AND COALESCE(li.[LineDate], cl.[WorkDate]) <= @VisibleThrough
+          AND (@ExcludeContractLaborId IS NULL OR cl.[Id] <> @ExcludeContractLaborId)
+        GROUP BY li.[SubCostCodeId]
+    ) a
+    CROSS APPLY (VALUES
+        (N'vendor', a.[VendorCount]),
+        (N'project', a.[ProjectCount])
+    ) s([Scope], [LineCount])
+    WHERE s.[LineCount] > 0
+    ORDER BY s.[Scope], s.[LineCount] DESC, a.[SubCostCodeId];
 END;
 GO

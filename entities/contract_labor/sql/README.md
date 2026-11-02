@@ -4,7 +4,7 @@
 
 `dbo.contract_labor.sql` is the **single canonical source** for the
 `dbo.ContractLabor` and `dbo.ContractLaborLineItem` table bootstraps and for all
-**28** stored procedures it declares. No migration may redefine them — change the
+**32** stored procedures it declares. No migration may redefine them — change the
 base file and apply it. Enforced by `tests/test_sproc_single_source.py`
 (whole-file guard, `ENTITY_BASE_FILES`). Duplicate bodies that drift from the base
 file break net-zero with prod.
@@ -84,7 +84,7 @@ from-scratch build from the base alone yields a missing sproc. Apply that file t
 4. **`scripts/migrations/gap2_created_by_user_id.sql`** — adds `CreatedByUserId`.
 
 5. **`entities/contract_labor/sql/dbo.contract_labor.sql` (second pass)** —
-   idempotent `CREATE OR ALTER`; all 28 sprocs apply.
+   idempotent `CREATE OR ALTER`; all 32 sprocs apply.
 
 6. **`entities/contract_labor/sql/ReadContractLaborDistinctBillingPeriods.sql`** —
    the one CL sproc not homed in the base (see the section above).

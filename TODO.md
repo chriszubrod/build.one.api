@@ -95,6 +95,16 @@ U-746 made a holding-coded line or source unbillable on every invoice path: `dra
 - [ ] **`POST /generate/invoice/{id}/packet` has no holding gate** (Pass 3 residual, pre-existing). It renders a client packet that can include a 00.02 line. It writes only the stored packet Attachment, plus the Box draw-request enqueue when `ALLOW_BOX_WRITES` is set, and the route is INVOICES `can_read`. The playbook now says a 00.02 line never reaches a client document, so either gate this route on `holding_line_item_ids` or narrow that wording.
 - [ ] **Shared push fixtures.** `tests/test_u746_push_draw_holding_gate.py` imports `_push_service_with_mocks` / `_gates_open` / `_audit_clear` from `tests/test_invoice_draw_push.py`. Move them to a shared module when either file is next touched.
 
+## U-749 follow-ups - labor cost-code picker suggestions (booked 2026-11-02)
+
+- [ ] **Run the opt-in SQL test before the sproc reaches prod:** `tests_sqlserver/test_u749_labor_code_suggestions_sql.py` (local SQL Server only). Unit tests check the sproc text; only this test exercises its filters (statuses, holding codes, 2-day lag, exclusion, COALESCE vendor).
+- [ ] **Measure it:** nothing records whether the picked code came from the Suggested group. If the picker is worth tracking, re-run the U-673 harness top-3 on new labor lines (Dec) or add a lightweight pick-source signal.
+- [ ] **Deliberate departures from U-673 S0 (documented in `business/code_suggestions.py`):** coded_at ordering not ported; as-of is the entry's WorkDate, not each line's LineDate. Revisit if lines on one entry start spanning dates.
+- [ ] Vendor-wide fallback counts the vendor's lines on ALL projects (S0 design); only catalog code ids are returned. Revisit if a caller ever needs project-scoped fallback.
+- [ ] Suggestions use the STORED vendor/WorkDate; unsaved edits on the page don't change them (UX nit).
+- [ ] (Pass 2, DEFER) `CodeSuggestion.prior_count` is internal-only (tests read it); drop it or surface it as a confidence denominator. Sproc: redundant `CAST(Scope AS NVARCHAR(10))` and an unused final `ORDER BY`. Lift `rank_sub_cost_codes` into a shared helper if a second runtime caller appears.
+- [ ] Stale comment: `tests/test_sproc_single_source.py` ~L196 still says "all 28 sprocs" (contract_labor now declares 32).
+
 ## U-745 follow-ups - M0 shadow + switched last rung (booked 2026-10-29, shipped `cea3c8d6`, switch BILL_CODING_M0_RUNG_ENABLED off)
 
 - [ ] **Switch-on bar:** turn BILL_CODING_M0_RUNG_ENABLED on only when the U-744 scorecard shows rung `m0` >= `similar_vote` on the same u701b-text-v2 rows where M0 ran (drop-row NULLs = M0 lost the no-wait race, mostly on the history short-circuit; compare on rows where M0 answered). Ask Chris before flipping.

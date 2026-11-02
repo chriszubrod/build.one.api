@@ -24,6 +24,7 @@ Sprocs
   ReadContractLaborLineItemById
   ReadContractLaborLineItemByPublicId
   ReadContractLaborLineItemsByContractLaborId
+  ReadContractLaborSubCostCodeCounts
   ReadContractLabors
   ReadContractLaborsByBillLineItemId
   ReadContractLaborsByBillingPeriod
@@ -50,6 +51,11 @@ import pyodbc
 
 # Local Imports
 from entities.contract_labor.business.model import ContractLabor
+from entities.contract_labor.business.code_suggestions import (
+    NO_SUGGESTION,
+    CodeSuggestion,
+    rank_sub_cost_codes,
+)
 from entities.contract_labor.persistence.repo import ContractLaborRepository
 from entities.vendor.business.service import VendorService
 from entities.project.business.service import ProjectService
@@ -211,6 +217,36 @@ class ContractLaborService:
         if cl.project_id is not None:
             assert_can_access_project(cl.project_id)
         return cl
+
+    def suggest_sub_cost_codes(
+        self,
+        entry: ContractLabor,
+        *,
+        project_id: int,
+        line_item_repo=None,
+    ) -> CodeSuggestion:
+        """U-749: suggested SubCostCodes for one line project of `entry`.
+
+        U-673 signal S0 vendor x project: vendor = COALESCE(vendor_id,
+        bill_vendor_id), as-of = the entry's work_date, the entry itself
+        excluded. The caller owns the entry/project access checks. No vendor
+        or no work_date -> no suggestion (no DB call).
+        """
+        vendor_id = entry.vendor_id if entry.vendor_id is not None else entry.bill_vendor_id
+        if vendor_id is None or not entry.work_date:
+            return NO_SUGGESTION
+        if line_item_repo is None:
+            from entities.contract_labor.persistence.line_item_repo import (
+                ContractLaborLineItemRepository,
+            )
+            line_item_repo = ContractLaborLineItemRepository()
+        project_counts, vendor_counts = line_item_repo.read_sub_cost_code_counts(
+            vendor_id=vendor_id,
+            project_id=project_id,
+            as_of_date=entry.work_date,
+            exclude_contract_labor_id=entry.id,
+        )
+        return rank_sub_cost_codes(project_counts, vendor_counts)
 
     def read_by_vendor_id(self, vendor_id: int) -> list[ContractLabor]:
         """

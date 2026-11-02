@@ -27,6 +27,7 @@ from shared.api.responses import (
     raise_server_error,
 )
 from shared.lifecycle.completion_gate import HoldingCodeRefused
+from shared.access import EntityNotAccessibleError, assert_can_access_project
 from shared.api.errors import ApiError, ErrorCode
 from shared.authz import current_user_id
 from shared.rbac import require_module_api
@@ -498,6 +499,41 @@ def read_contract_labor_daily_summary(
         exclude_entry_id=entry.id,
     )
     return item_response(summary)
+
+
+@router.get("/{public_id}/code-suggestions")
+def read_contract_labor_code_suggestions(
+    public_id: str,
+    project_id: int = Query(
+        ..., ge=1, le=9223372036854775807,
+        description="Project Id of the line being coded (BIGINT range).",
+    ),
+    current_user: dict = Depends(require_module_api(Modules.CONTRACT_LABOR)),
+):
+    """
+    U-749: suggested SubCostCodes for a line on this entry's project.
+
+    U-673 signal S0 vendor x project over prior labelled lines (see
+    business/code_suggestions.py). Returns ids only — never descriptions.
+
+    Returns:
+        {"data": {"project_id": int, "sub_cost_code_ids": [int, ...],
+                  "source": "vendor_project"|"vendor"|"none"}}
+    """
+    service = ContractLaborService()
+    entry = service.read_by_public_id(public_id=public_id)
+    if not entry:
+        raise_not_found("Contract labor entry")
+    try:
+        assert_can_access_project(project_id)
+    except EntityNotAccessibleError:
+        raise_not_found("Project")
+    suggestion = service.suggest_sub_cost_codes(entry, project_id=project_id)
+    return item_response({
+        "project_id": project_id,
+        "sub_cost_code_ids": list(suggestion.sub_cost_code_ids),
+        "source": suggestion.source,
+    })
 
 
 @router.put("/{public_id}/bill")

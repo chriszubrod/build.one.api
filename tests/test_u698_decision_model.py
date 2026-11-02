@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+from collections import defaultdict
 import json
 import math
 import random
@@ -400,7 +401,8 @@ def _synthetic_population(seed=4):
                          catalog=catalog, pdf_tokens_by_bill_id=pdf)
 
 
-def _fake_neighbours(pop, *, idf_since, idf_until, idf_before, upto, coded_unknown=None, top_k=10):
+def _fake_neighbours(pop, *, idf_since, idf_until, idf_before, upto, coded_unknown=None, top_k=10,
+                     max_tokens_per_bill=None):
     rng = random.Random(1)
     by_id = {b.bill_id: b for b in pop.bills}
     pdf = sorted((by_id[i] for i in pop.pdf_tokens_by_bill_id), key=lambda b: (b.created, b.bill_id))
@@ -693,3 +695,494 @@ def test_round2_split_history_rows_before_cut_fit_after_cut_dropped():
     fit, cal = bt.split_by_dates(pdf + hist)
     assert {r.bill.bill_id for r in cal} == {9, 10}
     assert {r.bill.bill_id for r in fit} == set(range(1, 9)) | {100}
+
+
+# ---------------------------------------------------------------------------------------------
+# U-745a: --max-tokens-per-bill and --score-model
+# ---------------------------------------------------------------------------------------------
+
+from entities.coding_suggestion.business.decision_model import serve as SV  # noqa: E402
+
+SHIPPED_M0 = SV.MODEL_PATH
+U698_RUN_MODEL = Path(__file__).resolve().parents[1] / "docs/design/u698/u698_model_20261029T185458Z.json"
+
+
+def _recording_neighbours(calls):
+    def fn(pop, **kw):
+        calls.append(kw)
+        return _fake_neighbours(pop, **kw)
+    return fn
+
+
+def test_u745a_cap_defaults_to_none_everywhere():
+    assert bt.Options().max_tokens_per_bill is None
+    assert bt.Options().score_model is None
+    opts = bt.options_from_args(bt.build_arg_parser().parse_args([]))
+    assert opts.max_tokens_per_bill is None and opts.score_model is None
+    import inspect
+    assert inspect.signature(bt.neighbour_pass).parameters["max_tokens_per_bill"].default is None
+
+
+def test_u745a_cap_reaches_every_neighbour_pass_and_is_validated():
+    pop = _synthetic_population()
+    calls = []
+    # Frozen M0 keeps this fast; the neighbour passes are the same call sites as a fitted run.
+    fast = dict(bootstrap=20, score_model=str(SHIPPED_M0))
+    bt.run_backtest(pop, _synthetic_e1(pop), bt.Options(max_tokens_per_bill=50, **fast),
+                    neighbours_fn=_recording_neighbours(calls), log=lambda _m: None)
+    assert len(calls) == bt.CV_FOLDS + 1  # six CV folds + the fixed split
+    assert all(c["max_tokens_per_bill"] == 50 for c in calls)
+    calls.clear()
+    bt.run_backtest(pop, _synthetic_e1(pop), bt.Options(**fast),
+                    neighbours_fn=_recording_neighbours(calls), log=lambda _m: None)
+    assert calls and all(c["max_tokens_per_bill"] is None for c in calls)
+    with pytest.raises(SystemExit):
+        bt.options_from_args(bt.build_arg_parser().parse_args(["--max-tokens-per-bill", "0"]))
+    with pytest.raises(ValueError):
+        bt.run_backtest(pop, {}, bt.Options(max_tokens_per_bill=0), neighbours_fn=_fake_neighbours,
+                        log=lambda _m: None)
+
+
+def test_u745a_neighbour_pass_puts_the_cap_on_token_source_config(monkeypatch):
+    from scripts import u691_similar_bills_backtest as u691
+
+    seen = []
+    real = u691.TokenSourceConfig
+
+    def spy(**kw):
+        seen.append(kw.get("max_tokens_per_bill"))
+        return real(**kw)
+
+    monkeypatch.setattr(u691, "TokenSourceConfig", spy)
+    pop = _cap_population()
+    bt.neighbour_pass(pop, idf_since=date(2026, 1, 1), idf_until=date(2026, 12, 31), idf_before=None,
+                      upto=date(2026, 12, 31), max_tokens_per_bill=7)
+    bt.neighbour_pass(pop, idf_since=date(2026, 1, 1), idf_until=date(2026, 12, 31), idf_before=None,
+                      upto=date(2026, 12, 31))
+    assert seen == [7, None]
+
+
+def _cap_population():
+    """Q shares only the low-IDF token ``common`` with P; each also has a unique (high-IDF)
+    token. A cap of 1 keeps only the unique token on BOTH sides, so P stops being Q's neighbour."""
+    d = lambda day: datetime(2026, 5, day, 9)  # noqa: E731
+    bills = [BillRow(1, 1, d(1), 101, 1, Decimal("100"), False),   # P
+             BillRow(2, 2, d(2), 102, 1, Decimal("100"), False),   # filler
+             BillRow(3, 3, d(3), 103, 1, Decimal("100"), False),   # filler
+             BillRow(4, 4, d(4), 104, 1, Decimal("100"), False)]   # Q
+    toks = {1: frozenset({"common", "punique"}), 2: frozenset({"gone"}), 3: frozenset({"gtwo"}),
+            4: frozenset({"common", "qunique"})}
+    return bt.Population(bills=bills, pdf_tokens_by_bill_id=toks)
+
+
+def test_u745a_cap_changes_neighbours_on_both_sides():
+    pop = _cap_population()
+    kw = dict(idf_since=date(2026, 1, 1), idf_until=date(2026, 12, 31), idf_before=None,
+              upto=date(2026, 12, 31))
+    uncapped = bt.neighbour_pass(pop, **kw)
+    capped = bt.neighbour_pass(pop, **kw, max_tokens_per_bill=1)
+    assert [n.prior_bill_id for n in uncapped[4]] == [1]
+    assert capped[4] == []
+    # A cap at or above every bill's token count is a no-op.
+    assert bt.neighbour_pass(pop, **kw, max_tokens_per_bill=2) == uncapped
+
+
+def _no_fit(*_a, **_k):
+    raise AssertionError("score-model mode must never fit or calibrate")
+
+
+@pytest.fixture(scope="module")
+def frozen_run():
+    pop = _synthetic_population()
+    e1 = _synthetic_e1(pop)
+    mp = pytest.MonkeyPatch()
+    for name in ("fit_logistic", "fit_calibrator", "fit_m0", "m1_fit", "m1_cross_fit",
+                 "m1_forward_chained"):
+        mp.setattr(bt, name, _no_fit)
+    try:
+        opts = bt.Options(bootstrap=20, max_tokens_per_bill=50, score_model=str(SHIPPED_M0))
+        res = bt.run_backtest(pop, e1, opts, neighbours_fn=_fake_neighbours, log=lambda _m: None)
+    finally:
+        mp.undo()
+    return pop, opts, res
+
+
+def test_u745a_score_model_never_fits_and_matches_serve_scoring(frozen_run):
+    _pop, _opts, res = frozen_run
+    assert res["m0_source"] == bt.M0_SOURCE_FROZEN and res["m1_status"] == bt.M1_STATUS_SKIPPED
+    assert res["chosen_variant"] == bt.VARIANT_FROZEN
+    shipped = SV.load_m0_model(SHIPPED_M0)
+    oof = [s for s in res["_artefacts"]["oof"] if s.row.ctx.candidates]
+    assert oof
+    for s in oof[:40]:
+        want = SV.m0_score(shipped, s.row.ctx)
+        assert s.decision.scc_id == want.scc_id
+        assert s.decision.prob == pytest.approx(want.prob, abs=1e-12)
+        assert s.decision.raw_prob == pytest.approx(want.raw_prob, abs=1e-12)
+    cv = res["variants"][bt.VARIANT_FROZEN]["cv_pdf_eval"]
+    for m in "AB":  # same baselines and metrics as a fitted run
+        assert cv[m]["m0_vs_baseline"]["sign_test_p"] is not None or cv[m]["m0_vs_baseline"]["fixed"] == 0
+        assert {"baseline_hist_strong_else_vote", "history_alone", "ece", "coverage_at_bars",
+                "strong_history_overrides", "live_mix"} <= set(cv[m])
+        assert res["fixed_split"][m]["n"] > 0
+
+
+def test_u745a_score_model_skips_m1_cleanly(frozen_run):
+    _pop, _opts, res = frozen_run
+    for m in "AB":
+        t = res["e1_table"][m]
+        assert t["m1_status"] == bt.M1_STATUS_SKIPPED
+        assert t["m1_forward"] is None and t["m1_cross_fit"] is None
+        assert t["m1_forward_vs_ladder"]["diff_points"] is None
+        assert t["m0"] is not None  # M0 is still reported on the E1 bills
+    assert res["m1_fold_models"] == [] and res["m1_all_bills_weights_for_review"] is None
+    assert res["gates"]["G1"]["status"] == "SKIPPED" and not res["gates"]["G1"]["pass"]
+
+
+def test_u745a_both_saved_model_formats_load_identically():
+    a = bt.load_frozen_m0(SHIPPED_M0)
+    b = bt.load_frozen_m0(U698_RUN_MODEL)  # no top-level "features" key
+    assert a.model.weights == b.model.weights and a.model.scales == b.model.scales
+    assert a.calibrator.upper == b.calibrator.upper and a.sha256 != b.sha256
+    import hashlib
+    assert a.sha256 == hashlib.sha256(SHIPPED_M0.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda d: d["m0"]["features"].pop(),                                       # missing feature
+    lambda d: d["m0"]["features"].append("F99_new"),                           # extra feature
+    lambda d: d["m0"]["features"].reverse(),                                   # reordered
+    lambda d: d["features"].__setitem__(0, "F0_other"),                        # top-level list
+])
+def test_u745a_feature_list_mismatch_raises(tmp_path, mutate):
+    data = json.loads(SHIPPED_M0.read_text())
+    mutate(data)
+    bad = tmp_path / "bad_model.json"
+    bad.write_text(json.dumps(data))
+    with pytest.raises(SV.M0ModelError):
+        bt.load_frozen_m0(bad)
+    pop = _synthetic_population()
+    with pytest.raises(SV.M0ModelError):
+        bt.run_backtest(pop, {}, bt.Options(score_model=str(bad)), neighbours_fn=_fake_neighbours,
+                        log=lambda _m: None)
+
+    def boom(*_a, **_k):
+        raise AssertionError("must fail before any population load")
+
+    with pytest.raises(SV.M0ModelError):
+        bt.main(["--run", "--score-model", str(bad)], dry_loader=boom, pop_loader=boom, runner=boom)
+
+
+def test_u745a_outputs_record_cap_and_model_sha(frozen_run, tmp_path):
+    pop, opts, res = frozen_run
+    paths = bt.write_outputs(res, pop, opts, tmp_path, "20261101T000000Z")  # privacy guard runs inside
+    sha = bt.load_frozen_m0(SHIPPED_M0).sha256
+    by_kind = {p.name.split("_")[1]: p for p in paths}
+    # Frozen mode writes NO model json: this run's data hash is not the model's training hash.
+    assert "model" not in by_kind and not list(tmp_path.glob("u698_model_*.json"))
+    summ = json.loads(by_kind["summary"].read_text())
+    report = by_kind["report"].read_text()
+    paths = [by_kind["predictions"], None, by_kind["summary"], by_kind["report"]]
+    assert "model JSON not written" in report
+    assert summ["score_model"]["data_hash"] == json.loads(SHIPPED_M0.read_text())["data_hash"]
+    assert summ["score_model"]["trained_through"] == "2026-09-11"
+    assert summ["max_tokens_per_bill"] == 50 and summ["options"]["max_tokens_per_bill"] == 50
+    assert summ["score_model"]["sha256"] == sha and summ["score_model"]["path"] == str(SHIPPED_M0)
+    assert "max_tokens_per_bill): 50" in report and sha in report and "FROZEN" in report
+    with paths[0].open() as fh:  # M1 columns are blank, never a copy of M0
+        rows = list(csv.DictReader(fh))
+    assert rows and all(r["m1_forward_scc_id"] == "" and r["m1_forward_correct"] == "" for r in rows)
+
+
+def test_u745a_uncapped_fitted_outputs_say_so(e2e, tmp_path):
+    pop, opts, res = e2e
+    assert res["max_tokens_per_bill"] is None and res["m0_source"] == "fitted"
+    paths = bt.write_outputs(res, pop, opts, tmp_path, "20261101T000001Z")
+    assert json.loads(paths[2].read_text())["max_tokens_per_bill"] is None
+    assert "none, uncapped" in paths[3].read_text()
+
+
+
+# ---------------------------------------------------------------------------------------------
+# U-745a fix round 1
+# ---------------------------------------------------------------------------------------------
+
+
+def test_fr1_default_window_folds_are_unchanged():
+    folds = bt.cv_folds(date(2026, 4, 11), date(2026, 10, 10))
+    assert folds == [
+        (date(2026, 4, 11), date(2026, 5, 10)), (date(2026, 5, 11), date(2026, 6, 10)),
+        (date(2026, 6, 11), date(2026, 7, 10)), (date(2026, 7, 11), date(2026, 8, 10)),
+        (date(2026, 8, 11), date(2026, 9, 10)), (date(2026, 9, 11), date(2026, 10, 10)),
+    ]
+
+
+def test_fr1_short_window_folds_are_clamped_and_never_empty_or_reversed():
+    since, until = date(2026, 9, 12), date(2026, 10, 31)
+    folds = bt.cv_folds(since, until)
+    assert folds == [(date(2026, 9, 12), date(2026, 10, 11)), (date(2026, 10, 12), date(2026, 10, 31))]
+    for s_, e in folds:
+        assert since <= s_ <= e <= until
+    # one-day window
+    assert bt.cv_folds(date(2026, 9, 12), date(2026, 9, 12)) == [(date(2026, 9, 12), date(2026, 9, 12))]
+
+
+def test_fr1_short_window_run_scores_nothing_after_eval_until():
+    pop = _synthetic_population()
+    since, until = date(2026, 8, 1), date(2026, 9, 15)
+    opts = bt.Options(bootstrap=20, eval_since=since, eval_until=until, score_model=str(SHIPPED_M0))
+    res = bt.run_backtest(pop, {}, opts, neighbours_fn=_fake_neighbours, log=lambda _m: None)
+    folds = res["variants"][bt.VARIANT_FROZEN]["folds"]
+    assert len(folds) == 2 and all(f["start"] <= f["end"] <= until for f in folds)
+    oof = res["_artefacts"]["oof"]
+    assert oof and all(since <= s.row.bill.created.date() <= until for s in oof)
+    n_expected = sum(1 for b in pop.bills if b.bill_id in pop.pdf_tokens_by_bill_id
+                     and since <= b.created.date() <= until)
+    assert res["variants"][bt.VARIANT_FROZEN]["cv_pdf_eval"]["A"]["n"] == n_expected
+    assert res["fixed_split"]["A"]["n"] == n_expected
+
+
+def test_fr1_in_sample_guard(frozen_run, tmp_path):
+    pop, opts, res = frozen_run  # default window starts 2026-04-11 <= trained_through 2026-09-11
+    assert res["in_sample"] is True
+    paths = bt.write_outputs(res, pop, opts, tmp_path, "20261101T000002Z")
+    summ = json.loads(next(p for p in paths if "summary" in p.name).read_text())
+    report = next(p for p in paths if "report" in p.name).read_text()
+    assert summ["in_sample"] is True
+    assert "IN-SAMPLE: eval window overlaps model training through 2026-09-11" in report
+    logs = []
+    pop2 = _synthetic_population()
+    out = bt.run_backtest(pop2, {}, bt.Options(bootstrap=20, eval_since=date(2026, 9, 12),
+                                               eval_until=date(2026, 10, 5), score_model=str(SHIPPED_M0)),
+                          neighbours_fn=_fake_neighbours, log=logs.append)
+    assert out["in_sample"] is False and not any("IN-SAMPLE" in m for m in logs)
+    logs.clear()
+    bt.run_backtest(pop2, {}, bt.Options(bootstrap=20, eval_since=date(2026, 9, 11),
+                                         eval_until=date(2026, 10, 5), score_model=str(SHIPPED_M0)),
+                    neighbours_fn=_fake_neighbours, log=logs.append)
+    assert any("IN-SAMPLE: eval window overlaps model training through 2026-09-11" in m for m in logs)
+
+
+def test_fr1_fitted_run_has_no_in_sample_claim(e2e):
+    assert e2e[2]["in_sample"] is None
+
+
+def _nbr_scored(bid, label, pick, has_nbrs, mode="A"):
+    q = _q(bid, 1, datetime(2026, 5, 1))
+    nb = (F.NeighbourEvidence(0.5, 0.5, label, True, bid - 1000, datetime(2026, 4, 1)),) if has_nbrs else ()
+    ctx = F.build_context(F.AsOfIndex([]), q, mode=mode, neighbours=nb)
+    b = BillRow(bid, 1, datetime(2026, 5, 1), label, 1, Decimal("10"), False)
+    d = L.Decision(scc_id=pick, prob=0.8, raw_prob=0.8, runner_up=None)
+    return bt.Scored(bt.Row(b, mode, ctx), d, "cv0", {})
+
+
+def test_fr2_live_abstain_counts_no_neighbour_rows_as_wrong():
+    rows = [_nbr_scored(1, 10, 10, True), _nbr_scored(2, 10, 10, False),
+            _nbr_scored(3, 10, 11, True), _nbr_scored(4, 10, 10, False)]
+    blk = bt.mode_block(rows, auto_bar=0.9, bootstrap=10, seed=1)
+    assert blk["m0"]["bill"] == pytest.approx(0.75)
+    assert blk["m0_live_abstain"]["bill"] == pytest.approx(0.25)
+    assert blk["no_neighbour_rows"] == 2
+    assert blk["m0_live_abstain_vs_baseline"]["n"] == 4
+    assert blk["strata"]["no_neighbours"]["n"] == 2 and blk["strata"]["has_neighbours"]["n"] == 2
+    assert blk["strata"]["no_neighbours"]["m0_live_abstain"] == 0.0
+    assert blk["strata"]["has_neighbours"]["m0_live_abstain"] == pytest.approx(0.5)
+
+
+def test_fr2_live_abstain_matches_serve_m0_pick(frozen_run):
+    """``live_abstain_pick`` equals the LIVE ``serve.m0_pick`` itself, fed the harness's inputs:
+    the vendor's strictly-earlier priors, company-wide as-of label counts (so ``_LiveIndex``'s
+    base rate equals the harness's as-of one), the RAW neighbour list and the as-of catalog."""
+    pop, opts, res = frozen_run
+    shipped = SV.load_m0_model(SHIPPED_M0)
+    index = bt.build_index(pop)
+    choosable = bt.Choosable(pop.catalog)
+    raw_nbrs = _fake_neighbours(pop, idf_since=None, idf_until=None, idf_before=None, upto=opts.eval_until)
+    def priors_for(b):
+        counts = defaultdict(int)
+        for pb in pop.bills:
+            if pb.created < b.created:
+                counts[pb.label_scc_id] += 1
+        return SV.M0Priors(tuple(index.vendor_priors(b.vendor_id, as_of=b.created, exclude_bill_id=b.bill_id)),
+                           dict(counts))
+
+    def check(s, raw):
+        b = s.row.bill
+        live = SV.m0_pick(shipped, priors_for(b), bt.query_bill(pop, b), mode=s.row.mode,
+                          neighbours=raw, choosable=choosable.at(b.created))
+        assert bt.live_abstain_pick(s) == (live.scc_id if live else None)
+        return live
+
+    oof = res["_artefacts"]["oof"]
+    picked = sum(check(s, raw_nbrs.get(s.row.bill.bill_id, [])) is not None for s in oof[:60])
+    assert picked
+    # The abstain branches: no neighbours at all, and neighbours the as-of catalog filters out.
+    for s in oof[60:80]:
+        b = s.row.bill
+        bogus = [F.NeighbourEvidence(0.9, 0.9, 99999, False, n.prior_bill_id, n.prior_created)
+                 for n in raw_nbrs.get(b.bill_id, [])]
+        assert bogus
+        for raw in ([], bogus):
+            ctx = bt.make_context(pop, index, choosable, b, s.row.mode, {b.bill_id: raw})
+            row = bt.Row(b, s.row.mode, ctx)
+            d, cand_raw = bt.score_row(shipped.model, shipped.calibration, row)
+            assert check(bt.Scored(row, d, "cv0", cand_raw), raw) is None
+
+
+def test_fr3_report_header_prints_population_data_hash(e2e):
+    pop, _opts, res = e2e
+    assert res["population_data_hash"] == bt.data_hash(pop.bills)
+    assert f"Population data_hash: `{bt.data_hash(pop.bills)}`" in bt.render_report(res, "x")
+
+
+def test_fr6_case_discriminates_one_sided_caps():
+    """Two-sided capping gives no neighbour; query-only would give P1, priors-only P2."""
+    from scripts import u691_similar_bills_backtest as u691
+
+    d = lambda day: datetime(2026, 5, day, 9)  # noqa: E731
+    bills = [BillRow(1, 1, d(1), 101, 1, Decimal("100"), False),   # P1 {a, x}
+             BillRow(2, 2, d(2), 102, 1, Decimal("100"), False),   # P2 {b}
+             BillRow(3, 3, d(3), 103, 1, Decimal("100"), False),   # Q  {a, b}
+             BillRow(4, 4, d(4), 104, 1, Decimal("100"), False),   # later {b}
+             BillRow(5, 5, d(5), 105, 1, Decimal("100"), False),   # later {g5}
+             BillRow(6, 6, d(6), 106, 1, Decimal("100"), False)]   # later {g6}
+    toks = {1: frozenset({"atok", "xtok"}), 2: frozenset({"btok"}), 3: frozenset({"atok", "btok"}),
+            4: frozenset({"btok"}), 5: frozenset({"gfive"}), 6: frozenset({"gsix"})}
+    pop = bt.Population(bills=bills, pdf_tokens_by_bill_id=toks)
+    kw = dict(idf_since=date(2026, 1, 1), idf_until=date(2026, 12, 31), idf_before=None,
+              upto=date(2026, 12, 31))
+    assert sorted(n.prior_bill_id for n in bt.neighbour_pass(pop, **kw)[3]) == [1, 2]
+    assert bt.neighbour_pass(pop, **kw, max_tokens_per_bill=1)[3] == []
+
+    # What a ONE-sided cap would give, built from u691's own primitives.
+    enriched = [u691.EnrichedBill(bill=b, memo="", line_descriptions="", line_count=0) for b in bills]
+    capped = u691.TokenSourceConfig(text_source=u691.TEXT_SOURCE_PDF, pdf_tokens_by_bill_id=toks,
+                                    max_tokens_per_bill=1)
+    uncapped = u691.TokenSourceConfig(text_source=u691.TEXT_SOURCE_PDF, pdf_tokens_by_bill_id=toks)
+    idf = u691.compute_idf_from_corpus(enriched, since=date(2026, 1, 1), until=date(2026, 12, 31),
+                                       config=uncapped)
+
+    def one_sided(qcfg, pcfg):
+        priors = {eb.bill.bill_id: u691.token_profile(eb, idf, config=pcfg) for eb in enriched[:2]}
+        index = defaultdict(set)
+        for bid, prof in priors.items():
+            for t in prof.tokens:
+                index[t].add(bid)
+        q = u691.token_profile(enriched[2], idf, config=qcfg)
+        return sorted(n.prior.enriched.bill.bill_id for n in u691.top_neighbours_any_vendor(
+            q, idf, top_k=10, token_index=index, prior_by_id=priors))
+
+    assert one_sided(capped, uncapped) == [1]   # query-only cap
+    assert one_sided(uncapped, capped) == [2]   # priors-only cap
+    assert one_sided(capped, capped) == []      # two-sided == the harness
+
+
+def test_fr7_model_file_is_read_once_and_hashed_from_those_bytes(monkeypatch, tmp_path):
+    import hashlib
+    target = tmp_path / "m0_copy.json"
+    target.write_bytes(SHIPPED_M0.read_bytes())
+    reads = []
+    real_bytes, real_text = Path.read_bytes, Path.read_text
+
+    def rb(self, *a, **k):
+        if self == target:
+            reads.append("bytes")
+        return real_bytes(self, *a, **k)
+
+    def rt(self, *a, **k):
+        if self == target:
+            reads.append("text")
+        return real_text(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_bytes", rb)
+    monkeypatch.setattr(Path, "read_text", rt)
+    fz = bt.load_frozen_m0(target)
+    assert reads == ["bytes"]
+    assert fz.sha256 == hashlib.sha256(real_bytes(target)).hexdigest()
+
+
+# ---------------------------------------------------------------------------------------------
+# U-745a fix rounds 2-3: the two LIVE ladders (choose_final order, never weak history)
+# ---------------------------------------------------------------------------------------------
+
+
+def _strong_index(vendor=1, scc=10, n=6):
+    return F.AsOfIndex([_pb(900 + i, vendor, datetime(2026, 1, 1 + i), scc) for i in range(n)])
+
+
+def _weak_index(vendor=1, codes=(10, 10, 11, 12, 13)):
+    return F.AsOfIndex([_pb(800 + i, vendor, datetime(2026, 1, 1 + i), c) for i, c in enumerate(codes)])
+
+
+def _row_scored(index, bid, label, pick, has_nbrs, mode="A", nbr_scc=None):
+    q = _q(bid, 1, datetime(2026, 5, 1))
+    sc = label if nbr_scc is None else nbr_scc
+    nb = (F.NeighbourEvidence(0.5, 0.5, sc, False, bid - 1000, datetime(2026, 4, 1)),) if has_nbrs else ()
+    ctx = F.build_context(index, q, mode=mode, neighbours=nb)
+    b = BillRow(bid, 1, datetime(2026, 5, 1), label, 1, Decimal("10"), False)
+    return bt.Scored(bt.Row(b, mode, ctx), L.Decision(scc_id=pick, prob=0.8, raw_prob=0.8, runner_up=None),
+                     "cv0", {})
+
+
+def test_fr3_weak_no_neighbour_row_is_blank_in_both_live_ladders():
+    """Reviewer's case: weak history (top 10 at 2/5) is right, no neighbours. Live never falls
+    back to weak history, so both ladders are blank: a tie, not an M0 'broke'."""
+    s = _row_scored(_weak_index(), 1, 10, None, has_nbrs=False)
+    assert not s.row.ctx.history.strong and s.row.ctx.history.top == 10
+    assert s.row.ctx.baseline_pick == 10            # the U-698 baseline DOES fall back to weak history
+    assert bt.live_off_pick(s) is None and bt.live_on_pick(s) is None
+    blk = bt.mode_block([s], auto_bar=0.9, bootstrap=10, seed=1)
+    pr = blk["m0_live_on_vs_off"]
+    assert (pr["fixed"], pr["broke"], pr["diff_points"]) == (0, 0, 0.0)
+    assert blk["m0_live_on_vs_off_weak_only"]["n"] == 1
+
+
+def test_fr3_m0_no_pick_with_neighbours_falls_through_to_the_vote():
+    s = _row_scored(_weak_index(), 2, 12, None, has_nbrs=True, nbr_scc=12)  # M0 picks nothing
+    assert s.row.ctx.neighbours and s.row.ctx.vote_top == 12
+    assert bt.live_abstain_pick(s) is None
+    assert bt.live_on_pick(s) == 12 == bt.live_off_pick(s)
+    m0 = _row_scored(_weak_index(), 3, 11, 11, has_nbrs=True, nbr_scc=12)    # M0 picks: replaces the vote
+    assert bt.live_on_pick(m0) == 11 and bt.live_off_pick(m0) == 12
+
+
+def test_fr3_strong_history_wins_in_both_ladders():
+    s = _row_scored(_strong_index(), 4, 10, 11, has_nbrs=True, nbr_scc=11)   # M0 would override
+    assert bt.live_on_pick(s) == 10 == bt.live_off_pick(s)
+    s2 = _row_scored(_strong_index(), 5, 10, None, has_nbrs=False)
+    assert bt.live_on_pick(s2) == 10 == bt.live_off_pick(s2)
+
+
+def test_fr3_ladders_on_the_frozen_run(frozen_run):
+    _pop, _opts, res = frozen_run
+    oof = res["_artefacts"]["oof"]
+    strong = [s for s in oof if s.row.ctx.history.strong]
+    weak_abstain = [s for s in oof if not s.row.ctx.history.strong and bt.live_abstain_pick(s) is None]
+    assert strong
+    for s in strong + weak_abstain:  # the ladders differ only where M0 actually picks on a weak row
+        assert bt.live_on_pick(s) == bt.live_off_pick(s)
+    for s in oof:  # live_off is the baseline except on weak rows with no filtered vote
+        if s.row.ctx.history.strong or s.row.ctx.vote_top is not None:
+            assert bt.live_off_pick(s) == s.row.ctx.baseline_pick
+        else:
+            assert bt.live_off_pick(s) is None
+    cv = res["variants"][bt.VARIANT_FROZEN]["cv_pdf_eval"]
+    for m in "AB":
+        blk = cv[m]
+        wk, full = blk["m0_live_on_vs_off_weak_only"], blk["m0_live_on_vs_off"]
+        assert wk["n"] == sum(1 for s in oof if s.row.mode == m and not s.row.ctx.history.strong)
+        assert (full["fixed"], full["broke"]) == (wk["fixed"], wk["broke"])
+        assert {"diff_points", "sign_test_p", "bootstrap_ci_points"} <= set(full)
+        assert blk["m0_live_on"]["bill"] is not None and blk["m0_live_off"]["bill"] is not None
+        assert blk["live_mix"]["m0_live_on"]["value"] is not None
+        assert blk["live_mix"]["m0_live_off"]["value"] is not None
+        assert "m0_live_composite" not in blk and "m0_live_composite_vs_baseline" not in blk
+
+
+def test_fr2r2_report_prints_n_beside_each_gate_and_the_live_ladders(e2e):
+    _pop, _opts, res = e2e
+    rep = bt.render_report(res, "x")
+    assert "| gate | verdict | n |" in rep
+    cv = res["variants"][res["chosen_variant"]]["cv_pdf_eval"]
+    assert f"| G2 | {res['gates']['G2']['status']} | A={cv['A']['n']} B={cv['B']['n']} |" in rep
+    assert "m0_live_on_vs_off" in rep and "m0_live_composite" not in rep

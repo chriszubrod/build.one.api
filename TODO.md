@@ -98,13 +98,22 @@ U-746 made a holding-coded line or source unbillable on every invoice path: `dra
 ## U-745 follow-ups - M0 shadow + switched last rung (booked 2026-10-29, shipped `cea3c8d6`, switch BILL_CODING_M0_RUNG_ENABLED off)
 
 - [ ] **Switch-on bar:** turn BILL_CODING_M0_RUNG_ENABLED on only when the U-744 scorecard shows rung `m0` >= `similar_vote` on the same u701b-text-v2 rows where M0 ran (drop-row NULLs = M0 lost the no-wait race, mostly on the history short-circuit; compare on rows where M0 answered). Ask Chris before flipping.
-- [ ] **Re-measure M0 with the live 50-token neighbour cap** (live similar-bills uses `similar_bills_max_tokens_per_bill`=50 on both sides; U-698 trained on full PDF token sets, so F7-F10 and the isotonic calibration differ). Re-run the u698 neighbour pass with max_tokens_per_bill=50 (prod read-only, $0 LLM - ask first); retrain/recalibrate on capped neighbours if the lift or calibration moves.
+- [x] **Re-measure M0 with the live 50-token neighbour cap** — DONE 2026-11-02 (U-745a, docs/design/u745a/README.md). Out of sample (09-12..11-01, n=390) the shipped M0 ties the capped vote (live on vs off +0.0 / +0.3, p 1.0); a capped refit is +0.5 / +1.0 (p 0.82 / 0.52). Verdict: do NOT flip BILL_CODING_M0_RUNG_ENABLED; do not ship a capped refit. Re-run arms 2b/3b with the December U-698 re-run (longer out-of-sample window).
 - [ ] **Index** `dbo.BillLineItemAttachment (BillLineItemId) INCLUDE (AttachmentId)`: the HasPdf EXISTS in ReadVendorPriorBillsForDecisionModel (and ReadSimilarBillsCorpusRows) scans IX_BillLineItemAttachment_AttachmentId. Fine at today's size.
 - [ ] **One home for the dominant-label rule:** three hand-synced copies (ReadSimilarBillsCorpusRows + both U-745 sprocs, plus u653b `_LOAD_SQL`); an inline TVF `dbo.BillDominantLabel(@CompanyId)` would make them one.
 - [ ] **Stale SQL test fixtures (pre-existing, fail on clean trunk):** tests_sqlserver/test_u654b_bill_text_sql.py stub Bill lacks `CreatedByUserId` (ReadBillCodingActorByBillId) and its autocommit fixture leaves a committed BillTextCodingSuggestion table behind on failure, which breaks later files (u676m, u653b collateral); test_u653b_backtest_equivalence_sql.py schema lacks `IsHoldingCode`.
 - [ ] **Vendor-history reads ignore project access (pre-existing, hardening):** ReadVendorSccCountsForBills (no company filter either) / engine.suggest and the new vendor-priors read rank codes from all of the vendor's bills regardless of the actor's UserProject access. Only a catalog code is surfaced, never a project.
 - [ ] **M0 retrain cadence:** the shipped model is trained through 2026-09-11 (u698 run 20261029T185458Z). Decide a retrain schedule (with the December U-698 re-run) and how a new model file is versioned/validated (feature-list check + parity test).
 - [ ] Optional cleanup (Pass 2 skipped): `choose_final` could take one `last_rung` pick instead of separate vote/M0 parameters, keeping the ladder model-agnostic.
+
+## U-745a follow-ups - M0 under the live token cap (booked 2026-11-02)
+
+- [ ] **Re-run arms 2b / 3b in December** with the U-698 re-run (`--max-tokens-per-bill 50 --eval-since 2026-09-12 --eval-until <run date>`; commands in docs/design/u745a/README.md). The switch-on bar becomes: live scorecard `m0` >= `similar_vote` on the same v2 rows AND rule 1 on the longer 2b.
+- [ ] (Pass 2, DEFER) `_paired_ci` helper for the six copies of `{**st.paired(..), "bootstrap_ci_points": ..}` in `mode_block` / `_weak_only` / the E1 table; short-circuit `fixed == broke == 0` to `(0.0, 0.0)` (exact: each bootstrap seeds its own RNG). Saves ~half the new bootstrap time (~40 s per full run); every non-PDF row has `live_on == live_off`.
+- [ ] (Pass 2, DEFER) `live_abstain_correct` = `_hit(live_abstain_pick(s), s)`; do NOT route the `base`/`hist` checks through `_hit` (None == None semantics differ). `no_neighbour_rows` duplicates `len(strata["no_neighbours"])`.
+- [ ] (Pass 2, DEFER) `serve.parse_m0_model(data, expected_features)` + a thin file reader, so `load_frozen_m0` stops writing a normalised temp copy; fitted runs could then write a top-level `features` key (changes arm-1 output - bundle with that).
+- [ ] (Pass 2, DEFER) frozen mode still computes the M1 E1 block then `mark_m1_skipped` overwrites it (~1.6 s); the model file is loaded+hashed in both `main` and `run_backtest`; `trained_through` is parsed in three places.
+- [ ] (Pass 1 residual) the harness takes the raw top-10 neighbours then filters; live filters all then takes 10 (live can backfill). Both ladders alike; disclosed in the README.
 
 ## QBO bill PULL: staging rows that never became a `dbo.Bill` — FOUR distinct causes, only one a real gap (booked 2026-10-28, Vendor Agent run)
 

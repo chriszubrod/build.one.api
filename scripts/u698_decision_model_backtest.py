@@ -25,6 +25,14 @@ Pipeline (all priors strictly earlier than the bill scored; outputs are ids / co
    500-bill table with population reweighting, Q4 coded-time leakage share, and the G1-G5
    wiring-gate verdicts printed PASS / FAIL.
 
+U-745a options (``docs/design/u745a/README.md``):
+- ``--max-tokens-per-bill N``: keep only each bill's top-N-IDF tokens before the word-neighbour
+  search (the live ``similar_bills_max_tokens_per_bill`` cap). Applied by u691's ``token_profile``
+  to the query AND every prior, with the as-of IDF this harness computes. Default: uncapped.
+- ``--score-model PATH``: score every fold and the fixed split with a FROZEN M0 model JSON (the
+  shipped ``m0_model.json`` or a ``u698_model_*.json``), loaded with the live ``serve.load_m0_model``.
+  Nothing is fitted or calibrated; M1 is skipped and labelled so in every output.
+
 Usage (repo root):
   .venv/bin/python -m scripts.u698_decision_model_backtest          # dry-run: population counts
   .venv/bin/python -m scripts.u698_decision_model_backtest --run    # train + evaluate + write
@@ -38,6 +46,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import tempfile
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -107,6 +116,11 @@ LADDER_PARITY_POINTS = 0.5  # G1 is adjudicated only when the recomputed ladder 
 DEFAULT_LIVE_WEAK_SHARE = 0.68  # U-744 live scorecard: weak / no-history share of live drops
 M1_SCHEME_CROSS = "cross_fit"
 M1_SCHEME_FORWARD = "forward_chained"
+VARIANT_FROZEN = "frozen"  # score-model mode: the one "variant" is the frozen file's M0
+M0_SOURCE_FITTED = "fitted"
+M0_SOURCE_FROZEN = "frozen"
+M1_STATUS_RUN = "run"
+M1_STATUS_SKIPPED = "skipped"  # score-model mode: M1 is out of scope (U-745a)
 
 _EXTRA_SQL = """
 WITH Line1 AS (
@@ -392,15 +406,21 @@ def neighbour_pass(
     upto: date,
     top_k: int = 10,
     coded_unknown: Optional[str] = None,
-) -> dict[int, list[NeighbourEvidence]]:  # pragma: no cover - exercised by the session's run
+    max_tokens_per_bill: Optional[int] = None,
+) -> dict[int, list[NeighbourEvidence]]:
     """Rolling word neighbours for every PDF bill created on/before ``upto``.
 
     ``coded_unknown`` None = created-time cut only; "admit" / "drop" = also require a known coded
-    time before the query, admitting / dropping neighbours whose coded time is unknown."""
+    time before the query, admitting / dropping neighbours whose coded time is unknown.
+
+    ``max_tokens_per_bill`` (U-745a) None = uncapped; N = u691 ``token_profile`` keeps each
+    bill's top-N tokens by the IDF computed here (as-of, from UNCAPPED tokens, as the live
+    snapshot does), for the query and every prior alike."""
     from scripts import u691_similar_bills_backtest as u691
 
     cfg = u691.TokenSourceConfig(
-        text_source=u691.TEXT_SOURCE_PDF, pdf_tokens_by_bill_id=pop.pdf_tokens_by_bill_id
+        text_source=u691.TEXT_SOURCE_PDF, pdf_tokens_by_bill_id=pop.pdf_tokens_by_bill_id,
+        max_tokens_per_bill=max_tokens_per_bill,
     )
     enriched = [
         u691.EnrichedBill(bill=b, memo="", line_descriptions="", line_count=0)
@@ -577,6 +597,87 @@ def score_rows(fit: M0Fit, rows: Iterable[Row], fold: str) -> list[Scored]:
     return out
 
 
+@dataclass(frozen=True)
+class FrozenM0:
+    """A saved M0 (``--score-model``): weights, scales and calibration map used as-is."""
+
+    path: str
+    sha256: str
+    model_version: str
+    trained_through: str
+    data_hash: str
+    trained_variant: str
+    model: LogisticModel
+    calibrator: Any
+    windows: Any = None  # the file's own training windows, when it records them
+
+    @property
+    def trained_through_date(self) -> date:
+        return date.fromisoformat(self.trained_through[:10])
+
+    def as_fit(self) -> M0Fit:
+        return M0Fit(self.model, self.calibrator, 0, 0)
+
+    def describe(self) -> dict:
+        return {"path": self.path, "sha256": self.sha256, "model_version": self.model_version,
+                "trained_through": self.trained_through, "data_hash": self.data_hash,
+                "trained_variant": self.trained_variant, "windows": self.windows,
+                "features": len(self.model.names),
+                "calibration": self.calibrator.to_json().get("kind")}
+
+
+def _feature_mismatch(label: str, got: Sequence[str]) -> Optional[str]:
+    want = tuple(M0_FEATURES)
+    got = tuple(got)
+    if got == want:
+        return None
+    missing = [f for f in want if f not in got]
+    extra = [f for f in got if f not in want]
+    return (f"{label} does not match the harness M0_FEATURES "
+            f"(missing {missing}, extra {extra}, same set but reordered: {not missing and not extra})")
+
+
+def load_frozen_m0(path: Path) -> FrozenM0:
+    """Load a saved M0 with the LIVE loader (``serve.load_m0_model``), so the frozen model is
+    parsed and validated exactly as production serves it. The file is read ONCE: the sha256 is of
+    those bytes, and the live loader parses a private copy of them (never the path again). The
+    u698 run output has no top-level ``features`` key (the shipped copy added it), so it is
+    supplied from ``m0.features`` - which is itself validated against ``M0_FEATURES`` first. Any
+    mismatch raises ``M0ModelError``."""
+    from entities.coding_suggestion.business.decision_model.serve import M0ModelError, load_m0_model
+
+    raw = Path(path).read_bytes()
+    data = json.loads(raw.decode("utf-8"))
+    m0 = data.get("m0") if isinstance(data, dict) else None
+    if not isinstance(m0, dict):
+        raise M0ModelError(f"--score-model {path}: no 'm0' block")
+    checks = [("m0.features", m0.get("features") or ())]
+    if "features" in data:
+        checks.append(("features", data["features"] or ()))
+    for label, feats in checks:
+        msg = _feature_mismatch(label, feats)
+        if msg:
+            raise M0ModelError(f"--score-model {path}: {msg}")
+    with tempfile.TemporaryDirectory() as tmp:
+        copy = Path(tmp) / "m0_model.json"
+        if "features" in data:
+            copy.write_bytes(raw)
+        else:
+            copy.write_text(json.dumps({**data, "features": list(m0["features"])}), encoding="utf-8")
+        loaded = load_m0_model(copy, expected_features=M0_FEATURES)
+    frozen = FrozenM0(
+        path=str(path), sha256=hashlib.sha256(raw).hexdigest(),
+        model_version=loaded.model_version, trained_through=loaded.trained_through,
+        data_hash=loaded.data_hash, trained_variant=str(data.get("variant") or ""),
+        model=loaded.model, calibrator=loaded.calibration, windows=data.get("windows"),
+    )
+    try:
+        frozen.trained_through_date
+    except ValueError as error:
+        raise M0ModelError(f"--score-model {path}: trained_through is not a date") from error
+    return frozen
+
+
 # =============================================================================================
 # M1 (LLM stacker), out-of-fold on the E1 bills
 # =============================================================================================
@@ -699,6 +800,43 @@ def live_mix(ok: Sequence[bool], weak: Sequence[bool], weak_share: float) -> dic
             "weak_top1": acc_w, "strong_top1": acc_s}
 
 
+def live_abstain_pick(s: Scored) -> Optional[int]:
+    """M0's pick under the LIVE abstain rule (``serve.m0_pick``): no catalog-filtered neighbours
+    (``ctx.neighbours`` is the filtered top-K the vote uses) or no candidates -> abstain."""
+    if not s.row.ctx.neighbours or not s.row.ctx.candidates:
+        return None
+    return s.decision.scc_id
+
+
+def live_abstain_correct(s: Scored) -> bool:
+    pick = live_abstain_pick(s)
+    return pick is not None and pick == s.row.bill.label_scc_id
+
+
+def live_off_pick(s: Scored) -> Optional[int]:
+    """LIVE ladder with the M0 rung OFF (``bill_coding_decision.choose_final``, no LLM rung in the
+    harness): strong history -> the filtered vote -> none. Never weak history. "Strong" and the
+    vote are the SAME ``history.strong`` / ``vote_top`` the hist-strong-else-vote baseline uses."""
+    ctx = s.row.ctx
+    if ctx.history.strong:
+        return ctx.history.top
+    return ctx.vote_top
+
+
+def live_on_pick(s: Scored) -> Optional[int]:
+    """LIVE ladder with the M0 rung ON: strong history -> M0 under the live abstain rule -> the
+    filtered vote (an M0 no-pick falls through) -> none. Never weak history."""
+    ctx = s.row.ctx
+    if ctx.history.strong:
+        return ctx.history.top
+    m0 = live_abstain_pick(s)
+    return m0 if m0 is not None else ctx.vote_top
+
+
+def _hit(pick: Optional[int], s: Scored) -> bool:
+    return pick is not None and pick == s.row.bill.label_scc_id
+
+
 def baseline_asymmetry(scored: Sequence[Scored]) -> dict:
     """P2-d: baseline hits whose label M0 could not pick (not in its as-of-filtered candidates)."""
     hits = [s for s in scored if s.row.ctx.baseline_pick == s.row.bill.label_scc_id]
@@ -710,6 +848,9 @@ def baseline_asymmetry(scored: Sequence[Scored]) -> dict:
 def mode_block(scored: Sequence[Scored], *, auto_bar: float, bootstrap: int, seed: int,
                live_weak_share: float = DEFAULT_LIVE_WEAK_SHARE) -> dict:
     ok = [s.correct for s in scored]
+    ok_live = [live_abstain_correct(s) for s in scored]
+    ok_off = [_hit(live_off_pick(s), s) for s in scored]
+    ok_on = [_hit(live_on_pick(s), s) for s in scored]
     weak = [not s.row.ctx.history.strong for s in scored]
     amts = [float(s.row.bill.total_abs_amount) for s in scored]
     labels = [s.row.bill.label_scc_id for s in scored]
@@ -726,11 +867,13 @@ def mode_block(scored: Sequence[Scored], *, auto_bar: float, bootstrap: int, see
             strata["cold_start_pdf"].append(s)
         if s.row.mode == "A" and s.row.ctx.history.strong:
             strata["mode_a_strong_history"].append(s)
+        strata["has_neighbours" if s.row.ctx.neighbours else "no_neighbours"].append(s)
     strata_out = {}
     for name, items in sorted(strata.items()):
         blk = {
             "n": len(items),
             "m0": st.top1([s.correct for s in items])["bill"],
+            "m0_live_abstain": st.top1([live_abstain_correct(s) for s in items])["bill"],
             "baseline": st.top1([s.row.ctx.baseline_pick == s.row.bill.label_scc_id for s in items])["bill"],
             "history": st.top1([s.row.ctx.history.top == s.row.bill.label_scc_id for s in items])["bill"],
         }
@@ -751,7 +894,25 @@ def mode_block(scored: Sequence[Scored], *, auto_bar: float, bootstrap: int, see
             "bootstrap_ci_points": st.bootstrap_diff_ci(base, ok, resamples=bootstrap, seed=seed),
         },
         "m0_vs_history": st.paired(hist, ok),
+        # U-745a: live serve.m0_pick abstains on rows with no filtered neighbours (abstain = wrong).
+        "m0_live_abstain": st.top1(ok_live, amts),
+        "m0_live_abstain_vs_baseline": {
+            **st.paired(base, ok_live),
+            "bootstrap_ci_points": st.bootstrap_diff_ci(base, ok_live, resamples=bootstrap, seed=seed),
+        },
+        "no_neighbour_rows": sum(1 for s in scored if not s.row.ctx.neighbours),
+        # U-745a: the decision metric. Two LIVE ladders on identical rows: M0 rung on vs off.
+        "m0_live_off": st.top1(ok_off, amts),
+        "m0_live_on": st.top1(ok_on, amts),
+        "m0_live_on_vs_off": {
+            **st.paired(ok_off, ok_on),
+            "bootstrap_ci_points": st.bootstrap_diff_ci(ok_off, ok_on, resamples=bootstrap, seed=seed),
+        },
+        "m0_live_on_vs_off_weak_only": _weak_only(ok_off, ok_on, weak, bootstrap=bootstrap, seed=seed),
         "live_mix": {"m0": live_mix(ok, weak, live_weak_share),
+                     "m0_live_abstain": live_mix(ok_live, weak, live_weak_share),
+                     "m0_live_off": live_mix(ok_off, weak, live_weak_share),
+                     "m0_live_on": live_mix(ok_on, weak, live_weak_share),
                      "baseline": live_mix(base, weak, live_weak_share)},
         "baseline_asymmetry": baseline_asymmetry(scored),
         "coverage_at_bars": st.coverage_at_bars(probs, ok, sorted(set(BARS) | {auto_bar})),
@@ -769,6 +930,17 @@ def mode_block(scored: Sequence[Scored], *, auto_bar: float, bootstrap: int, see
             if scored else None
         ),
     }
+
+
+def _weak_only(base: Sequence[bool], ok: Sequence[bool], weak: Sequence[bool], *,
+               bootstrap: int, seed: int) -> dict:
+    """Paired stats restricted to weak-history rows (the only rows where the two live ladders
+    can differ)."""
+    b = [x for x, w in zip(base, weak) if w]
+    o = [x for x, w in zip(ok, weak) if w]
+    return {**st.paired(b, o),
+            "m0_live_on": st.top1(o)["bill"], "m0_live_off": st.top1(b)["bill"],
+            "bootstrap_ci_points": st.bootstrap_diff_ci(b, o, resamples=bootstrap, seed=seed)}
 
 
 def by_mode(scored: Sequence[Scored], **kw: Any) -> dict[str, dict]:
@@ -819,11 +991,17 @@ def add_months(d: date, k: int) -> date:
 
 
 def cv_folds(eval_since: date, eval_until: date, k: int = CV_FOLDS) -> list[tuple[date, date]]:
-    """Monthly expanding folds anchored at eval_since; the last runs to eval_until inclusive."""
+    """Monthly expanding folds anchored at eval_since; the last runs to eval_until inclusive.
+
+    Every fold end is clamped to eval_until and empty / reversed folds are dropped, so a window
+    shorter than ``k`` months yields fewer folds and no row after eval_until is ever scored."""
     starts = [add_months(eval_since, i) for i in range(k)]
     out = []
     for i, s in enumerate(starts):
         e = starts[i + 1] - timedelta(days=1) if i + 1 < k else eval_until
+        e = min(e, eval_until)
+        if s > e:
+            continue
         out.append((s, e))
     return out
 
@@ -850,6 +1028,8 @@ class Options:
     live_weak_share: float = DEFAULT_LIVE_WEAK_SHARE
     unknown_coded: str = UNKNOWN_CODED_ADMIT
     backfill_as_created: bool = False
+    max_tokens_per_bill: Optional[int] = None  # U-745a: None = uncapped (the U-698 behaviour)
+    score_model: Optional[str] = None  # U-745a: frozen M0 model JSON path; None = fit per fold
 
 
 def _in(d: datetime, lo: date, hi: date) -> bool:
@@ -865,6 +1045,18 @@ def run_backtest(
     log: Callable[[str], None] = print,
 ) -> dict[str, Any]:
     validate_windows(opts.cal_since, opts.cal_until, opts.eval_since, opts.eval_until)
+    if opts.max_tokens_per_bill is not None and opts.max_tokens_per_bill < 1:
+        raise ValueError("max_tokens_per_bill must be >= 1 (or None = uncapped)")
+    frozen = load_frozen_m0(Path(opts.score_model)) if opts.score_model else None
+    frozen_fit = frozen.as_fit() if frozen is not None else None
+    variants = (VARIANT_FROZEN,) if frozen is not None else tuple(opts.variants)
+    cap = opts.max_tokens_per_bill
+    in_sample: Optional[bool] = None
+    if frozen is not None:
+        in_sample = opts.eval_since <= frozen.trained_through_date
+        if in_sample:
+            log(f"U-745a WARNING {in_sample_banner(frozen.trained_through_date)} "
+                f"(eval_since {opts.eval_since}); these numbers are NOT out-of-sample.")
     t0 = time.time()
     index = build_index(pop, cutoff=opts.prior_cutoff, unknown=opts.unknown_coded)
     choosable = Choosable(pop.catalog)
@@ -886,18 +1078,26 @@ def run_backtest(
     hist_only_rows = rows_for([b for b in bills if b.bill_id not in pdf and _date_only(b.created) <= opts.eval_until], {})
     log(f"U-698: {len(hist_only_rows)} history-only (bill, mode) rows")
 
-    results: dict[str, Any] = {"variants": {}}
-    oof: dict[str, list[Scored]] = {v: [] for v in opts.variants}
-    oof_nopdf: dict[str, list[Scored]] = {v: [] for v in opts.variants}
-    e1_scored: dict[str, list[Scored]] = {v: [] for v in opts.variants}
-    fold_meta: dict[str, list[dict]] = {v: [] for v in opts.variants}
+    results: dict[str, Any] = {
+        "variants": {},
+        "max_tokens_per_bill": cap,
+        "m0_source": M0_SOURCE_FROZEN if frozen is not None else M0_SOURCE_FITTED,
+        "score_model": frozen.describe() if frozen is not None else None,
+        "m1_status": M1_STATUS_SKIPPED if frozen is not None else M1_STATUS_RUN,
+        "in_sample": in_sample,  # score-model only: eval_since <= the model's trained_through
+        "population_data_hash": data_hash(pop.bills),
+    }
+    oof: dict[str, list[Scored]] = {v: [] for v in variants}
+    oof_nopdf: dict[str, list[Scored]] = {v: [] for v in variants}
+    e1_scored: dict[str, list[Scored]] = {v: [] for v in variants}
+    fold_meta: dict[str, list[dict]] = {v: [] for v in variants}
     last_fit: dict[str, M0Fit] = {}
-    cal_ids: dict[str, list[frozenset]] = {v: [] for v in opts.variants}
+    cal_ids: dict[str, list[frozenset]] = {v: [] for v in variants}
 
     for fi, (f_start, f_end) in enumerate(cv_folds(opts.eval_since, opts.eval_until)):
         log(f"U-698: CV fold {fi} {f_start}..{f_end}: neighbour pass")
         nb = neighbours_fn(pop, idf_since=None, idf_until=None, idf_before=f_start, upto=f_end,
-                           coded_unknown=coded_unknown)
+                           coded_unknown=coded_unknown, max_tokens_per_bill=cap)
         pdf_rows = rows_for([b for b in bills if b.bill_id in pdf and _date_only(b.created) <= f_end], nb)
         train_pdf = [r for r in pdf_rows if _date_only(r.bill.created) < f_start]
         test_pdf = [r for r in pdf_rows if _in(r.bill.created, f_start, f_end)]
@@ -909,9 +1109,12 @@ def run_backtest(
             for r in test_pdf if r.key in e1
         ]
         cut = pdf_date_cut(train_pdf)  # ONE cut for both variants (same calibration PDF bills)
-        for v in opts.variants:
-            train = train_pdf + (train_hist if v == VARIANT_PDF_HIST else [])
-            fit = fit_m0(train, l2=opts.l2_m0, cut=cut)
+        for v in variants:
+            if frozen_fit is not None:
+                fit = frozen_fit  # score-model mode: never fitted, never calibrated
+            else:
+                train = train_pdf + (train_hist if v == VARIANT_PDF_HIST else [])
+                fit = fit_m0(train, l2=opts.l2_m0, cut=cut)
             last_fit[v] = fit
             cal_ids[v].append(fit.cal_pdf_bill_ids)
             fold = f"cv{fi}"
@@ -930,7 +1133,7 @@ def run_backtest(
 
     common = {"auto_bar": opts.auto_accept_bar, "bootstrap": opts.bootstrap, "seed": opts.seed,
               "live_weak_share": opts.live_weak_share}
-    for v in opts.variants:
+    for v in variants:
         sel = selection_folds(fold_meta[v])
         cal_n = sum(f["cal_pdf_rows"] for f in sel)
         cal_ok = sum(f["cal_pdf_correct"] for f in sel)
@@ -945,18 +1148,21 @@ def run_backtest(
             "cv_non_pdf_eval": by_mode(oof_nopdf[v], **common),
         }
 
-    chosen = select_variant(results["variants"], opts.variants)
+    chosen = select_variant(results["variants"], variants)
     results["chosen_variant"] = chosen
     results["chosen_rule"] = (
         "higher top-1 (both modes) on fold 0's calibration slice only: the last 20 % of the PDF "
         "bills before eval_since, the SAME PDF bills for both variants. Tie keeps pdf_only. The "
         "choice then applies to every fold, the fixed split, M1 and the gates; the other "
         "variant's CV numbers are informational. Out-of-fold eval numbers are never used."
+    ) if frozen is None else (
+        "none: --score-model scores every fold and the fixed split with the frozen M0 from the "
+        "model file (no fit, no calibration, no variant selection)."
     )
 
     def fixed_split(idx: AsOfIndex, unknown: Optional[str]) -> dict:
         nb = neighbours_fn(pop, idf_since=opts.cal_since, idf_until=opts.cal_until, idf_before=None,
-                           upto=opts.eval_until, coded_unknown=unknown)
+                           upto=opts.eval_until, coded_unknown=unknown, max_tokens_per_bill=cap)
         pdf_rows = rows_for([b for b in bills if b.bill_id in pdf and _date_only(b.created) <= opts.eval_until],
                             nb, idx)
         train = [r for r in pdf_rows if _in(r.bill.created, opts.cal_since, opts.cal_until)]
@@ -965,7 +1171,7 @@ def run_backtest(
                 [r.bill for r in hist_only_rows if r.mode == "A"], {}, idx)
             train += [r for r in hist if _in(r.bill.created, opts.cal_since, opts.cal_until)]
         test = [r for r in pdf_rows if _in(r.bill.created, opts.eval_since, opts.eval_until)]
-        fit = fit_m0(train, l2=opts.l2_m0)
+        fit = frozen_fit if frozen_fit is not None else fit_m0(train, l2=opts.l2_m0)
         out = by_mode(score_rows(fit, test, "fixed"), **common)
         out["converged"] = fit.model.converged
         return out
@@ -984,8 +1190,13 @@ def run_backtest(
 
     # ---- the 500-bill table (M1) ----
     e1_items = e1_scored[chosen]
-    m1x_dec, m1x_fold, m1x_models = m1_cross_fit(e1_items, l2=opts.l2_m1)
-    m1f_dec, m1f_fold, m1f_models = m1_forward_chained(e1_items, l2=opts.l2_m1)
+    m1_skipped = frozen is not None
+    if m1_skipped:  # score-model mode: M1 is out of scope, never fitted
+        m1x_dec, m1x_fold, m1x_models = {}, {}, []
+        m1f_dec, m1f_fold, m1f_models = {}, {}, []
+    else:
+        m1x_dec, m1x_fold, m1x_models = m1_cross_fit(e1_items, l2=opts.l2_m1)
+        m1f_dec, m1f_fold, m1f_models = m1_forward_chained(e1_items, l2=opts.l2_m1)
     m0_by_key = {s.row.key: s for s in oof[chosen]}
     table = {}
     per_bill_rows = []
@@ -998,8 +1209,11 @@ def run_backtest(
             ladder = s.row.ctx.history.top if s.row.ctx.history.strong else e.text_pred
             m0_s = m0_by_key.get(s.row.key)
             m0_pick = m0_s.decision.scc_id if m0_s else None
-            m1f_pick = m1f_dec[s.row.key].scc_id if s.row.key in m1f_dec else m0_pick
-            m1x_pick = m1x_dec[s.row.key].scc_id if s.row.key in m1x_dec else m0_pick
+            if m1_skipped:
+                m1f_pick = m1x_pick = None
+            else:
+                m1f_pick = m1f_dec[s.row.key].scc_id if s.row.key in m1f_dec else m0_pick
+                m1x_pick = m1x_dec[s.row.key].scc_id if s.row.key in m1x_dec else m0_pick
             ladder_ok.append(ladder == lbl)
             vote_ok.append(s.row.ctx.baseline_pick == lbl)
             m0_ok.append(m0_pick == lbl)
@@ -1049,13 +1263,18 @@ def run_backtest(
             "m1_eligible": sum(1 for s in items if m1_eligible(s.row)),
             "m1_forward_scored": sum(1 for s in items if s.row.key in m1f_dec),
         }
+        if m1_skipped:
+            mark_m1_skipped(table[m], opts.live_weak_share)
     results["e1_table"] = table
     results["m1_fold_models"] = m1x_models + m1f_models
-    x_all, y_all = m1_rows_xy([s for s in e1_items if m1_eligible(s.row)])
-    results["m1_all_bills_weights_for_review"] = (
-        fit_logistic(x_all, y_all, M1_FEATURES, l2=opts.l2_m1, signs=M1_SIGNS).to_json()
-        if x_all and sum(y_all) else None
-    )
+    if m1_skipped:
+        results["m1_all_bills_weights_for_review"] = None
+    else:
+        x_all, y_all = m1_rows_xy([s for s in e1_items if m1_eligible(s.row)])
+        results["m1_all_bills_weights_for_review"] = (
+            fit_logistic(x_all, y_all, M1_FEATURES, l2=opts.l2_m1, signs=M1_SIGNS).to_json()
+            if x_all and sum(y_all) else None
+        )
     results["non_converged_fits"] = non_converged(results)
 
     eval_pdf_bills = [b for b in bills if b.bill_id in pdf and _in(b.created, opts.eval_since, opts.eval_until)]
@@ -1066,11 +1285,26 @@ def run_backtest(
     results["runtime_seconds"] = round(time.time() - t0, 1)
     results["_artefacts"] = {
         "final_m0": last_fit[chosen],
+        "frozen": frozen,
         "oof": oof[chosen],
         "e1_rows": per_bill_rows,
         "cal_ids": cal_ids,
     }
     return results
+
+
+def mark_m1_skipped(block: dict, live_weak_share: float) -> None:
+    """Score-model mode: every M1 figure in an E1-table block becomes None (never a copy of M0)."""
+    skipped_pair = {"n": block["n"], "base_top1": None, "other_top1": None, "diff_points": None,
+                    "fixed": None, "broke": None, "sign_test_p": None, "bootstrap_ci_points": None,
+                    "status": M1_STATUS_SKIPPED}
+    block["m1_status"] = M1_STATUS_SKIPPED
+    block["m1_forward"] = block["m1_cross_fit"] = None
+    block["m1_forward_vs_ladder"] = dict(skipped_pair)
+    block["m1_cross_fit_vs_ladder"] = dict(skipped_pair)
+    block["reweighted"]["m1_forward"] = block["reweighted"]["m1_cross_fit"] = None
+    block["live_mix"]["m1_forward"] = live_mix([], [], live_weak_share)
+    block["live_mix"]["m1_cross_fit"] = live_mix([], [], live_weak_share)
 
 
 def selection_folds(folds: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
@@ -1157,9 +1391,11 @@ def gate_check(res: Mapping[str, Any], opts: Options) -> dict[str, dict]:
     g1 = (lift_ok(a) and (b["diff_points"] or 0) >= -0.5) or (lift_ok(b) and (a["diff_points"] or 0) >= -0.5)
     parity = {m: t[m]["ladder_parity_points"] for m in ("A", "B")}
     parity_ok = all(v is not None and abs(v) <= LADDER_PARITY_POINTS for v in parity.values())
+    m1_skipped = res.get("m1_status") == M1_STATUS_SKIPPED
     g["G1"] = {
-        "status": _status(bool(g1)) if parity_ok else "UNADJUDICATED",
-        "pass": bool(g1) and parity_ok,
+        "status": ("SKIPPED" if m1_skipped
+                   else _status(bool(g1)) if parity_ok else "UNADJUDICATED"),
+        "pass": bool(g1) and parity_ok and not m1_skipped,
         "basis": "m1_forward_chained",
         "diff_points": {m: fwd[m]["diff_points"] for m in "AB"},
         "p": {m: fwd[m]["sign_test_p"] for m in "AB"},
@@ -1248,6 +1484,7 @@ def write_outputs(res: Mapping[str, Any], pop: Population, opts: Options, out_di
                   stamp: str) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     art = res["_artefacts"]
+    m1_skipped = res.get("m1_status") == M1_STATUS_SKIPPED
     e1_by_key = {s.row.key: (ladder, m1, f) for s, ladder, _m0, m1, f in art["e1_rows"]}
     pred = out_dir / f"u698_predictions_{stamp}.csv"
     with pred.open("w", newline="", encoding="utf-8") as fh:
@@ -1264,26 +1501,35 @@ def write_outputs(res: Mapping[str, Any], pop: Population, opts: Options, out_di
                 int(s.correct), *_expl(d),
                 int(e is not None), (e[0] or "") if e else "", (e[1] or "") if e else "",
                 "" if not e or e[2] is None else e[2],
-                "" if not e else int(e[1] is not None and e[1] == r.bill.label_scc_id),
+                "" if not e or m1_skipped else int(e[1] is not None and e[1] == r.bill.label_scc_id),
             ])
     fit: M0Fit = art["final_m0"]
-    model = out_dir / f"u698_model_{stamp}.json"
-    model.write_text(json.dumps({
-        "model_version": MODEL_VERSION,
-        "variant": res["chosen_variant"],
-        "m0": fit.model.to_json(),
-        "m0_calibration": fit.calibrator.to_json(),
-        "m1_review_weights": res["m1_all_bills_weights_for_review"],
-        "windows": {"cal": [opts.cal_since, opts.cal_until], "eval": [opts.eval_since, opts.eval_until]},
-        "trained_through": res["variants"][res["chosen_variant"]]["folds"][-1]["start"],
-        "data_hash": data_hash(pop.bills),
-        "git_sha": _git_sha(),
-    }, indent=2, default=_json_ser), encoding="utf-8")
+    model: Optional[Path] = None
+    if art.get("frozen") is None:
+        # Frozen mode writes no model json: the model IS the --score-model file (its own
+        # provenance is under ``score_model`` in the summary); this run's data hash is not its
+        # training hash.
+        model = out_dir / f"u698_model_{stamp}.json"
+        model.write_text(json.dumps({
+            "model_version": MODEL_VERSION,
+            "variant": res["chosen_variant"],
+            "max_tokens_per_bill": res.get("max_tokens_per_bill"),
+            "m0": fit.model.to_json(),
+            "m0_calibration": fit.calibrator.to_json(),
+            "m1_review_weights": res["m1_all_bills_weights_for_review"],
+            "windows": {"cal": [opts.cal_since, opts.cal_until], "eval": [opts.eval_since, opts.eval_until]},
+            "trained_through": res["variants"][res["chosen_variant"]]["folds"][-1]["start"],
+            "data_hash": data_hash(pop.bills),
+            "git_sha": _git_sha(),
+        }, indent=2, default=_json_ser), encoding="utf-8")
     summ = out_dir / f"u698_summary_{stamp}.json"
     public = {k: v for k, v in res.items() if not k.startswith("_")}
     summ.write_text(json.dumps({
         "model_version": MODEL_VERSION,
         "stamp": stamp,
+        "max_tokens_per_bill": res.get("max_tokens_per_bill"),
+        "m0_source": res.get("m0_source", M0_SOURCE_FITTED),
+        "in_sample": res.get("in_sample"),
         "options": opts.__dict__,
         "population": {"bills": len(pop.bills), "pdf_bills": len(pop.pdf_tokens_by_bill_id),
                        "rows": {v: {m: blk["cv_pdf_eval"][m]["n"] for m in "AB"}
@@ -1292,7 +1538,7 @@ def write_outputs(res: Mapping[str, Any], pop: Population, opts: Options, out_di
     }, indent=2, default=_json_ser), encoding="utf-8")
     report = out_dir / f"u698_report_{stamp}.md"
     report.write_text(render_report(res, stamp), encoding="utf-8")
-    paths = [pred, model, summ, report]
+    paths = [x for x in (pred, model, summ, report) if x is not None]
     for p in paths:
         assert_outputs_privacy_safe(p)
     return paths
@@ -1318,10 +1564,57 @@ def _pts(v: Optional[float]) -> str:
     return "n/a" if v is None else f"{v:+.1f}"
 
 
+def in_sample_banner(trained_through: date) -> str:
+    return f"IN-SAMPLE: eval window overlaps model training through {trained_through.isoformat()}"
+
+
+def run_header(res: Mapping[str, Any]) -> list[str]:
+    """U-745a: the neighbour token cap and the M0 source, so a capped / frozen run is
+    self-describing."""
+    cap = res.get("max_tokens_per_bill")
+    out = [f"Neighbour token cap (max_tokens_per_bill): "
+           f"{'none, uncapped' if cap is None else cap}.", "",
+           f"Population data_hash: `{res.get('population_data_hash')}`.", ""]
+    sm = res.get("score_model")
+    if sm:
+        tt = date.fromisoformat(str(sm["trained_through"])[:10])
+        if res.get("in_sample"):
+            out += [f"**{in_sample_banner(tt)}**. The eval rows on or before that date (and the "
+                    f"model's calibration slice) were training data: these numbers are informational, "
+                    f"not out-of-sample.", ""]
+        else:
+            out += [f"Out of sample: the eval window starts after model training through {tt}.", ""]
+        out += [f"M0 source: FROZEN model `{sm['path']}` sha256 `{sm['sha256']}` "
+                f"(model_version `{sm['model_version']}`, trained through {sm['trained_through']}, "
+                f"trained variant `{sm['trained_variant']}`, training data_hash `{sm['data_hash']}`). "
+                f"No fit, no calibration. "
+                f"M1: {M1_STATUS_SKIPPED} (score-model mode); G1 is SKIPPED. "
+                f"The model JSON not written for this run: the model is that file.", ""]
+    else:
+        out += ["M0 source: fitted per fold (expanding CV) and on the calibration window (fixed split).", ""]
+    return out
+
+
+def gate_n(res: Mapping[str, Any], gate: str) -> str:
+    """Report-only: the sample size behind a gate verdict (gate logic is unchanged)."""
+    cv = res["variants"][res["chosen_variant"]]["cv_pdf_eval"]
+    if gate == "G1":
+        t = res["e1_table"]
+        return f"A={t['A']['n']} B={t['B']['n']}"
+    if gate in ("G2", "G4"):
+        return f"A={cv['A']['n']} B={cv['B']['n']}"
+    if gate == "G3":
+        sa = cv["A"]["strata"].get("mode_a_strong_history") or {}
+        return f"A_strong={sa.get('n', 0)} overrides={cv['A']['strong_history_overrides']['overrides']}"
+    if gate == "G5":
+        return f"modes={len(res['gates']['G5'].get('nacho_present_modes', []))}"
+    return "n/a"
+
+
 def render_report(res: Mapping[str, Any], stamp: str) -> str:
     v = res["chosen_variant"]
     cv = res["variants"][v]["cv_pdf_eval"]
-    lines = [f"# U-698 decision model backtest ({stamp})", "",
+    lines = [f"# U-698 decision model backtest ({stamp})", "", *run_header(res),
              f"Chosen variant: `{v}`. Numbers are percent top-1, abstain = wrong.", "",
              f"Selection rule: {res['chosen_rule']}", "",
              "## CV pooled, PDF eval population", "",
@@ -1336,6 +1629,31 @@ def render_report(res: Mapping[str, Any], stamp: str) -> str:
                      f"{_p(pr['sign_test_p'])} | {pr['fixed']} | {pr['broke']} | "
                      f"{_pct(b['live_mix']['m0']['value'])} | {_pct(b['live_mix']['baseline']['value'])} | "
                      f"{_pct(b['baseline_asymmetry']['share'])} |")
+    lines += ["", "## M0 under the live abstain rule (U-745a)", "",
+              "No filtered neighbours = M0 abstains = wrong, as `serve.m0_pick`.", "",
+              "| mode | n | no_nbr_rows | m0_live | m0_scored_all | baseline | diff | p | fixed | broke | livemix_m0_live |",
+              "|---|---|---|---|---|---|---|---|---|---|---|"]
+    for m in ("A", "B"):
+        b = cv[m]
+        pr = b["m0_live_abstain_vs_baseline"]
+        lines.append(f"| {m} | {b['n']} | {b['no_neighbour_rows']} | {_pct(b['m0_live_abstain']['bill'])} | "
+                     f"{_pct(b['m0']['bill'])} | {_pct(b['baseline_hist_strong_else_vote']['bill'])} | "
+                     f"{_pts(pr['diff_points'])} | {_p(pr['sign_test_p'])} | {pr['fixed']} | {pr['broke']} | "
+                     f"{_pct(b['live_mix']['m0_live_abstain']['value'])} |")
+    lines += ["", "## Live ladders, M0 rung on vs off: m0_live_on_vs_off (U-745a decision metric)", "",
+              "Both ladders follow choose_final: strong history, then M0 (on only, live abstain "
+              "rule, a no-pick falls through), then the filtered vote, else blank. Never weak history.", "",
+              "| mode | n | live_on | live_off | diff | p | fixed | broke | ci | weak_n | weak_diff | weak_p | livemix_on | livemix_off |",
+              "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    for m in ("A", "B"):
+        b = cv[m]
+        pr, wk = b["m0_live_on_vs_off"], b["m0_live_on_vs_off_weak_only"]
+        ci = pr.get("bootstrap_ci_points")
+        ci_s = "n/a" if not ci else f"{ci[0]:+.1f}..{ci[1]:+.1f}"
+        lines.append(f"| {m} | {b['n']} | {_pct(b['m0_live_on']['bill'])} | {_pct(b['m0_live_off']['bill'])} | "
+                     f"{_pts(pr['diff_points'])} | {_p(pr['sign_test_p'])} | {pr['fixed']} | {pr['broke']} | "
+                     f"{ci_s} | {wk['n']} | {_pts(wk['diff_points'])} | {_p(wk['sign_test_p'])} | "
+                     f"{_pct(b['live_mix']['m0_live_on']['value'])} | {_pct(b['live_mix']['m0_live_off']['value'])} |")
     lines += ["", "## Variants (Q3)", "",
               "| variant | selection_cal_slice | cv_modeA | cv_modeB |", "|---|---|---|---|"]
     for name, blk in res["variants"].items():
@@ -1362,9 +1680,11 @@ def render_report(res: Mapping[str, Any], stamp: str) -> str:
                      f"{_pct(rw['m1_cross_fit'])} | {_pct(lm['ladder']['value'])} | {_pct(lm['m0']['value'])} | "
                      f"{_pct(lm['m1_forward']['value'])} | {_pct(lm['m1_cross_fit']['value'])} |")
     lk = res["coded_time_leakage"]
-    lines += ["", "## Gates", "", "| gate | verdict |", "|---|---|"]
+    lines += ["", "## Gates", "", "Read every verdict with its n: a PASS at small n is weak evidence, and G3 "
+              "passes vacuously when there are zero overrides.", "",
+              "| gate | verdict | n |", "|---|---|---|"]
     for k, gv in res["gates"].items():
-        lines.append(f"| {k} | {gv['status']} |")
+        lines.append(f"| {k} | {gv['status']} | {gate_n(res, k)} |")
     g1 = res["gates"]["G1"]
     lines += ["", f"G1 basis: forward-chained M1 (cross-fit shown beside it). Ladder parity points: "
               f"A {_pts(g1['ladder_parity_points']['A'])}, B {_pts(g1['ladder_parity_points']['B'])} "
@@ -1435,6 +1755,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
                    help="with --prior-cutoff coded: admit (default) or drop priors with unknown coded time")
     p.add_argument("--backfill-coded-at-created", action="store_true",
                    help="treat StatusOrigin=backfill bills as coded at creation (default: unknown)")
+    p.add_argument("--max-tokens-per-bill", type=int, default=None,
+                   help="U-745a: keep each bill's top-N-IDF tokens for the word-neighbour search "
+                        "(live cap = 50; default: uncapped)")
+    p.add_argument("--score-model", type=Path, default=None,
+                   help="U-745a: score with this frozen M0 model JSON (no fit / calibration; M1 skipped)")
     p.add_argument("--pdf-workers", type=int, default=8)
     p.add_argument("--pdf-timeout", type=float, default=120.0)
     return p
@@ -1447,10 +1772,14 @@ def options_from_args(a: argparse.Namespace) -> Options:
         raise SystemExit(f"--variants must be from {VARIANTS}")
     if not 0.0 <= a.live_weak_share <= 1.0:
         raise SystemExit("--live-weak-share must be in [0, 1]")
+    if a.max_tokens_per_bill is not None and a.max_tokens_per_bill < 1:
+        raise SystemExit("--max-tokens-per-bill must be >= 1")
     return Options(a.cal_since, a.cal_until, a.eval_since, a.eval_until, a.l2_m0, a.l2_m1,
                    a.prior_cutoff, variants, a.bootstrap, a.seed, a.auto_accept_bar,
                    a.skip_fixed_split, a.live_weak_share, a.unknown_coded,
-                   a.backfill_coded_at_created)
+                   a.backfill_coded_at_created,
+                   max_tokens_per_bill=a.max_tokens_per_bill,
+                   score_model=str(a.score_model) if a.score_model is not None else None)
 
 
 def main(
@@ -1463,6 +1792,8 @@ def main(
     a = build_arg_parser().parse_args(argv)
     opts = options_from_args(a)
     validate_windows(opts.cal_since, opts.cal_until, opts.eval_since, opts.eval_until)
+    if opts.score_model:
+        load_frozen_m0(Path(opts.score_model))  # fail loudly BEFORE any population load
     e1 = load_e1_rows(a.bill_ids_from)
     if not a.run:
         bills, urls = dry_loader()
@@ -1477,6 +1808,8 @@ def main(
     res = runner(pop, e1, opts)
     stamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     paths = write_outputs(res, pop, opts, a.out_dir, stamp)
+    if res.get("in_sample"):
+        print(f"U-745a WARNING {in_sample_banner(date.fromisoformat(res['score_model']['trained_through'][:10]))}")
     g1 = res["gates"]["G1"]
     print(f"Ladder recomputed vs reference: {g1['ladder_recomputed']} vs {g1['ladder_reference']} "
           f"(parity points {g1['ladder_parity_points']})")

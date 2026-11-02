@@ -2,6 +2,13 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+## U-750 follow-ups - labor follow-up proposed coding backtest (booked 2026-11-02; verdict FAIL)
+
+- [ ] **U-751 (booked, design-gated, $0):** single-code follow-up proposals - rescore the cached Sonnet answers (`.data/u750/armB*/llm_cache`) as single-code-only, with days whose notes describe several tasks flagged "may need splitting" instead of coded; measure exact on the uncoded@T population against the same 80 % bar. If it passes, Phase B = single-code follow-up email only (no split apply path).
+- [ ] Revisit splits in December with more split data (calibration window had only 15 split days; splits cluster from late August). Candidate levers: a softer split-precedent rule (superset / same task phrases, not identical code sets), Opus instead of Sonnet, and the real follow-up timing (~17 days).
+- [ ] 31 % of evidence enters via the no-coded_at date fallback (LineDate + 2 days); the assumption is unmeasured.
+- [ ] (Pass 2, DEFER) past-only and named-case evidence recomputed separately; a shared Wilson CI helper if a second caller appears; duplicated end-of-loop abort checks in run_arm_b.
+
 ## U-535b b5 follow-ups - sample-gated bulk approval (booked 2026-10-30)
 
 - [ ] **[b5][Pass 2]** shared inline TVFs for the SQL predicates copied across procs: the prior-rejection EXISTS (x2,

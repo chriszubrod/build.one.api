@@ -2,6 +2,30 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+### 🚪 U-551b SHIPPED 2026-11-02 `01aee21f` — an Expense reviewer can approve or decline from the app in one transaction (`POST /apply/review-decision/expense/{public_id}`)
+
+The parked 2026-10-13 commit (836deded) landed on today's trunk: the Expense twin of the Bill route (U-541) — gated `Modules.EXPENSES can_approve`, the caller must be
+an eligible reviewer (PM/Owner on one of the expense's projects, `not_a_reviewer` 403 otherwise), the sole line's recode + the Review insert in ONE transaction
+under the Expense row lock (`ReadCurrentReviewByExpenseIdForUpdate`), `expected_review_public_id` precondition, line ROWVERSION checked in Python and in the
+sproc, a global idempotency key with replay, distinguishable errors (`review/business/decision_errors.py`, shared with Bill). NEW vs the parked body: the holding
+code `00.02` is refused BEFORE any write exactly as Bill's (U-632) — the parked commit predated it; the router's try/except is one shared helper for both routes.
+No SQL change. Tests: tests/test_u551b_expense_transactional_review_decision.py (28 + the no-retry pin), test_u551b_holding_code.py (5), test_u541_bill_transactional_review_decision.py (+ reject-stale, duplicate-under-lock, replay-after-split, message/schema pins, the no-retry pin). Full suite 9982 passed, 1 skipped, 0 failed (8 min 18 s). Codex out of credits → Opus F2 round 1 CHANGES-REQUESTED (P2: a retried read inside the decision transaction could run outside the locks) → round 2 PASS; Pass 3 PASS (P2 QBO divergence booked U-551b-f1; P3s booked f2/f3). NOT YET DEPLOYED — the iOS decide arm
+(U-572b) 404s in prod until the API ships (Chris's go).
+
+- [ ] **U-551b-f1 (P2 — Pass 3; a prerequisite of U-572b going live)** a reviewer's recode can permanently diverge from QBO: `enqueue_coding_recode_on_submit`
+  confirms the submit-time coding (when not a holding code) and drains within ~30 s; an approve through this route that changes the SCC only updates the local
+  line; `_enqueue_coding_recode_on_complete` then skips (`no_uncoded_staged_lines`), so QBO keeps the submitter's coding while the app shows the reviewer's. Same
+  gap for web edits during in_review today. Fix: completion compares the local line SCC against the staged ItemRef, or an approve that changes an already
+  item-coded line enqueues a surgical recode. Bill has the same shape. `[U-551b follow-up]`
+- [ ] **U-551b-f2 (P3 — Pass 3; both twins)** a different body under the same idempotency key returns the first result (200, `replayed`) instead of 409; the key
+  is `str` in the schema so a non-UUID 500s instead of 422 (`UUID` in `ReviewDecisionApplyRequestBase`). `[U-551b follow-up]`
+- [ ] **U-551b-f3 (policy — Chris)** the submitter is not excluded from reviewer eligibility (`resolve_for_expense` without `exclude_user_id`): a PM who submitted
+  an expense can approve it from the app. Same as Bill. Segregation of duties is a policy call, not a defect. `[U-551b follow-up]`
+- [ ] **U-551b-f4 (P3 — found by the r2 fix)** `@retry_on_transient()` is only PARTLY live on repo methods whose body catches `pyodbc.Error` and re-raises
+  `map_database_error(...)` before the decorator sees it: a mapped deadlock (40001 → "Concurrency violation (1205)") is NOT transient and never retries, while a
+  connection reset / timeout (10054 / 10060) still matches `TRANSIENT_ERROR_MESSAGES` and does — so the decorator retries dead connections but not deadlocks. The r2 read split (no retry inside a caller's transaction) is still right as hardening. Audit every decorated repo method: either map inside the
+  decorator's view or make the retry match the mapped classes. `[U-551b follow-up]`
+
 ## U-750 follow-ups - labor follow-up proposed coding backtest (booked 2026-11-02; verdict FAIL)
 
 - [ ] **U-751 (booked, design-gated, $0):** single-code follow-up proposals - rescore the cached Sonnet answers (`.data/u750/armB*/llm_cache`) as single-code-only, with days whose notes describe several tasks flagged "may need splitting" instead of coded; measure exact on the uncoded@T population against the same 80 % bar. If it passes, Phase B = single-code follow-up email only (no split apply path).

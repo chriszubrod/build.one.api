@@ -320,8 +320,10 @@ def test_bill_apply_reviewer_decision_skips_holding_check_on_decline():
     """Declined decisions never load an SCC — holding gate applies only to approval."""
     from entities.bill.business.service import BillService
 
-    svc = BillService(repo=MagicMock())
-    source = open(svc.apply_reviewer_decision.__code__.co_filename).read()
+    from entities.review.business import reviewer_decision
+
+    svc = BillService(repo=MagicMock())  # noqa: F841 — U-755: logic lives in the engine
+    source = open(reviewer_decision.apply_emailed.__code__.co_filename).read()
     idx = source.index("if decision == \"approved\":")
     block = source[idx : source.index("comments = ", idx)]
     assert "is_holding_code" in block

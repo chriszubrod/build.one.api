@@ -12,7 +12,7 @@ import pytest
 from entities.review.business.recipient_model import ResolvedRecipient
 from shared.api.errors import ErrorCode
 from shared.authz.context import clear_authz_context, system_authz
-from tests.test_u459_reviewer_impersonation import CALL_SITES
+from tests.test_u459_reviewer_impersonation import CALL_SITES, DELEGATING_CALL_SITES
 
 from shared.authz.provenance import (
     bind_reviewer_reply_to_thread,
@@ -1070,3 +1070,14 @@ def test_cl_anchor_ignores_a_non_outbound_message_on_the_thread(monkeypatch):
 
 def test_cl_anchor_ignores_an_outbound_that_is_not_a_contract_labor_notification(monkeypatch):
     assert _cl_anchor(monkeypatch, [_outbound(subject="[Review] Vendor — Bill #9")]) is None
+
+
+@pytest.mark.parametrize("module,cls,method", DELEGATING_CALL_SITES)
+def test_the_entity_call_site_reaches_the_provenance_binding_engine(module, cls, method):
+    """U-755: provenance is bound in `apply_emailed`; each entity must delegate to it."""
+    import importlib
+
+    svc_cls = getattr(importlib.import_module(module), cls)
+    src = inspect.getsource(getattr(svc_cls, method))
+    executable = "\n".join(l.split("#")[0] for l in src.splitlines())
+    assert "return apply_emailed(" in executable, f"{cls}.{method} bypasses the provenance-binding engine"

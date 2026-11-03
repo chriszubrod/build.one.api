@@ -250,9 +250,11 @@ def test_the_email_reply_path_keeps_its_own_finished_parent_gate():
     """
     from entities.bill.business.service import BillService
 
-    src = inspect.getsource(BillService.apply_reviewer_decision)
+    from entities.review.business.reviewer_decision import apply_emailed  # U-755
+
+    src = inspect.getsource(apply_emailed)
     executable = "\n".join(l.split("#")[0] for l in src.splitlines())
-    assert "if not bool(bill.is_draft):" in executable
+    assert "if not bool(parent.is_draft):" in executable
     assert "is no longer a draft" in executable
 
 
@@ -294,7 +296,9 @@ def test_the_direct_email_decision_writer_goes_through_the_same_sproc():
 
     from entities.bill.business.service import BillService
 
-    src = _i.getsource(BillService.apply_reviewer_decision)
+    from entities.review.business.reviewer_decision import apply_emailed  # U-755
+
+    src = _i.getsource(apply_emailed)
     executable = "\n".join(l.split("#")[0] for l in src.splitlines())
     # U-564 holds the repository in a local so the line write and the Review
     # insert share one connection; what matters is that the insert still goes

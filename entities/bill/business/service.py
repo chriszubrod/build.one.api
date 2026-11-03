@@ -55,7 +55,6 @@ from shared.authz import current_user_id, current_is_system_admin
 from shared.lifecycle.terminal_lock import (
     assert_editable,
     is_exempt,
-    StatusLockedError,
     reraise_if_sproc_holding_code,
 )
 from shared.lifecycle.completion_gate import CompletionRefused, HoldingCodeRefused, UnreviewedPrefillRefused
@@ -97,17 +96,16 @@ from integrations.ms.sharepoint.external.client import (
 )
 
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
-from shared.database import (
-    DatabaseConcurrencyError,
-    DatabaseConstraintError,
-    get_connection,
-)
-from shared.db_constraints import UNIQUE
-from shared.api.errors import ErrorCode
+from shared.database import get_connection
 
 from entities.review.business.decision_errors import (
     ReviewDecisionApplyError as BillReviewDecisionApplyError,
     review_decision_apply_error as _review_decision_apply_error,
+)
+from entities.review.business.reviewer_decision import (
+    ReviewerDecisionSpec,
+    apply_emailed,
+    apply_transactional,
 )
 from shared.authz.delegation import assert_may_act_as
 
@@ -1388,6 +1386,43 @@ class BillService:
                 f"Please update the existing bill instead of creating a new one."
             )
 
+    def _reviewer_decision_spec(self) -> ReviewerDecisionSpec:
+        """Bill's half of the shared reviewer-decision engine (U-755).
+
+        Built per call so `get_connection`, `SubCostCodeService`,
+        `assert_may_act_as`, `assert_no_holding_sub_cost_codes` and `logger` are
+        read from THIS module at call time (their long-standing patch points)."""
+
+        def _line_service():
+            from entities.bill_line_item.business.service import BillLineItemService
+
+            return BillLineItemService()
+
+        return ReviewerDecisionSpec(
+            parent="bill",
+            entity_type="Bill",
+            provenance_what="a bill reviewer decision",
+            read_parent=lambda public_id: self.read_by_public_id(public_id=public_id),
+            resolve_recipients=lambda svc, bill_id: svc.resolve_for_bill(bill_id=bill_id),
+            line_service_factory=_line_service,
+            read_lines=lambda svc, bill_id: svc.read_by_bill_id(bill_id=bill_id),
+            count_lines_for_update=lambda svc, bill_id, conn: svc.count_by_bill_id_for_update(bill_id, conn=conn),
+            read_lines_in_transaction=lambda svc, bill_id, conn: svc.read_by_bill_id_in_transaction(bill_id=bill_id, conn=conn),
+            lock_current_review=lambda repo, bill_id, conn: repo.read_current_by_bill_id_for_update(bill_id, conn=conn),
+            apply_error=_bill_review_decision_apply_error,
+            get_connection=get_connection,
+            sub_cost_code_service=SubCostCodeService,
+            assert_may_act_as=assert_may_act_as,
+            logger=logger,
+            # Drift preserved (U-755): SCC first, code line_items[0], refuse a
+            # holding code on any OTHER line; no under-lock recount; fresh
+            # ReviewStatusService for the status-name readback.
+            emailed_line_policy="first_plus_holding_check",
+            emailed_recount_under_lock=False,
+            emailed_fresh_status_service_for_readback=True,
+            assert_no_holding_sub_cost_codes=assert_no_holding_sub_cost_codes,
+        )
+
     def apply_reviewer_decision(
         self,
         *,
@@ -1401,211 +1436,30 @@ class BillService:
     ) -> dict:
         """Apply a Project Manager / Owner's emailed review decision to a Bill.
 
-        Wave 3 Phase A — orchestrates the three side-effects of a
-        reviewer's reply: update the summary BillLineItem (on approval),
-        transition the Review state, persist the raw reply text as the
-        Review's Comments column.
+        Wave 3 Phase A — on approval updates the summary BillLineItem (sub cost
+        code + optional description), then inserts the Review (terminal approved
+        or declined) with the raw reply as Comments, on one connection (U-564).
 
-        Authorization: `reviewer_email` must match a User with
-        `UserProject` → Role 'Project Manager' or 'Owner' on any project
-        the bill spans (same recipient set the notification went to).
+        Authorization: `reviewer_email` must match a Project Manager / Owner in
+        the bill's review recipient envelope; the reply must be provenance-bound
+        to the review thread (U-563); the caller must be allowed to act as that
+        reviewer (U-459). The bill must still be a draft.
 
-        Idempotency / safety: the bill must still be a draft. Once
-        `IsDraft=False` is set (via `complete_bill`), this method refuses
-        — the human has taken final responsibility.
-
-        decision ∈ {'approved', 'rejected'} — 'rejected' is also used for
-        "needs revision" / questions; the agent puts the human's text in
-        `raw_reply_text` and the AP reviewer reads it.
-
-        On approval the agent must supply `sub_cost_code_public_id`. The
-        summary line's `description` is updated when supplied; null leaves
-        the existing description in place.
-
-        Returns: dict with `decision_applied`, the new `review_status`
-        name, the matched `reviewer_user_id`, and the bill's `is_draft`
-        for the agent to compose its final outcome.
+        decision ∈ {'approved', 'rejected'} — 'rejected' also carries "needs
+        revision" / questions. On approval `sub_cost_code_public_id` is required;
+        the first line is coded and every other line must be off the suspense
+        code. Engine: `entities.review.business.reviewer_decision.apply_emailed`.
         """
-        from entities.bill_line_item.business.service import BillLineItemService
-        from entities.review.business.recipient_service import ReviewRecipientService
-        from entities.review_status.business.service import ReviewStatusService
-        from entities.review.persistence.repo import ReviewRepository
-
-        if decision not in ("approved", "rejected"):
-            raise ValueError(
-                f"decision must be 'approved' or 'rejected'; got '{decision}'"
-            )
-
-        # 1. Find the bill.
-        bill = self.read_by_public_id(public_id=bill_public_id)
-        if bill is None or bill.id is None:
-            raise ValueError(f"Bill with public_id '{bill_public_id}' not found.")
-
-        # 2. Draft-only guard — once Completed, the human has the final word.
-        if not bool(bill.is_draft):
-            raise ValueError(
-                f"Bill {bill_public_id} is no longer a draft "
-                "(Complete already pressed); reviewer decisions cannot be "
-                "applied. The human must edit directly."
-            )
-
-        # 3. Authorization: reviewer_email must match a PM/Owner recipient.
-        envelope = ReviewRecipientService().resolve_for_bill(bill_id=bill.id)
-        all_recipients = envelope["to"] + envelope["cc"]
-        normalized_email = (reviewer_email or "").strip().lower()
-        match = next(
-            (
-                r for r in all_recipients
-                if r.email and r.email.strip().lower() == normalized_email
-            ),
-            None,
-        )
-        if match is None:
-            raise ValueError(
-                f"Sender '{reviewer_email}' is not an authorized reviewer for "
-                f"this bill (must be Project Manager or Owner on the project)."
-            )
-        reviewer_user_id = match.user_id
-
-        from shared.authz.provenance import bind_reviewer_reply_to_review_thread
-
-        bound_reply = bind_reviewer_reply_to_review_thread(
-            entity_type="Bill",
-            entity_public_id=bill_public_id,
+        return apply_emailed(
+            self._reviewer_decision_spec(),
+            public_id=bill_public_id,
+            decision=decision,
             reviewer_email=reviewer_email,
+            sub_cost_code_public_id=sub_cost_code_public_id,
+            description=description,
+            raw_reply_text=raw_reply_text,
             reviewer_email_message_public_id=reviewer_email_message_public_id,
-            what="a bill reviewer decision",
         )
-
-        # U-459 — bind the asserted reviewer to the authenticated caller.
-        #
-        # Everything above authorizes the EMAIL (it must belong to a PM/Owner on
-        # this document). Nothing authorized the CALLER, so any user holding
-        # `can_update` on the module could POST a decision attributed to their
-        # Project Manager. Delegation is legitimate here — it is how the agent
-        # applies an emailed reply — so the rule is "act as yourself unless you
-        # are a delegated actor", not "act as yourself".
-        delegated = assert_may_act_as(
-            asserted_user_id=reviewer_user_id,
-            what="apply a reviewer decision",
-        )
-        logger.info(
-            "U-459: reviewer decision on %s applied %s (reviewer user_id=%s)",
-            "bill", "BY THE AGENT ON THEIR BEHALF" if delegated else "BY THE REVIEWER THEMSELVES",
-            reviewer_user_id,
-        )
-
-        bli_service = BillLineItemService()
-        scc_id: Optional[int] = None
-        summary_line = None
-        if decision == "approved":
-            if not sub_cost_code_public_id:
-                raise ValueError(
-                    "sub_cost_code_public_id is required when decision='approved'."
-                )
-            scc = SubCostCodeService().read_by_public_id(public_id=sub_cost_code_public_id)
-            if scc is None:
-                raise ValueError(
-                    f"SubCostCode with public_id '{sub_cost_code_public_id}' not found."
-                )
-            scc_id = int(scc.id)
-            if getattr(scc, "is_holding_code", False):
-                raise HoldingCodeRefused(
-                    "This bill cannot be approved while coded to the suspense "
-                    "sub cost code. Recode those lines first."
-                )
-
-            line_items = bli_service.read_by_bill_id(bill_id=bill.id)
-            if not line_items:
-                raise ValueError(
-                    f"Bill {bill_public_id} has no line items to apply the SCC to."
-                )
-            # Convention: the email-driven flow creates exactly one summary
-            # BillLineItem carrying the attachment. If multiple lines exist
-            # (rare, manual edits), apply to the first.
-            summary_line = line_items[0]
-            summary_id = getattr(summary_line, "id", None)
-            if summary_id is not None:
-                other_line_scc_ids = [
-                    li.sub_cost_code_id
-                    for li in line_items
-                    if getattr(li, "id", None) != summary_id
-                ]
-                assert_no_holding_sub_cost_codes(
-                    other_line_scc_ids,
-                    message=(
-                        "This bill cannot be approved while any line remains on the "
-                        "suspense sub cost code. Recode those lines first."
-                    ),
-                    scc_svc=SubCostCodeService(),
-                )
-
-        # A PM approval IS the approval: jump straight to the terminal
-        # non-declined status (or to declined), bypassing build_advance_payload's
-        # one-step chain; every authorized reply is authoritative and the latest
-        # wins. Review rows are insert-only, so this is a new audit row, never an
-        # update.
-        comments = (raw_reply_text or "").strip() or None
-        review_statuses = ReviewStatusService().read_all()
-        if decision == "approved":
-            target = next(
-                (s for s in review_statuses if s.is_final and not s.is_declined),
-                None,
-            )
-            if target is None:
-                raise ValueError(
-                    "No terminal non-declined ReviewStatus configured "
-                    "(expected one with IsFinal=true AND IsDeclined=false)."
-                )
-        else:  # rejected
-            target = next(
-                (s for s in review_statuses if s.is_declined),
-                None,
-            )
-            if target is None:
-                raise ValueError(
-                    "No declined ReviewStatus configured (expected one with IsDeclined=true)."
-                )
-
-        email_message_id: Optional[int] = bound_reply.id
-        review_repo = ReviewRepository()
-        # Authenticated caller (agent vs PM self-serve) — user_id stays the reviewer.
-        actor_user_id = current_user_id.get()
-
-        with get_connection() as conn:
-            review_repo.read_current_by_bill_id_for_update(bill.id, conn=conn)
-            if decision == "approved":
-                bli_service.update_coding_in_transaction(
-                    line_item=summary_line,
-                    row_version=summary_line.row_version,
-                    sub_cost_code_id=scc_id,
-                    description=description,
-                    conn=conn,
-                )
-            new_review = review_repo.create(
-                review_status_id=target.id,
-                user_id=reviewer_user_id,
-                comments=comments,
-                bill_id=bill.id,
-                expense_id=None,
-                bill_credit_id=None,
-                invoice_id=None,
-                email_message_id=email_message_id,
-                created_by_user_id=actor_user_id,
-                conn=conn,
-            )
-
-        # Look up the new status name for the response payload.
-        rs = ReviewStatusService().read_by_id(id=new_review.review_status_id) if new_review.review_status_id else None
-        new_status_name = rs.name if rs else None
-
-        return {
-            "decision_applied": decision,
-            "review_status": new_status_name,
-            "reviewer_user_id": reviewer_user_id,
-            "is_draft": True,
-            "bill_public_id": bill_public_id,
-        }
 
     def apply_transactional_reviewer_decision(
         self,
@@ -1623,221 +1477,18 @@ class BillService:
 
         The authenticated caller IS the reviewer — no delegation. One database
         transaction covers the optional line recode and the Review insert.
+        Engine: `entities.review.business.reviewer_decision.apply_transactional`.
         """
-        from entities.bill_line_item.business.service import BillLineItemService
-        from entities.review.business.recipient_service import ReviewRecipientService
-        from entities.review.persistence.repo import ReviewRepository
-        from entities.review_status.business.service import ReviewStatusService
-
-        if decision not in ("approved", "rejected"):
-            raise ValueError(
-                f"decision must be 'approved' or 'rejected'; got '{decision}'"
-            )
-
-        bill = self.read_by_public_id(public_id=bill_public_id)
-        if bill is None or bill.id is None:
-            raise ValueError(f"Bill with public_id '{bill_public_id}' not found.")
-
-        envelope = ReviewRecipientService().resolve_for_bill(bill_id=bill.id)
-        all_recipients = envelope["to"] + envelope["cc"]
-        if not any(r.user_id == caller_user_id for r in all_recipients):
-            raise _bill_review_decision_apply_error(
-                ErrorCode.NOT_A_REVIEWER, status_code=403
-            )
-
-        # U-632: resolve the SCC and refuse the suspense code (00.02) BEFORE any
-        # repo read, lock or write (trunk order; the idempotent replay follows).
-        scc_id: Optional[int] = None
-        if decision == "approved":
-            if not sub_cost_code_public_id:
-                raise ValueError(
-                    "sub_cost_code_public_id is required when decision='approved'."
-                )
-            scc = SubCostCodeService().read_by_public_id(
-                public_id=sub_cost_code_public_id
-            )
-            if scc is None or scc.id is None:
-                raise ValueError(
-                    f"SubCostCode with public_id '{sub_cost_code_public_id}' not found."
-                )
-            scc_id = int(scc.id)
-            if getattr(scc, "is_holding_code", False):
-                raise HoldingCodeRefused(
-                    "This bill cannot be approved while coded to the suspense "
-                    "sub cost code. Recode those lines first."
-                )
-
-        review_repo = ReviewRepository()
-
-        def _assert_idempotency_key_matches_bill(existing) -> None:
-            if existing is not None and existing.bill_id != bill.id:
-                raise _bill_review_decision_apply_error(
-                    ErrorCode.IDEMPOTENCY_KEY_CONFLICT
-                )
-
-        def _payload_from_review(
-            review,
-            *,
-            replayed: bool,
-            review_status_name: Optional[str] = None,
-        ) -> dict:
-            if review_status_name is None:
-                review_status_name = getattr(review, "status_name", None)
-                if review_status_name is None and review.review_status_id:
-                    rs = ReviewStatusService().read_by_id(
-                        id=review.review_status_id
-                    )
-                    review_status_name = rs.name if rs else None
-            applied = (
-                "rejected"
-                if (review.review_kind or "").lower() == "declined"
-                else "approved"
-            )
-            return {
-                "decision_applied": applied,
-                "review_status": review_status_name,
-                "reviewer_user_id": review.user_id,
-                "is_draft": True,
-                "bill_public_id": bill_public_id,
-                "review_public_id": str(review.public_id),
-                "replayed": replayed,
-            }
-
-        def _require_sole_line(count: int) -> None:
-            if count == 1:
-                return
-            if count == 0:
-                raise ValueError(
-                    f"Bill {bill_public_id} has no line items; a reviewer "
-                    "decision cannot be applied."
-                )
-            raise _bill_review_decision_apply_error(
-                ErrorCode.MULTI_LINE_NOT_SUPPORTED, status_code=422
-            )
-
-        pre_tx_idem = review_repo.read_by_idempotency_key(idempotency_key)
-        if pre_tx_idem is not None:
-            _assert_idempotency_key_matches_bill(pre_tx_idem)
-            return _payload_from_review(pre_tx_idem, replayed=True)
-
-        bli_service = BillLineItemService()
-        # Fast path + IndexError guard; multi-line refusal stays here so we do
-        # not take UPDLOCK on Bill/BillLineItem before refusing (U-541).
-        line_items = bli_service.read_by_bill_id(bill_id=bill.id)
-        _require_sole_line(len(line_items))
-
-        rs_service = ReviewStatusService()
-        if decision == "approved":
-            target = rs_service.get_approved_status()
-            if target is None:
-                raise ValueError(
-                    "No terminal non-declined ReviewStatus configured "
-                    "(expected one with IsFinal=true AND IsDeclined=false)."
-                )
-        else:
-            declined_statuses = rs_service.get_declined_statuses()
-            if not declined_statuses:
-                raise ValueError(
-                    "No declined ReviewStatus configured (expected one with IsDeclined=true)."
-                )
-            target = declined_statuses[0]
-
-        def _replay_payload_if_key_exists(conn):
-            existing = review_repo.read_by_idempotency_key(
-                idempotency_key, conn=conn
-            )
-            if existing is None:
-                return None
-            _assert_idempotency_key_matches_bill(existing)
-            return _payload_from_review(existing, replayed=True)
-
-        def _assert_expected_review_current(current) -> None:
-            if expected_review_public_id is None:
-                if current is not None:
-                    raise _bill_review_decision_apply_error(
-                        ErrorCode.REVIEW_STATE_STALE
-                    )
-                return
-            if current is None or str(current.public_id).upper() != str(
-                expected_review_public_id
-            ).upper():
-                raise _bill_review_decision_apply_error(
-                    ErrorCode.REVIEW_STATE_STALE
-                )
-
-        def _assert_locked_line_row_version(locked_line) -> None:
-            if locked_line.row_version != line_row_version:
-                raise _bill_review_decision_apply_error(
-                    ErrorCode.LINE_ROW_VERSION_STALE
-                )
-
-        try:
-            with get_connection() as conn:
-                current = review_repo.read_current_by_bill_id_for_update(
-                    bill.id, conn=conn
-                )
-                replay = _replay_payload_if_key_exists(conn)
-                if replay is not None:
-                    return replay
-                _assert_expected_review_current(current)
-                line_count = bli_service.count_by_bill_id_for_update(
-                    bill.id, conn=conn
-                )
-                _require_sole_line(line_count)
-                locked_lines = bli_service.read_by_bill_id_in_transaction(
-                    bill_id=bill.id, conn=conn
-                )
-                _require_sole_line(len(locked_lines))
-                locked_line = locked_lines[0]
-                _assert_locked_line_row_version(locked_line)
-                if decision == "approved":
-                    try:
-                        bli_service.update_coding_in_transaction(
-                            line_item=locked_line,
-                            row_version=line_row_version,
-                            sub_cost_code_id=scc_id,
-                            description=description,
-                            conn=conn,
-                        )
-                    except DatabaseConcurrencyError as exc:
-                        raise _bill_review_decision_apply_error(
-                            ErrorCode.LINE_ROW_VERSION_STALE
-                        ) from exc
-                new_review = review_repo.create(
-                    review_status_id=target.id,
-                    user_id=caller_user_id,
-                    comments=None,
-                    bill_id=bill.id,
-                    expense_id=None,
-                    bill_credit_id=None,
-                    invoice_id=None,
-                    email_message_id=None,
-                    created_by_user_id=caller_user_id,
-                    allow_terminal_parent=False,
-                    idempotency_key=idempotency_key,
-                    conn=conn,
-                )
-        except BillReviewDecisionApplyError:
-            raise
-        except DatabaseConstraintError as dup:
-            if dup.violation.kind == UNIQUE and idempotency_key:
-                existing = review_repo.read_by_idempotency_key(idempotency_key)
-                if existing is None:
-                    raise
-                _assert_idempotency_key_matches_bill(existing)
-                return _payload_from_review(existing, replayed=True)
-            raise
-        except StatusLockedError as exc:
-            raise _bill_review_decision_apply_error(
-                ErrorCode.STATUS_LOCKED,
-                status_code=422,
-                detail=str(exc),
-            ) from exc
-
-        return _payload_from_review(
-            new_review,
-            replayed=False,
-            review_status_name=target.name,
+        return apply_transactional(
+            self._reviewer_decision_spec(),
+            public_id=bill_public_id,
+            decision=decision,
+            sub_cost_code_public_id=sub_cost_code_public_id,
+            description=description,
+            idempotency_key=idempotency_key,
+            line_row_version=line_row_version,
+            expected_review_public_id=expected_review_public_id,
+            caller_user_id=caller_user_id,
         )
 
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[Bill]:

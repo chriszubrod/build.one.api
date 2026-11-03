@@ -154,9 +154,20 @@ def test_a_null_asserted_reviewer_is_refused_not_waved_through():
 # 2 — both call sites are actually wired (the U-457 lesson)
 # ---------------------------------------------------------------------------
 
-CALL_SITES = [
+# U-755: Bill's and Expense's `apply_reviewer_decision` delegate to the shared
+# engine, so the call site the guard must live in is `reviewer_decision.apply_emailed`
+# (addressed as package attribute -> function so the (module, cls, method) shape holds).
+import entities.review.business.reviewer_decision  # noqa: E402,F401
+
+# The entity methods that delegate to it are pinned separately (below), so a future
+# re-inline of one entity — which would bypass the engine's guard checks — is noticed.
+DELEGATING_CALL_SITES = [
     ("entities.bill.business.service", "BillService", "apply_reviewer_decision"),
     ("entities.expense.business.service", "ExpenseService", "apply_reviewer_decision"),
+]
+
+CALL_SITES = [
+    ("entities.review.business", "reviewer_decision", "apply_emailed"),
     ("entities.contract_labor.business.service", "ContractLaborService", "_apply_decision_to_single_cl"),
 ]
 
@@ -174,6 +185,20 @@ def test_the_service_calls_the_guard(module, cls, method):
     )
 
 
+@pytest.mark.parametrize("module,cls,method", DELEGATING_CALL_SITES)
+def test_the_entity_call_site_delegates_to_the_guarded_engine(module, cls, method):
+    """U-755: Bill/Expense `apply_reviewer_decision` carry no logic of their own —
+    each must hand its own spec to `apply_emailed`, the function every CALL_SITES
+    check above inspects. A re-inlined entity would escape those checks."""
+    import importlib
+
+    svc_cls = getattr(importlib.import_module(module), cls)
+    src = inspect.getsource(getattr(svc_cls, method))
+    executable = "\n".join(l.split("#")[0] for l in src.splitlines())
+    assert "return apply_emailed(" in executable, f"{cls}.{method} no longer delegates to the engine"
+    assert "self._reviewer_decision_spec()" in executable, f"{cls}.{method} does not build its own spec"
+
+
 @pytest.mark.parametrize("module,cls,method", CALL_SITES)
 def test_the_guard_runs_BEFORE_anything_is_written(module, cls, method):
     """A refused assertion must leave no Review row, no line-item edit and no
@@ -184,7 +209,7 @@ def test_the_guard_runs_BEFORE_anything_is_written(module, cls, method):
     svc_cls = getattr(importlib.import_module(module), cls)
     src = inspect.getsource(getattr(svc_cls, method))
     guard_at = src.index("assert_may_act_as(")
-    for writer in ("repo.create(", "_repo.create(", "update_by_", ".create("):
+    for writer in ("repo.create(", "_repo.create(", "update_by_", ".create(", "update_coding_in_transaction("):
         at = src.find(writer)
         if at != -1:
             assert guard_at < at, (
@@ -310,15 +335,22 @@ def test_a_plain_user_forging_a_PM_approval_is_refused_end_to_end():
 
     with patch("entities.review.business.recipient_service.ReviewRecipientService") as Rec:
         Rec.return_value.resolve_for_bill.return_value = {"to": [pm], "cc": []}
-        with _u563_provenance_ok(reviewer_email="pm@test.com"):
-            with pytest.raises(IdentityAssertionRefused):
-                svc.apply_reviewer_decision(
-                    bill_public_id="pub-5",
-                    decision="approved",
-                    reviewer_email="pm@test.com",
-                    sub_cost_code_public_id="scc-1",
-                    reviewer_email_message_public_id="em-reply",
-                )
+        with patch(
+            "entities.bill_line_item.business.service.BillLineItemService"
+        ) as Bli:
+            with patch("entities.review.persistence.repo.ReviewRepository") as ReviewRepo:
+                with _u563_provenance_ok(reviewer_email="pm@test.com"):
+                    with pytest.raises(IdentityAssertionRefused):
+                        svc.apply_reviewer_decision(
+                            bill_public_id="pub-5",
+                            decision="approved",
+                            reviewer_email="pm@test.com",
+                            sub_cost_code_public_id="scc-1",
+                            reviewer_email_message_public_id="em-reply",
+                        )
+                Bli.return_value.read_by_bill_id.assert_not_called()
+                Bli.return_value.update_coding_in_transaction.assert_not_called()
+                ReviewRepo.return_value.create.assert_not_called()
 
 
 def test_the_agent_applying_the_same_decision_is_allowed_end_to_end():

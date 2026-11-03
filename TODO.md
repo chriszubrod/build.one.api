@@ -26,6 +26,13 @@ No SQL change. Tests: tests/test_u551b_expense_transactional_review_decision.py 
   connection reset / timeout (10054 / 10060) still matches `TRANSIENT_ERROR_MESSAGES` and does — so the decorator retries dead connections but not deadlocks. The r2 read split (no retry inside a caller's transaction) is still right as hardening. Audit every decorated repo method: either map inside the
   decorator's view or make the retry match the mapped classes. `[U-551b follow-up]`
 
+## U-755 follow-ups - shared reviewer-decision engine (booked 2026-11-02)
+
+- [ ] Drift fixes booked as units: U-760 (refuse multi-line emailed bill approvals), U-761 (bill recount under lock + clear 400/409 instead of 500 for SCC id None / stale ROWVERSION / StatusLocked on the emailed path), U-762 (bill emailed route request model). Each removes a drift switch from `ReviewerDecisionSpec` and its row in `SWITCHES` (tests/test_u755_reviewer_decision_engine.py).
+- [ ] (Pass 2, DEFER) The seven per-entity hook lambdas follow a `*_{parent}_id` naming pattern; derive them by name only once a third entity (BillCredit?) joins, with a contract test.
+- [ ] (Pass 2, DEFER) Let the engine build `apply_error` from `review_decision_apply_error` + `spec.parent`; first decide whether tests should keep importing `_bill_review_decision_apply_error`.
+- [ ] (Pass 2, DEFER) Path A uses `read_all()` + filter while Path B uses `get_approved_status()` / `get_declined_statuses()`; unify with the drift units (the goldens pin the current calls).
+
 ## U-759 follow-ups - bill find-by-conversation access check (booked 2026-11-02)
 
 - [ ] (Pass 3, LOW, accepted for now) Existence oracle by candidate shadowing: `FindBillForReviewerReply` picks the match across ALL bills (strict `TOP 1 ... ORDER BY CreatedDatetime DESC`; fuzzy `TOP 2` must equal 1) BEFORE the service-side access check, so a caller anchored on a bill they CAN see can learn that a hidden same-number draft / same-thread bill exists (existence only, no document data). Expense (U-565) has the same shape. Fix: pass `@ActorUserId`/`@IsSystemAdmin` into both Find*ForReviewerReply sprocs and filter candidates with `dbo.UserCanAccess*` before TOP/count; keep the service check as backstop.

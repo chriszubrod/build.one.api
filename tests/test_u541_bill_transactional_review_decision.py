@@ -751,8 +751,13 @@ def test_request_schema_has_no_reviewer_identity_field():
 
 
 def test_new_command_has_no_assert_may_act_as():
-    src = inspect.getsource(BillService.apply_transactional_reviewer_decision)
+    from entities.review.business.reviewer_decision import apply_transactional  # U-755
+
+    src = inspect.getsource(apply_transactional)
     assert "assert_may_act_as" not in src
+    # The entity wrapper must not call the guard before delegating either.
+    wrapper = inspect.getsource(BillService.apply_transactional_reviewer_decision)
+    assert "assert_may_act_as" not in wrapper
 
 
 def test_review_decision_apply_error_default_messages_pinned():

@@ -79,24 +79,19 @@ from integrations.ms.sharepoint.drive.business.service import MsDriveService
 
 from shared.storage import AzureBlobStorage
 from shared.lifecycle.terminal_lock import (
-    StatusLockedError,
     assert_editable,
     is_exempt,
     reraise_if_sproc_holding_code,
 )
 from shared.lifecycle.completion_gate import HoldingCodeRefused
-from shared.database import (
-    DatabaseConcurrencyError,
-    DatabaseConstraintError,
-    get_connection,
-)
-from shared.db_constraints import UNIQUE
-from shared.api.errors import ErrorCode
+from shared.database import get_connection
 from functools import partial
 
-from entities.review.business.decision_errors import (
-    ReviewDecisionApplyError,
-    review_decision_apply_error,
+from entities.review.business.decision_errors import review_decision_apply_error
+from entities.review.business.reviewer_decision import (
+    ReviewerDecisionSpec,
+    apply_emailed,
+    apply_transactional,
 )
 
 _expense_review_decision_apply_error = partial(
@@ -140,25 +135,6 @@ def _build_qbo_expense_url(*, qbo_id: str, realm_id: str, payment_type: str) -> 
         f"https://app.qbo.intuit.com/app/{segment}?txnId={qbo_id}&realmId={realm_id}"
     )
 
-
-
-def _refuse_unless_one_line(expense_public_id: str, line_count: int) -> None:
-    """An emailed decision codes the expense's ONE line; refuse anything else.
-
-    Shared by the fast path (before the transaction) and the under-lock recheck
-    (U-564), so both refusals read the same."""
-    if line_count == 1:
-        return
-    if line_count == 0:
-        raise ValueError(
-            f"Expense {expense_public_id} has no line items; a reviewer "
-            "decision cannot be auto-applied."
-        )
-    raise ValueError(
-        f"Expense {expense_public_id} has {line_count} line items; "
-        "a reviewer decision cannot be auto-applied to a multi-line "
-        "expense (would stamp one cost code over a manual split)."
-    )
 
 
 def _uncoded_backfill_status_source_ref(item: dict) -> Optional[str]:
@@ -1146,6 +1122,42 @@ class ExpenseService:
             logger.info(f"Deleted expense {existing.id} and its dependent rows")
         return deleted
 
+    def _reviewer_decision_spec(self) -> ReviewerDecisionSpec:
+        """Expense's half of the shared reviewer-decision engine (U-755).
+
+        Built per call so `get_connection`, `SubCostCodeService`,
+        `assert_may_act_as` and `logger` are read from THIS module at call time
+        (their long-standing patch points)."""
+
+        def _line_service():
+            from entities.expense_line_item.business.service import ExpenseLineItemService
+
+            return ExpenseLineItemService()
+
+        return ReviewerDecisionSpec(
+            parent="expense",
+            entity_type="Expense",
+            provenance_what="an expense reviewer decision",
+            read_parent=lambda public_id: self.read_by_public_id(public_id=public_id),
+            resolve_recipients=lambda svc, expense_id: svc.resolve_for_expense(expense_id=expense_id),
+            line_service_factory=_line_service,
+            read_lines=lambda svc, expense_id: svc.read_by_expense_id(expense_id=expense_id),
+            count_lines_for_update=lambda svc, expense_id, conn: svc.count_by_expense_id_for_update(expense_id, conn=conn),
+            read_lines_in_transaction=lambda svc, expense_id, conn: svc.read_by_expense_id_in_transaction(expense_id=expense_id, conn=conn),
+            lock_current_review=lambda repo, expense_id, conn: repo.read_current_by_expense_id_for_update(expense_id, conn=conn),
+            apply_error=_expense_review_decision_apply_error,
+            get_connection=get_connection,
+            sub_cost_code_service=SubCostCodeService,
+            assert_may_act_as=assert_may_act_as,
+            logger=logger,
+            # Drift preserved (U-755): exactly one line, checked BEFORE the SCC
+            # lookup; re-counted under the lock (U-564); one ReviewStatusService
+            # serves both the target lookup and the status-name readback.
+            emailed_line_policy="sole",
+            emailed_recount_under_lock=True,
+            emailed_fresh_status_service_for_readback=False,
+        )
+
     def apply_reviewer_decision(
         self,
         *,
@@ -1161,7 +1173,9 @@ class ExpenseService:
 
         Authorization: `reviewer_email` must match a User with
         `UserProject` → Role 'Project Manager' or 'Owner' on any project
-        the expense spans (same recipient set the notification went to).
+        the expense spans (same recipient set the notification went to); the
+        reply must be provenance-bound to the review thread (U-563); the caller
+        must be allowed to act as that reviewer (U-459).
 
         Idempotency / safety: the expense must still be a draft. Once
         `IsDraft=False` is set (via `complete_expense`), this method refuses
@@ -1169,166 +1183,22 @@ class ExpenseService:
 
         On approval the agent must supply `sub_cost_code_public_id`, and the
         expense must have exactly one line item (multi-line splits cannot be
-        auto-coded from a single reply).
+        auto-coded from a single reply) — re-checked under the lock (U-564).
 
         Returns: dict with `decision_applied`, the new `review_status`
         name, the matched `reviewer_user_id`, and the expense's `is_draft`.
+        Engine: `entities.review.business.reviewer_decision.apply_emailed`.
         """
-        from entities.expense_line_item.business.service import ExpenseLineItemService
-        from entities.review.business.recipient_service import ReviewRecipientService
-        from entities.review_status.business.service import ReviewStatusService
-        from entities.review.persistence.repo import ReviewRepository
-
-        if decision not in ("approved", "rejected"):
-            raise ValueError(
-                f"decision must be 'approved' or 'rejected'; got '{decision}'"
-            )
-
-        expense = self.read_by_public_id(public_id=expense_public_id)
-        if expense is None or expense.id is None:
-            raise ValueError(
-                f"Expense with public_id '{expense_public_id}' not found."
-            )
-
-        if not bool(expense.is_draft):
-            raise ValueError(
-                f"Expense {expense_public_id} is no longer a draft "
-                "(Complete already pressed); reviewer decisions cannot be "
-                "applied. The human must edit directly."
-            )
-
-        envelope = ReviewRecipientService().resolve_for_expense(expense_id=expense.id)
-        all_recipients = envelope["to"] + envelope["cc"]
-        normalized_email = (reviewer_email or "").strip().lower()
-        match = next(
-            (
-                r for r in all_recipients
-                if r.email and r.email.strip().lower() == normalized_email
-            ),
-            None,
-        )
-        if match is None:
-            raise ValueError(
-                f"Sender '{reviewer_email}' is not an authorized reviewer for "
-                f"this expense (must be Project Manager or Owner on the project)."
-            )
-        reviewer_user_id = match.user_id
-
-        from shared.authz.provenance import bind_reviewer_reply_to_review_thread
-
-        bound_reply = bind_reviewer_reply_to_review_thread(
-            entity_type="Expense",
-            entity_public_id=expense_public_id,
+        return apply_emailed(
+            self._reviewer_decision_spec(),
+            public_id=expense_public_id,
+            decision=decision,
             reviewer_email=reviewer_email,
+            sub_cost_code_public_id=sub_cost_code_public_id,
+            description=description,
+            raw_reply_text=raw_reply_text,
             reviewer_email_message_public_id=reviewer_email_message_public_id,
-            what="an expense reviewer decision",
         )
-
-        delegated = assert_may_act_as(
-            asserted_user_id=reviewer_user_id,
-            what="apply a reviewer decision",
-        )
-        logger.info(
-            "U-459: reviewer decision on %s applied %s (reviewer user_id=%s)",
-            "expense",
-            "BY THE AGENT ON THEIR BEHALF" if delegated else "BY THE REVIEWER THEMSELVES",
-            reviewer_user_id,
-        )
-
-        eli_service = ExpenseLineItemService()
-        sole_line = None
-        scc_id: Optional[int] = None
-        if decision == "approved":
-            line_items = eli_service.read_by_expense_id(expense_id=expense.id)
-            _refuse_unless_one_line(expense_public_id, len(line_items))
-            sole_line = line_items[0]
-
-            if not sub_cost_code_public_id:
-                raise ValueError(
-                    "sub_cost_code_public_id is required when decision='approved'."
-                )
-            scc = SubCostCodeService().read_by_public_id(public_id=sub_cost_code_public_id)
-            if scc is None:
-                raise ValueError(
-                    f"SubCostCode with public_id '{sub_cost_code_public_id}' not found."
-                )
-            scc_id = int(scc.id)
-            if getattr(scc, "is_holding_code", False):
-                raise HoldingCodeRefused(
-                    "This expense cannot be approved while coded to the suspense "
-                    "sub cost code. Recode those lines first."
-                )
-
-        comments = (raw_reply_text or "").strip() or None
-        review_status_service = ReviewStatusService()
-        review_statuses = review_status_service.read_all()
-        if decision == "approved":
-            target = next(
-                (s for s in review_statuses if s.is_final and not s.is_declined),
-                None,
-            )
-            if target is None:
-                raise ValueError(
-                    "No terminal non-declined ReviewStatus configured "
-                    "(expected one with IsFinal=true AND IsDeclined=false)."
-                )
-        else:
-            target = next(
-                (s for s in review_statuses if s.is_declined),
-                None,
-            )
-            if target is None:
-                raise ValueError(
-                    "No declined ReviewStatus configured (expected one with IsDeclined=true)."
-                )
-
-        email_message_id: Optional[int] = bound_reply.id
-        review_repo = ReviewRepository()
-        # Authenticated caller (agent vs PM self-serve) — user_id stays the reviewer.
-        actor_user_id = current_user_id.get()
-
-        with get_connection() as conn:
-            review_repo.read_current_by_expense_id_for_update(expense.id, conn=conn)
-            if decision == "approved":
-                line_count = eli_service.count_by_expense_id_for_update(
-                    expense.id, conn=conn
-                )
-                # Re-checked under the lock: a line added since the fast path above.
-                _refuse_unless_one_line(expense_public_id, line_count)
-                eli_service.update_coding_in_transaction(
-                    line_item=sole_line,
-                    row_version=sole_line.row_version,
-                    sub_cost_code_id=scc_id,
-                    description=description,
-                    conn=conn,
-                )
-            new_review = review_repo.create(
-                review_status_id=target.id,
-                user_id=reviewer_user_id,
-                comments=comments,
-                bill_id=None,
-                expense_id=expense.id,
-                bill_credit_id=None,
-                invoice_id=None,
-                email_message_id=email_message_id,
-                created_by_user_id=actor_user_id,
-                conn=conn,
-            )
-
-        rs = (
-            review_status_service.read_by_id(id=new_review.review_status_id)
-            if new_review.review_status_id
-            else None
-        )
-        new_status_name = rs.name if rs else None
-
-        return {
-            "decision_applied": decision,
-            "review_status": new_status_name,
-            "reviewer_user_id": reviewer_user_id,
-            "is_draft": True,
-            "expense_public_id": expense_public_id,
-        }
 
     def _assert_no_holding_code_on_complete(self, expense_id: int) -> None:
         """Refuse completion when any line is coded to a holding/suspense SCC (U-632)."""
@@ -1358,225 +1228,18 @@ class ExpenseService:
 
         The authenticated caller IS the reviewer — no delegation. One database
         transaction covers the optional line recode and the Review insert.
+        Engine: `entities.review.business.reviewer_decision.apply_transactional`.
         """
-        from entities.expense_line_item.business.service import ExpenseLineItemService
-        from entities.review.business.recipient_service import ReviewRecipientService
-        from entities.review.persistence.repo import ReviewRepository
-        from entities.review_status.business.service import ReviewStatusService
-
-        if decision not in ("approved", "rejected"):
-            raise ValueError(
-                f"decision must be 'approved' or 'rejected'; got '{decision}'"
-            )
-
-        expense = self.read_by_public_id(public_id=expense_public_id)
-        if expense is None or expense.id is None:
-            raise ValueError(
-                f"Expense with public_id '{expense_public_id}' not found."
-            )
-
-        envelope = ReviewRecipientService().resolve_for_expense(expense_id=expense.id)
-        all_recipients = envelope["to"] + envelope["cc"]
-        if not any(r.user_id == caller_user_id for r in all_recipients):
-            raise _expense_review_decision_apply_error(
-                ErrorCode.NOT_A_REVIEWER, status_code=403
-            )
-
-        # U-632: resolve the SCC and refuse the suspense code (00.02) BEFORE any
-        # repo read, lock or write (trunk order; the idempotent replay follows).
-        scc_id: Optional[int] = None
-        if decision == "approved":
-            if not sub_cost_code_public_id:
-                raise ValueError(
-                    "sub_cost_code_public_id is required when decision='approved'."
-                )
-            scc = SubCostCodeService().read_by_public_id(
-                public_id=sub_cost_code_public_id
-            )
-            if scc is None or scc.id is None:
-                raise ValueError(
-                    f"SubCostCode with public_id '{sub_cost_code_public_id}' not found."
-                )
-            scc_id = int(scc.id)
-            # U-632: the suspense sub cost code (00.02) can never be approved —
-            # refused before any lock or write, same as the Bill twin and the
-            # emailed-decision path.
-            if getattr(scc, "is_holding_code", False):
-                raise HoldingCodeRefused(
-                    "This expense cannot be approved while coded to the suspense "
-                    "sub cost code. Recode those lines first."
-                )
-
-        review_repo = ReviewRepository()
-
-        def _assert_idempotency_key_matches_expense(existing) -> None:
-            if existing is not None and existing.expense_id != expense.id:
-                raise _expense_review_decision_apply_error(
-                    ErrorCode.IDEMPOTENCY_KEY_CONFLICT
-                )
-
-        def _payload_from_review(
-            review,
-            *,
-            replayed: bool,
-            review_status_name: Optional[str] = None,
-        ) -> dict:
-            if review_status_name is None:
-                review_status_name = getattr(review, "status_name", None)
-                if review_status_name is None and review.review_status_id:
-                    rs = ReviewStatusService().read_by_id(
-                        id=review.review_status_id
-                    )
-                    review_status_name = rs.name if rs else None
-            applied = (
-                "rejected"
-                if (review.review_kind or "").lower() == "declined"
-                else "approved"
-            )
-            return {
-                "decision_applied": applied,
-                "review_status": review_status_name,
-                "reviewer_user_id": review.user_id,
-                "is_draft": True,
-                "expense_public_id": expense_public_id,
-                "review_public_id": str(review.public_id),
-                "replayed": replayed,
-            }
-
-        def _require_sole_line(count: int) -> None:
-            if count == 1:
-                return
-            if count == 0:
-                raise ValueError(
-                    f"Expense {expense_public_id} has no line items; a reviewer "
-                    "decision cannot be applied."
-                )
-            raise _expense_review_decision_apply_error(
-                ErrorCode.MULTI_LINE_NOT_SUPPORTED,
-                status_code=422,
-            )
-
-        pre_tx_idem = review_repo.read_by_idempotency_key(idempotency_key)
-        if pre_tx_idem is not None:
-            _assert_idempotency_key_matches_expense(pre_tx_idem)
-            return _payload_from_review(pre_tx_idem, replayed=True)
-
-        eli_service = ExpenseLineItemService()
-        line_items = eli_service.read_by_expense_id(expense_id=expense.id)
-        _require_sole_line(len(line_items))
-
-        rs_service = ReviewStatusService()
-        if decision == "approved":
-            target = rs_service.get_approved_status()
-            if target is None:
-                raise ValueError(
-                    "No terminal non-declined ReviewStatus configured "
-                    "(expected one with IsFinal=true AND IsDeclined=false)."
-                )
-        else:
-            declined_statuses = rs_service.get_declined_statuses()
-            if not declined_statuses:
-                raise ValueError(
-                    "No declined ReviewStatus configured (expected one with IsDeclined=true)."
-                )
-            target = declined_statuses[0]
-
-        def _replay_payload_if_key_exists(conn):
-            existing = review_repo.read_by_idempotency_key(
-                idempotency_key, conn=conn
-            )
-            if existing is None:
-                return None
-            _assert_idempotency_key_matches_expense(existing)
-            return _payload_from_review(existing, replayed=True)
-
-        def _assert_expected_review_current(current) -> None:
-            if expected_review_public_id is None:
-                if current is not None:
-                    raise _expense_review_decision_apply_error(
-                        ErrorCode.REVIEW_STATE_STALE
-                    )
-                return
-            if current is None or str(current.public_id).upper() != str(
-                expected_review_public_id
-            ).upper():
-                raise _expense_review_decision_apply_error(
-                    ErrorCode.REVIEW_STATE_STALE
-                )
-
-        def _assert_locked_line_row_version(locked_line) -> None:
-            if locked_line.row_version != line_row_version:
-                raise _expense_review_decision_apply_error(
-                    ErrorCode.LINE_ROW_VERSION_STALE
-                )
-
-        try:
-            with get_connection() as conn:
-                current = review_repo.read_current_by_expense_id_for_update(
-                    expense.id, conn=conn
-                )
-                replay = _replay_payload_if_key_exists(conn)
-                if replay is not None:
-                    return replay
-                _assert_expected_review_current(current)
-                line_count = eli_service.count_by_expense_id_for_update(
-                    expense.id, conn=conn
-                )
-                _require_sole_line(line_count)
-                locked_lines = eli_service.read_by_expense_id_in_transaction(
-                    expense_id=expense.id, conn=conn
-                )
-                _require_sole_line(len(locked_lines))
-                locked_line = locked_lines[0]
-                _assert_locked_line_row_version(locked_line)
-                if decision == "approved":
-                    try:
-                        eli_service.update_coding_in_transaction(
-                            line_item=locked_line,
-                            row_version=line_row_version,
-                            sub_cost_code_id=scc_id,
-                            description=description,
-                            conn=conn,
-                        )
-                    except DatabaseConcurrencyError as exc:
-                        raise _expense_review_decision_apply_error(
-                            ErrorCode.LINE_ROW_VERSION_STALE
-                        ) from exc
-                new_review = review_repo.create(
-                    review_status_id=target.id,
-                    user_id=caller_user_id,
-                    comments=None,
-                    bill_id=None,
-                    expense_id=expense.id,
-                    bill_credit_id=None,
-                    invoice_id=None,
-                    email_message_id=None,
-                    created_by_user_id=caller_user_id,
-                    allow_terminal_parent=False,
-                    idempotency_key=idempotency_key,
-                    conn=conn,
-                )
-        except ReviewDecisionApplyError:
-            raise
-        except DatabaseConstraintError as dup:
-            if dup.violation.kind == UNIQUE and idempotency_key:
-                existing = review_repo.read_by_idempotency_key(idempotency_key)
-                if existing is None:
-                    raise
-                _assert_idempotency_key_matches_expense(existing)
-                return _payload_from_review(existing, replayed=True)
-            raise
-        except StatusLockedError as exc:
-            raise _expense_review_decision_apply_error(
-                ErrorCode.STATUS_LOCKED,
-                status_code=422,
-                detail=str(exc),
-            ) from exc
-
-        return _payload_from_review(
-            new_review,
-            replayed=False,
-            review_status_name=target.name,
+        return apply_transactional(
+            self._reviewer_decision_spec(),
+            public_id=expense_public_id,
+            decision=decision,
+            sub_cost_code_public_id=sub_cost_code_public_id,
+            description=description,
+            idempotency_key=idempotency_key,
+            line_row_version=line_row_version,
+            expected_review_public_id=expected_review_public_id,
+            caller_user_id=caller_user_id,
         )
 
     def complete_expense(self, public_id: str) -> dict:

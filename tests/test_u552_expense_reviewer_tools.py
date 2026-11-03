@@ -13,6 +13,7 @@ import pytest
 
 from intelligence.tools.base import ToolResult
 from tests.test_u459_reviewer_impersonation import CALL_SITES as U459_SERVICE_CALL_SITES
+from tests.test_u459_reviewer_impersonation import DELEGATING_CALL_SITES as U459_DELEGATING_CALL_SITES
 
 # Agent-tool HTTP adapters that POST to apply-reviewer-decision. Listed here
 # so a new adapter cannot ship without registration (U-457 / U-524 lesson).
@@ -41,11 +42,19 @@ def test_expense_agent_handler_is_in_the_u459_extension_registry():
 
 
 def test_expense_service_apply_reviewer_decision_remains_in_u459_call_sites():
+    # U-755: ExpenseService.apply_reviewer_decision delegates to the shared engine;
+    # the U-459 call-site checks now inspect the engine function it calls.
+    assert (
+        "entities.review.business",
+        "reviewer_decision",
+        "apply_emailed",
+    ) in U459_SERVICE_CALL_SITES
+    # ...and ExpenseService.apply_reviewer_decision stays pinned as a delegating site.
     assert (
         "entities.expense.business.service",
         "ExpenseService",
         "apply_reviewer_decision",
-    ) in U459_SERVICE_CALL_SITES
+    ) in U459_DELEGATING_CALL_SITES
 
 
 def test_expense_agent_handler_does_not_reimplement_assert_may_act_as():

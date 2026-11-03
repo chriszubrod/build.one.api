@@ -41,7 +41,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from entities.review.business.notification_service import ReviewNotificationService
+from entities.review.business.notification_service import (
+    BILL_SPEC,
+    ReviewNotificationService,
+)
 from shared.authz import SYSTEM_ACTOR_USERNAME
 
 # The prod value, used only as a stub — the code under test must never
@@ -90,7 +93,7 @@ def _advance(*, statuses=None, next_status=..., review_status_id=1, submitter_id
                return_value=review_service), \
          patch("shared.authz.system_actor_user_id",
                return_value=SYSTEM_ACTOR_ID_FOR_TESTS):
-        ReviewNotificationService()._advance_to_in_review(bill=bill, review=review)
+        ReviewNotificationService()._advance_to_in_review(spec=BILL_SPEC, parent=bill, review=review)
     return status_service, review_service
 
 
@@ -350,7 +353,8 @@ def test_the_advance_never_raises_into_the_notification_pipeline():
     with patch("entities.review_status.business.service.ReviewStatusService",
                return_value=status_service):
         ReviewNotificationService()._advance_to_in_review(
-            bill=SimpleNamespace(id=55, public_id="pub-55"),
+            spec=BILL_SPEC,
+            parent=SimpleNamespace(id=55, public_id="pub-55"),
             review=SimpleNamespace(id=9, user_id=27, review_status_id=1),
         )
 

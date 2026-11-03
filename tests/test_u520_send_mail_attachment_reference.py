@@ -16,7 +16,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from entities.review.business.notification_service import ReviewNotificationService
+from entities.review.business.notification_service import (
+    BILL_SPEC,
+    EXPENSE_SPEC,
+    ReviewNotificationService,
+)
 from integrations.ms.base.errors import MsNotFoundError, MsServerError
 from integrations.ms.outbox.business.model import MsOutbox
 from integrations.ms.outbox.business.worker import MsOutboxWorker
@@ -73,9 +77,10 @@ def test_bill_attachment_payload_is_reference_and_does_not_download():
     storage = MagicMock()
 
     payload = ReviewNotificationService._build_attachment_payload(
-        bill=bill,
+        spec=BILL_SPEC,
+        parent=bill,
         line_items=line_items,
-        bla_service=bla_service,
+        link_service=bla_service,
         attachment_service=attachment_service,
         storage=storage,
     )
@@ -101,9 +106,10 @@ def test_bill_non_pdf_attachment_is_skipped():
     storage = MagicMock()
 
     payload = ReviewNotificationService._build_attachment_payload(
-        bill=bill,
+        spec=BILL_SPEC,
+        parent=bill,
         line_items=line_items,
-        bla_service=bla_service,
+        link_service=bla_service,
         attachment_service=attachment_service,
         storage=storage,
     )
@@ -146,9 +152,10 @@ def test_bill_first_bla_with_pdf_wins():
     storage = MagicMock()
 
     payload = ReviewNotificationService._build_attachment_payload(
-        bill=bill,
+        spec=BILL_SPEC,
+        parent=bill,
         line_items=line_items,
-        bla_service=bla_service,
+        link_service=bla_service,
         attachment_service=attachment_service,
         storage=storage,
     )
@@ -190,9 +197,10 @@ def test_bill_pdf_without_blob_url_is_skipped_and_later_pdf_wins():
     storage = MagicMock()
 
     payload = ReviewNotificationService._build_attachment_payload(
-        bill=bill,
+        spec=BILL_SPEC,
+        parent=bill,
         line_items=line_items,
-        bla_service=bla_service,
+        link_service=bla_service,
         attachment_service=attachment_service,
         storage=storage,
     )
@@ -221,10 +229,11 @@ def test_expense_attachment_payload_is_reference_and_does_not_download():
     )
     storage = MagicMock()
 
-    payload = ReviewNotificationService._build_expense_attachment_payload(
-        expense=expense,
+    payload = ReviewNotificationService._build_attachment_payload(
+        spec=EXPENSE_SPEC,
+        parent=expense,
         line_items=line_items,
-        elia_service=elia_service,
+        link_service=elia_service,
         attachment_service=attachment_service,
         storage=storage,
     )
@@ -249,10 +258,11 @@ def test_expense_non_pdf_attachment_is_skipped():
     attachment_service.read_by_id.return_value = _jpeg_attachment()
     storage = MagicMock()
 
-    payload = ReviewNotificationService._build_expense_attachment_payload(
-        expense=expense,
+    payload = ReviewNotificationService._build_attachment_payload(
+        spec=EXPENSE_SPEC,
+        parent=expense,
         line_items=line_items,
-        elia_service=elia_service,
+        link_service=elia_service,
         attachment_service=attachment_service,
         storage=storage,
     )
@@ -294,10 +304,11 @@ def test_expense_first_elia_with_pdf_wins():
     }[aid]
     storage = MagicMock()
 
-    payload = ReviewNotificationService._build_expense_attachment_payload(
-        expense=expense,
+    payload = ReviewNotificationService._build_attachment_payload(
+        spec=EXPENSE_SPEC,
+        parent=expense,
         line_items=line_items,
-        elia_service=elia_service,
+        link_service=elia_service,
         attachment_service=attachment_service,
         storage=storage,
     )
@@ -342,10 +353,11 @@ def test_expense_pdf_without_blob_url_is_skipped_and_later_pdf_wins():
     }[aid]
     storage = MagicMock()
 
-    payload = ReviewNotificationService._build_expense_attachment_payload(
-        expense=expense,
+    payload = ReviewNotificationService._build_attachment_payload(
+        spec=EXPENSE_SPEC,
+        parent=expense,
         line_items=line_items,
-        elia_service=elia_service,
+        link_service=elia_service,
         attachment_service=attachment_service,
         storage=storage,
     )

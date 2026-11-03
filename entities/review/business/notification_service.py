@@ -1,9 +1,10 @@
 # Python Standard Library Imports
 import html
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Callable, Optional
 
 # Third-party Imports
 
@@ -13,13 +14,139 @@ from entities.review.business.recipient_service import ReviewRecipientService
 logger = logging.getLogger(__name__)
 
 
+# ─── per-entity spec ────────────────────────────────────────────────────────
+#
+# U-754: bills and expenses share ONE notification pipeline. Everything that
+# genuinely differs between the two lives in a `_NotificationSpec`; everything
+# else is the same code. The hooks below import lazily (circular deps with the
+# entity services), exactly where the old per-entity methods did.
+
+
+def _bill_envelope(bill, exclude_user_id) -> dict:
+    return ReviewRecipientService().resolve_for_bill(
+        bill_id=bill.id,
+        exclude_user_id=exclude_user_id,
+    )
+
+
+def _expense_envelope(expense, exclude_user_id) -> dict:
+    # Preserved as shipped (U-486 C1): the expense path reads through
+    # `ReviewRepository`, not `ReviewRecipientService().resolve_for_expense`.
+    # Both call `ResolveReviewRecipientsByExpenseId`; switching repos is a
+    # behaviour change (different error handling) and out of U-754's scope.
+    from entities.review.persistence.repo import ReviewRepository
+
+    rows = ReviewRepository().resolve_review_recipients_by_expense_id(
+        expense_id=expense.id,
+        exclude_user_id=exclude_user_id,
+    )
+    return ReviewRecipientService._bucket(rows)
+
+
+def _bill_line_items(bill) -> list:
+    from entities.bill_line_item.business.service import BillLineItemService
+
+    return BillLineItemService().read_by_bill_id(bill.id) or []
+
+
+def _expense_line_items(expense) -> list:
+    from entities.expense_line_item.business.service import ExpenseLineItemService
+
+    return ExpenseLineItemService().read_by_expense_id(expense.id) or []
+
+
+def _bill_link_service():
+    from entities.bill_line_item_attachment.business.service import (
+        BillLineItemAttachmentService,
+    )
+
+    return BillLineItemAttachmentService()
+
+
+def _expense_link_service():
+    from entities.expense_line_item_attachment.business.service import (
+        ExpenseLineItemAttachmentService,
+    )
+
+    return ExpenseLineItemAttachmentService()
+
+
+def _bill_read_link(link_service, line_item):
+    return link_service.read_by_bill_line_item_id(str(line_item.public_id))
+
+
+def _expense_read_link(link_service, line_item):
+    return link_service.read_by_expense_line_item_id(
+        expense_line_item_public_id=str(line_item.public_id)
+    )
+
+
+@dataclass(frozen=True)
+class _NotificationSpec:
+    """What differs between a bill and an expense review notification."""
+
+    kind: str                      # "bill" | "expense" — log key + body lead-in noun
+    entity_type: str               # outbox EntityType
+    review_parent_kwarg: str       # parent-id kwarg on `ReviewService.create`
+    outbox_parent_kwarg: Optional[str]  # parent-id kwarg on `enqueue_send_mail` (bill only)
+    number_attr: str               # the document-number attribute on the parent
+    number_placeholder: str        # shown when that number is empty
+    subject_number_prefix: str     # "Bill #" | "Expense "
+    body_number_label: str         # "Number" | "Reference"
+    renders_memo: bool             # expense body carries the memo (U-729); bill does not
+    default_attachment_name: str   # filename fallback for an unnamed PDF
+    resolve_envelope: Callable[[Any, Optional[int]], dict]
+    read_line_items: Callable[[Any], list]
+    link_service: Callable[[], Any]
+    read_link: Callable[[Any, Any], Any]
+
+    @property
+    def log_key(self) -> str:
+        return f"{self.kind}_public_id"
+
+
+BILL_SPEC = _NotificationSpec(
+    kind="bill",
+    entity_type="Bill",
+    review_parent_kwarg="bill_id",
+    outbox_parent_kwarg="bill_id",
+    number_attr="bill_number",
+    number_placeholder="(no number)",
+    subject_number_prefix="Bill #",
+    body_number_label="Number",
+    renders_memo=False,
+    default_attachment_name="bill.pdf",
+    resolve_envelope=_bill_envelope,
+    read_line_items=_bill_line_items,
+    link_service=_bill_link_service,
+    read_link=_bill_read_link,
+)
+
+EXPENSE_SPEC = _NotificationSpec(
+    kind="expense",
+    entity_type="Expense",
+    review_parent_kwarg="expense_id",
+    outbox_parent_kwarg=None,
+    number_attr="reference_number",
+    number_placeholder="(no reference)",
+    subject_number_prefix="Expense ",
+    body_number_label="Reference",
+    renders_memo=True,
+    default_attachment_name="expense.pdf",
+    resolve_envelope=_expense_envelope,
+    read_line_items=_expense_line_items,
+    link_service=_expense_link_service,
+    read_link=_expense_read_link,
+)
+
+
 class ReviewNotificationService:
     """
-    Builds + enqueues review-submit notification emails. Called from the
-    auto-Submit hook in `BillService.create()` once the Review row has
-    been written.
+    Builds + enqueues review-submit notification emails for bills and expenses.
+    Called from `ReviewService.create` on the initial submit, once the Review
+    row has been written.
 
-    Design (v2, 2026-05-28): purpose-built new email with the bill's
+    Design (v2, 2026-05-28): purpose-built new email with the parent's
     bridged PDF attached + optional deep-link to the source vendor email.
     Replaces the v1 "forward-of-original" pattern. Rationale:
 
@@ -34,8 +161,11 @@ class ReviewNotificationService:
         bill_folder intake, agent-synthesized) are no longer silently skipped — they
         get the same review email as email-sourced bills.
 
+    Bills and expenses run ONE pipeline (`_do_enqueue`), parameterised by a
+    `_NotificationSpec` (U-754). Expense was added by U-486 C1 as a near-copy.
+
     Failure semantics: every step is wrapped in an outer try/except. A
-    notification failure NEVER propagates back to the caller — the Bill
+    notification failure NEVER propagates back to the caller — the parent
     and Review row stand on their own. The user can manually trigger a
     notification later if needed.
     """
@@ -48,12 +178,11 @@ class ReviewNotificationService:
         exclude_user_id: Optional[int] = None,
     ) -> None:
         """Public surface. Resolves recipients, builds the message, and
-        enqueues an `[ms].[Outbox]` `send_mail` row whose worker
-        dispatches to `create_draft` or `send_message` depending on
-        `Settings.review_notification_mode`."""
+        enqueues an `[ms].[Outbox]` `send_mail` row (always mode="draft")."""
         try:
             self._do_enqueue(
-                bill=bill,
+                spec=BILL_SPEC,
+                parent=bill,
                 review=review,
                 exclude_user_id=exclude_user_id,
             )
@@ -77,8 +206,9 @@ class ReviewNotificationService:
     ) -> None:
         """Enqueue a review-submit notification for an expense (U-486 C1)."""
         try:
-            self._do_enqueue_expense(
-                expense=expense,
+            self._do_enqueue(
+                spec=EXPENSE_SPEC,
+                parent=expense,
                 review=review,
                 exclude_user_id=exclude_user_id,
             )
@@ -90,274 +220,42 @@ class ReviewNotificationService:
                 error,
             )
 
-    def _do_enqueue_expense(self, *, expense, review, exclude_user_id):
+    def _do_enqueue(self, *, spec: _NotificationSpec, parent, review, exclude_user_id):
+        # Lazy imports to avoid circular dependencies with the entity services.
         from config import Settings
         from entities.attachment.business.service import AttachmentService
-        from entities.expense.business.service import ExpenseService
-        from entities.expense_line_item.business.service import ExpenseLineItemService
-        from entities.expense_line_item_attachment.business.service import (
-            ExpenseLineItemAttachmentService,
-        )
-        from entities.project.business.service import ProjectService
-        from entities.review.business.recipient_service import ReviewRecipientService
-        from entities.review.persistence.repo import ReviewRepository
-        from entities.sub_cost_code.business.service import SubCostCodeService
-        from entities.user.business.service import UserService
-        from entities.vendor.business.service import VendorService
-        from integrations.ms.outbox.business.service import MsOutboxService
-        from shared.authz.context import system_authz
-
-        rows = ReviewRepository().resolve_review_recipients_by_expense_id(
-            expense_id=expense.id,
-            exclude_user_id=exclude_user_id,
-        )
-        envelope = ReviewRecipientService._bucket(rows)
-        to_with_email = [r for r in envelope["to"] if r.email]
-        cc_with_email = [r for r in envelope["cc"] if r.email]
-        unreachable = [r for r in (envelope["to"] + envelope["cc"]) if not r.email]
-        if unreachable:
-            logger.warning(
-                "review_notification.unreachable_recipients expense_public_id=%s "
-                "user_ids=%s reason=no_contact_email",
-                expense.public_id,
-                [r.user_id for r in unreachable],
-            )
-        if not to_with_email:
-            logger.warning(
-                "review_notification.no_to_recipient expense_public_id=%s "
-                "reason=no_project_manager_with_email — sending anyway "
-                "(BCC archive still active).",
-                expense.public_id,
-            )
-        if not cc_with_email:
-            logger.info(
-                "review_notification.no_cc_recipient expense_public_id=%s "
-                "reason=no_owner_with_email",
-                expense.public_id,
-            )
-
-        settings = Settings()
-        bcc_with_email = []
-        if settings.invoice_inbox_email:
-            bcc_with_email.append(
-                {
-                    "email": settings.invoice_inbox_email,
-                    "name": "Invoice Inbox (archive)",
-                }
-            )
-        else:
-            logger.warning(
-                "review_notification.bcc_archive_skipped expense_public_id=%s "
-                "reason=invoice_inbox_email_not_configured",
-                expense.public_id,
-            )
-
-        if not to_with_email and not cc_with_email and not bcc_with_email:
-            logger.error(
-                "review_notification.skipped expense_public_id=%s "
-                "reason=no_recipients_on_any_line",
-                expense.public_id,
-            )
-            return
-
-        vendor_name = "(unknown vendor)"
-        if expense.vendor_id is not None:
-            vendor = VendorService().read_by_id(expense.vendor_id)
-            if vendor and vendor.name:
-                vendor_name = vendor.name
-
-        line_items = ExpenseLineItemService().read_by_expense_id(expense.id) or []
-        project_ids = sorted({li.project_id for li in line_items if li.project_id})
-        project_label = "(no project)"
-        if project_ids:
-            ps = ProjectService()
-            labels = []
-            for pid in project_ids:
-                p = ps.read_by_id(pid)
-                if not p:
-                    continue
-                labels.append(p.abbreviation or p.name or "")
-            labels = [s for s in labels if s]
-            if labels:
-                project_label = ", ".join(labels)
-
-        submitter_name = f"User {review.user_id}"
-        if review.user_id is not None:
-            submitter = UserService().read_by_id(review.user_id)
-            if submitter:
-                full = f"{submitter.firstname or ''} {submitter.lastname or ''}".strip()
-                if full:
-                    submitter_name = full
-
-        attachment_payload = self._build_expense_attachment_payload(
-            expense=expense,
-            line_items=line_items,
-            elia_service=ExpenseLineItemAttachmentService(),
-            attachment_service=AttachmentService(),
-        )
-
-        scc_ids = sorted({li.sub_cost_code_id for li in line_items if li.sub_cost_code_id})
-        scc_label_by_id: dict = {}
-        if scc_ids:
-            scs = SubCostCodeService()
-            for scc_id in scc_ids:
-                s = scs.read_by_id(scc_id)
-                if s:
-                    scc_label_by_id[scc_id] = f"{s.number} {s.name}".strip() if (s.number or s.name) else None
-
-        subject = self._build_expense_subject(
-            vendor_name=vendor_name,
-            reference_number=expense.reference_number,
-            project_label=project_label,
-            total_amount=expense.total_amount,
-        )
-        body_html = self._build_expense_html_body(
-            expense=expense,
-            vendor_name=vendor_name,
-            project_label=project_label,
-            submitter_name=submitter_name,
-            line_items=line_items,
-            scc_label_by_id=scc_label_by_id,
-            to_recipients=to_with_email,
-            attachment_filename=(attachment_payload or {}).get("name"),
-        )
-
-        mode = "draft"
-        result = MsOutboxService().enqueue_send_mail(
-            entity_type="Expense",
-            entity_public_id=expense.public_id,
-            to_addresses=[
-                {"email": r.email, "name": r.display_name} for r in to_with_email
-            ],
-            cc_addresses=[
-                {"email": r.email, "name": r.display_name} for r in cc_with_email
-            ],
-            bcc_addresses=bcc_with_email,
-            subject=subject,
-            body=body_html,
-            body_type="HTML",
-            attachment=attachment_payload,
-            mode=mode,
-            review_id=review.id,
-        )
-
-        if result is None:
-            logger.info(
-                "review_notification.enqueue_refused expense_public_id=%s reason=ms_writes_gate",
-                expense.public_id,
-            )
-            return
-
-        logger.info(
-            "review_notification.enqueued expense_public_id=%s outbox_public_id=%s "
-            "mode=%s to=%d cc=%d bcc=%d attachment=%s",
-            expense.public_id,
-            result.public_id,
-            mode,
-            len(to_with_email),
-            len(cc_with_email),
-            len(bcc_with_email),
-            (attachment_payload or {}).get("name") or "(none)",
-        )
-
-        if not (to_with_email or cc_with_email):
-            return
-        self._advance_expense_to_in_review(expense=expense, review=review)
-
-    def _advance_expense_to_in_review(self, *, expense, review) -> None:
-        try:
-            from shared.authz import system_actor_user_id
-            from entities.review.business.service import ReviewService
-            from entities.review_status.business.service import ReviewStatusService
-
-            actor = system_actor_user_id()
-            status_service = ReviewStatusService()
-            statuses = status_service.read_all()
-            current = next(
-                (s for s in statuses if s.id == review.review_status_id), None
-            )
-            if current is None:
-                logger.info(
-                    "review_notification.current_status_unresolved expense_public_id=%s "
-                    "review_status_id=%s",
-                    expense.public_id,
-                    review.review_status_id,
-                )
-                return
-
-            in_review = status_service.get_next_intermediate_status(
-                current.sort_order, statuses=statuses
-            )
-            if in_review is None:
-                logger.info(
-                    "review_notification.in_review_status_missing expense_public_id=%s "
-                    "no active non-declined non-final ReviewStatus after "
-                    "sort_order=%s",
-                    expense.public_id,
-                    current.sort_order,
-                )
-                return
-
-            ReviewService().create(
-                review_status_id=in_review.id,
-                user_id=review.user_id,
-                created_by_user_id=actor,
-                comments=None,
-                expense_id=expense.id,
-                email_message_id=None,
-            )
-            logger.info(
-                "review_notification.in_review_advanced expense_public_id=%s",
-                expense.public_id,
-            )
-        except Exception as in_review_error:
-            logger.exception(
-                "review_notification.in_review_advance_failed expense_public_id=%s: %s",
-                expense.public_id,
-                in_review_error,
-            )
-
-    def _do_enqueue(self, *, bill, review, exclude_user_id):
-        # Lazy imports to avoid circular dependencies with BillService.
-        from config import Settings
-        from entities.attachment.business.service import AttachmentService
-        from entities.bill_line_item.business.service import BillLineItemService
-        from entities.bill_line_item_attachment.business.service import (
-            BillLineItemAttachmentService,
-        )
         from entities.project.business.service import ProjectService
         from entities.sub_cost_code.business.service import SubCostCodeService
         from entities.user.business.service import UserService
         from entities.vendor.business.service import VendorService
         from integrations.ms.outbox.business.service import MsOutboxService
+
+        key = spec.log_key
 
         # 1. Resolve recipients (PMs To, Owners Cc, invoice@ Bcc).
-        envelope = ReviewRecipientService().resolve_for_bill(
-            bill_id=bill.id,
-            exclude_user_id=exclude_user_id,
-        )
+        envelope = spec.resolve_envelope(parent, exclude_user_id)
         to_with_email = [r for r in envelope["to"] if r.email]
         cc_with_email = [r for r in envelope["cc"] if r.email]
         unreachable = [r for r in (envelope["to"] + envelope["cc"]) if not r.email]
         if unreachable:
             logger.warning(
-                "review_notification.unreachable_recipients bill_public_id=%s "
+                f"review_notification.unreachable_recipients {key}=%s "
                 "user_ids=%s reason=no_contact_email",
-                bill.public_id,
+                parent.public_id,
                 [r.user_id for r in unreachable],
             )
         if not to_with_email:
             logger.warning(
-                "review_notification.no_to_recipient bill_public_id=%s "
+                f"review_notification.no_to_recipient {key}=%s "
                 "reason=no_project_manager_with_email — sending anyway "
                 "(BCC archive still active).",
-                bill.public_id,
+                parent.public_id,
             )
         if not cc_with_email:
             logger.info(
-                "review_notification.no_cc_recipient bill_public_id=%s "
+                f"review_notification.no_cc_recipient {key}=%s "
                 "reason=no_owner_with_email",
-                bill.public_id,
+                parent.public_id,
             )
 
         # BCC the linked MS integration mailbox so every notification
@@ -375,27 +273,27 @@ class ReviewNotificationService:
             )
         else:
             logger.warning(
-                "review_notification.bcc_archive_skipped bill_public_id=%s "
+                f"review_notification.bcc_archive_skipped {key}=%s "
                 "reason=invoice_inbox_email_not_configured",
-                bill.public_id,
+                parent.public_id,
             )
 
         if not to_with_email and not cc_with_email and not bcc_with_email:
             logger.error(
-                "review_notification.skipped bill_public_id=%s "
+                f"review_notification.skipped {key}=%s "
                 "reason=no_recipients_on_any_line",
-                bill.public_id,
+                parent.public_id,
             )
             return
 
         # 2. Resolve denormalized labels.
         vendor_name = "(unknown vendor)"
-        if bill.vendor_id is not None:
-            vendor = VendorService().read_by_id(bill.vendor_id)
+        if parent.vendor_id is not None:
+            vendor = VendorService().read_by_id(parent.vendor_id)
             if vendor and vendor.name:
                 vendor_name = vendor.name
 
-        line_items = BillLineItemService().read_by_bill_id(bill.id) or []
+        line_items = spec.read_line_items(parent)
         project_ids = sorted({li.project_id for li in line_items if li.project_id})
         project_label = "(no project)"
         if project_ids:
@@ -418,15 +316,16 @@ class ReviewNotificationService:
                 if full:
                     submitter_name = full
 
-        # 3. Resolve the bill's primary PDF attachment. Bill creation
-        # mandates one PDF on the first line item; later lines may carry
-        # additional attachments but we send only the canonical first one
-        # to keep the email focused (reviewer can open more via the
-        # bill's web UI if needed).
+        # 3. Resolve the primary PDF attachment. Bill creation mandates one
+        # PDF on the first line item (expenses carry the receipt the same
+        # way, via ExpenseLineItemAttachment); later lines may carry additional
+        # attachments but we send only the canonical first one to keep the
+        # email focused (reviewer can open more via the web UI if needed).
         attachment_payload = self._build_attachment_payload(
-            bill=bill,
+            spec=spec,
+            parent=parent,
             line_items=line_items,
-            bla_service=BillLineItemAttachmentService(),
+            link_service=spec.link_service(),
             attachment_service=AttachmentService(),
         )
 
@@ -442,13 +341,15 @@ class ReviewNotificationService:
 
         # 5. Build subject + HTML body.
         subject = self._build_subject(
+            spec=spec,
             vendor_name=vendor_name,
-            bill_number=bill.bill_number,
+            number=getattr(parent, spec.number_attr),
             project_label=project_label,
-            total_amount=bill.total_amount,
+            total_amount=parent.total_amount,
         )
         body_html = self._build_html_body(
-            bill=bill,
+            spec=spec,
+            parent=parent,
             vendor_name=vendor_name,
             project_label=project_label,
             submitter_name=submitter_name,
@@ -466,9 +367,12 @@ class ReviewNotificationService:
         # notification_mode` is intentionally bypassed here so a config
         # flip can't ever turn this into an autonomous-send path.
         mode = "draft"
+        parent_link = (
+            {spec.outbox_parent_kwarg: parent.id} if spec.outbox_parent_kwarg else {}
+        )
         result = MsOutboxService().enqueue_send_mail(
-            entity_type="Bill",
-            entity_public_id=bill.public_id,
+            entity_type=spec.entity_type,
+            entity_public_id=parent.public_id,
             to_addresses=[
                 {"email": r.email, "name": r.display_name} for r in to_with_email
             ],
@@ -482,21 +386,21 @@ class ReviewNotificationService:
             attachment=attachment_payload,
             mode=mode,
             review_id=review.id,
-            bill_id=bill.id,
+            **parent_link,
             # forward_message_id deliberately omitted — v2 is new-email.
         )
 
         if result is None:
             logger.info(
-                "review_notification.enqueue_refused bill_public_id=%s reason=ms_writes_gate",
-                bill.public_id,
+                f"review_notification.enqueue_refused {key}=%s reason=ms_writes_gate",
+                parent.public_id,
             )
             return
 
         logger.info(
-            "review_notification.enqueued bill_public_id=%s outbox_public_id=%s "
+            f"review_notification.enqueued {key}=%s outbox_public_id=%s "
             "mode=%s to=%d cc=%d bcc=%d attachment=%s",
-            bill.public_id,
+            parent.public_id,
             result.public_id,
             mode,
             len(to_with_email),
@@ -507,13 +411,13 @@ class ReviewNotificationService:
 
         # 7. Advance the Review state once the notification has been enqueued
         # to at least one PM/Owner (TO or CC populated — BCC-only doesn't
-        # count). Best-effort; on failure the bill stays at "Submitted" and no
-        # other side effects fire.
+        # count). Best-effort; on failure the parent stays at "Submitted" and
+        # no other side effects fire.
         if not (to_with_email or cc_with_email):
             return
-        self._advance_to_in_review(bill=bill, review=review)
+        self._advance_to_in_review(spec=spec, parent=parent, review=review)
 
-    def _advance_to_in_review(self, *, bill, review) -> None:
+    def _advance_to_in_review(self, *, spec: _NotificationSpec, parent, review) -> None:
         """Write the system's own "moved into review" Review row.
 
         Extracted from `_do_enqueue`'s step 7 in LS-01c′. It was the tail of a
@@ -522,10 +426,11 @@ class ReviewNotificationService:
         status-resolution and attribution rules below had no reachable test
         seam at all, which is why both of the bugs they fix survived this long.
 
-        Never raises: a failure here leaves the bill at "Submitted" with the
+        Never raises: a failure here leaves the parent at "Submitted" with the
         notification already sent, which is recoverable by a human. Raising
         would not un-send the email.
         """
+        key = spec.log_key
         try:
             from shared.authz import system_actor_user_id
             from entities.review.business.service import ReviewService
@@ -547,9 +452,9 @@ class ReviewNotificationService:
             )
             if current is None:
                 logger.info(
-                    "review_notification.current_status_unresolved bill_public_id=%s "
+                    f"review_notification.current_status_unresolved {key}=%s "
                     "review_status_id=%s",
-                    bill.public_id, review.review_status_id,
+                    parent.public_id, review.review_status_id,
                 )
                 return
 
@@ -580,10 +485,10 @@ class ReviewNotificationService:
             )
             if in_review is None:
                 logger.info(
-                    "review_notification.in_review_status_missing bill_public_id=%s "
+                    f"review_notification.in_review_status_missing {key}=%s "
                     "no active non-declined non-final ReviewStatus after "
                     "sort_order=%s",
-                    bill.public_id, current.sort_order,
+                    parent.public_id, current.sort_order,
                 )
                 return
 
@@ -622,7 +527,8 @@ class ReviewNotificationService:
                 # Christopher for machine work.
                 created_by_user_id=actor,
                 comments=None,
-                bill_id=bill.id,
+                # bill_id= or expense_id=, per spec.
+                **{spec.review_parent_kwarg: parent.id},
                 # The BCC archive (sent back into invoice@) lands via
                 # the next poll cycle — we don't have its EmailMessage
                 # row at enqueue time. A follow-up backfill job links
@@ -630,13 +536,13 @@ class ReviewNotificationService:
                 email_message_id=None,
             )
             logger.info(
-                "review_notification.in_review_advanced bill_public_id=%s",
-                bill.public_id,
+                f"review_notification.in_review_advanced {key}=%s",
+                parent.public_id,
             )
         except Exception as in_review_error:
             logger.exception(
-                "review_notification.in_review_advance_failed bill_public_id=%s: %s",
-                bill.public_id, in_review_error,
+                f"review_notification.in_review_advance_failed {key}=%s: %s",
+                parent.public_id, in_review_error,
             )
 
     # ─── attachment lookup ──────────────────────────────────────────────────
@@ -644,13 +550,14 @@ class ReviewNotificationService:
     @staticmethod
     def _build_attachment_payload(
         *,
-        bill,
+        spec: _NotificationSpec,
+        parent,
         line_items,
-        bla_service,
+        link_service,
         attachment_service,
         storage=None,
     ) -> Optional[dict]:
-        """Resolve the bill's primary PDF attachment as an outbox *reference*.
+        """Resolve the parent's primary PDF attachment as an outbox *reference*.
 
         Returns ``{"name", "content_type", "blob_url"}`` so the ``send_mail``
         worker can fetch bytes at drain time. Does not download or base64-encode
@@ -665,202 +572,45 @@ class ReviewNotificationService:
         """
         if not line_items:
             return None
-        # Walk line items in DB order; first one with a BLA wins.
+        # Walk line items in DB order; first one with a linked PDF wins.
         for li in line_items:
-            bla = bla_service.read_by_bill_line_item_id(str(li.public_id))
-            if not bla:
+            link = spec.read_link(link_service, li)
+            if not link:
                 continue
-            attachment = attachment_service.read_by_id(bla.attachment_id)
+            attachment = attachment_service.read_by_id(link.attachment_id)
             if not attachment or not attachment.blob_url:
                 continue
             if (attachment.content_type or "").lower() != "application/pdf":
                 logger.info(
-                    "review_notification.attachment_skipped_non_pdf bill_public_id=%s "
+                    f"review_notification.attachment_skipped_non_pdf {spec.log_key}=%s "
                     "attachment_public_id=%s content_type=%s",
-                    bill.public_id, attachment.public_id, attachment.content_type,
+                    parent.public_id, attachment.public_id, attachment.content_type,
                 )
                 continue
             return {
-                "name":         attachment.filename or "bill.pdf",
+                "name":         attachment.filename or spec.default_attachment_name,
                 "content_type": attachment.content_type or "application/pdf",
                 "blob_url":     attachment.blob_url,
             }
         return None
-
-    @staticmethod
-    def _build_expense_attachment_payload(
-        *,
-        expense,
-        line_items,
-        elia_service,
-        attachment_service,
-        storage=None,
-    ) -> Optional[dict]:
-        """Resolve the expense's primary PDF attachment as an outbox *reference*.
-
-        Twin of ``_build_attachment_payload``: same PDF-only guard, same first-
-        linked-attachment-wins walk, same no-download contract, same skip of
-        attachments with no ``blob_url``. Returns None when no attachment is
-        linked or when the file isn't a PDF.
-        """
-        if not line_items:
-            return None
-        for li in line_items:
-            elia = elia_service.read_by_expense_line_item_id(
-                expense_line_item_public_id=str(li.public_id)
-            )
-            if not elia:
-                continue
-            attachment = attachment_service.read_by_id(elia.attachment_id)
-            if not attachment or not attachment.blob_url:
-                continue
-            if (attachment.content_type or "").lower() != "application/pdf":
-                logger.info(
-                    "review_notification.attachment_skipped_non_pdf expense_public_id=%s "
-                    "attachment_public_id=%s content_type=%s",
-                    expense.public_id,
-                    attachment.public_id,
-                    attachment.content_type,
-                )
-                continue
-            return {
-                "name":         attachment.filename or "expense.pdf",
-                "content_type": attachment.content_type or "application/pdf",
-                "blob_url":     attachment.blob_url,
-            }
-        return None
-
-    @staticmethod
-    def _build_expense_subject(
-        *,
-        vendor_name: str,
-        reference_number: Optional[str],
-        project_label: str,
-        total_amount,
-    ) -> str:
-        ref_display = reference_number or "(no reference)"
-        amount_str = ReviewNotificationService._format_amount(total_amount)
-        return (
-            f"[Review] {vendor_name} — Expense {ref_display} "
-            f"— {project_label} — {amount_str}"
-        )
-
-    @classmethod
-    def _build_expense_html_body(
-        cls,
-        *,
-        expense,
-        vendor_name: str,
-        project_label: str,
-        submitter_name: str,
-        line_items,
-        scc_label_by_id: dict,
-        to_recipients: Optional[list],
-        attachment_filename: Optional[str],
-    ) -> str:
-        reference_number = html.escape(expense.reference_number or "(no reference)")
-        vendor = html.escape(vendor_name)
-        project = html.escape(project_label)
-        submitter = html.escape(submitter_name)
-        amount_str = cls._format_amount(expense.total_amount)
-        submitted_date = cls._format_submitted_date(expense.created_datetime)
-
-        greeting = ""
-        if to_recipients:
-            firstnames = [
-                html.escape(r.firstname.strip())
-                for r in to_recipients
-                if getattr(r, "firstname", None) and r.firstname.strip()
-            ]
-            if firstnames:
-                greeting = f"<p>{'/'.join(firstnames)},</p>"
-
-        line_rows_html = ""
-        if line_items:
-            multi_project = (
-                len({li.project_id for li in line_items if li.project_id}) > 1
-            )
-            rows = []
-            for li in line_items:
-                desc = html.escape(li.description or "")
-                scc_label = html.escape(scc_label_by_id.get(li.sub_cost_code_id) or "")
-                amt = cls._format_amount(li.amount)
-                if multi_project:
-                    proj_lbl = ""
-                    if li.project_id:
-                        from entities.project.business.service import ProjectService
-                        p = ProjectService().read_by_id(li.project_id)
-                        if p:
-                            proj_lbl = html.escape(p.abbreviation or p.name or "")
-                    rows.append(
-                        f"<tr><td>{desc}</td><td>{proj_lbl}</td>"
-                        f"<td>{scc_label}</td><td style='text-align:right;'>{amt}</td></tr>"
-                    )
-                else:
-                    rows.append(
-                        f"<tr><td>{desc}</td><td>{scc_label}</td>"
-                        f"<td style='text-align:right;'>{amt}</td></tr>"
-                    )
-            header = (
-                "<tr><th align='left'>Description</th>"
-                + ("<th align='left'>Project</th>" if multi_project else "")
-                + "<th align='left'>Sub Cost Code</th>"
-                "<th align='right'>Amount</th></tr>"
-            )
-            line_rows_html = (
-                "<table cellpadding='4' cellspacing='0' border='1' "
-                "style='border-collapse:collapse; margin-top:6px;'>"
-                f"{header}{''.join(rows)}</table>"
-            )
-
-        attachment_html = ""
-        if attachment_filename:
-            attachment_html = (
-                f"<p>Attached: <strong>{html.escape(attachment_filename)}</strong></p>"
-            )
-
-        memo = (getattr(expense, "memo", None) or "").strip()
-        memo_line = ""
-        if memo:
-            memo_html = (
-                html.escape(memo).replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br/>")
-            )
-            memo_line = f"<br/>Memo: {memo_html}"
-
-        return (
-            f"{greeting}"
-            "<p>A new expense has been submitted for review:</p>"
-            "<p>"
-            f"Project: {project}<br/>"
-            f"Vendor: {vendor}<br/>"
-            f"Reference: {reference_number}<br/>"
-            f"Amount: {amount_str}{memo_line}"
-            "</p>"
-            "<p>"
-            f"Submitted By: {submitter}<br/>"
-            f"Submitted Date: {submitted_date}"
-            "</p>"
-            f"{line_rows_html}"
-            f"{attachment_html}"
-            "<p>When you have a moment, will you please reply for approval "
-            "with Sub Cost Code and Description, or non-approval?</p>"
-        )
 
     # ─── subject + body builders ────────────────────────────────────────────
 
     @staticmethod
     def _build_subject(
         *,
+        spec: _NotificationSpec,
         vendor_name: str,
-        bill_number: Optional[str],
+        number: Optional[str],
         project_label: str,
         total_amount,
     ) -> str:
-        """`[Review] <Vendor> — Bill #<num> — <Project> — $<amt>`"""
-        bill_num_display = bill_number or "(no number)"
+        """`[Review] <Vendor> — Bill #<num> — <Project> — $<amt>` (bill) or
+        `[Review] <Vendor> — Expense <ref> — <Project> — $<amt>` (expense)."""
+        number_display = number or spec.number_placeholder
         amount_str = ReviewNotificationService._format_amount(total_amount)
         return (
-            f"[Review] {vendor_name} — Bill #{bill_num_display} "
+            f"[Review] {vendor_name} — {spec.subject_number_prefix}{number_display} "
             f"— {project_label} — {amount_str}"
         )
 
@@ -868,7 +618,8 @@ class ReviewNotificationService:
     def _build_html_body(
         cls,
         *,
-        bill,
+        spec: _NotificationSpec,
+        parent,
         vendor_name: str,
         project_label: str,
         submitter_name: str,
@@ -880,19 +631,20 @@ class ReviewNotificationService:
         """Full HTML body. Sections (in order):
             1. Greeting addressed to PM firstnames (if any).
             2. Lead-in sentence.
-            3. Header table: project, vendor, bill #, amount.
-            4. Submission table: submitter, date.
+            3. Header block: project, vendor, number/reference, amount
+               (+ memo, expense only — U-729).
+            4. Submission block: submitter, date.
             5. Line items table (description, project, SCC, amount).
             6. Attachment hint (optional).
             7. Reviewer instructions.
         Vendor / project / submitter values are HTML-escaped so a value
         containing `<` or `&` doesn't render as broken markup."""
-        bill_number = html.escape(bill.bill_number or "(no number)")
+        number = html.escape(getattr(parent, spec.number_attr) or spec.number_placeholder)
         vendor = html.escape(vendor_name)
         project = html.escape(project_label)
         submitter = html.escape(submitter_name)
-        amount_str = cls._format_amount(bill.total_amount)
-        submitted_date = cls._format_submitted_date(bill.created_datetime)
+        amount_str = cls._format_amount(parent.total_amount)
+        submitted_date = cls._format_submitted_date(parent.created_datetime)
 
         greeting = ""
         if to_recipients:
@@ -905,7 +657,7 @@ class ReviewNotificationService:
                 greeting = f"<p>{'/'.join(firstnames)},</p>"
 
         # Line-items table — only rendered when ≥1 line item exists.
-        # Keeps each row to: description, project (if multi-project bill),
+        # Keeps each row to: description, project (if multi-project parent),
         # SCC label, amount.
         line_rows_html = ""
         if line_items:
@@ -952,14 +704,23 @@ class ReviewNotificationService:
                 f"<p>Attached: <strong>{html.escape(attachment_filename)}</strong></p>"
             )
 
+        memo_line = ""
+        if spec.renders_memo:
+            memo = (getattr(parent, "memo", None) or "").strip()
+            if memo:
+                memo_html = (
+                    html.escape(memo).replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br/>")
+                )
+                memo_line = f"<br/>Memo: {memo_html}"
+
         return (
             f"{greeting}"
-            "<p>A new bill has been submitted for review:</p>"
+            f"<p>A new {spec.kind} has been submitted for review:</p>"
             "<p>"
             f"Project: {project}<br/>"
             f"Vendor: {vendor}<br/>"
-            f"Number: {bill_number}<br/>"
-            f"Amount: {amount_str}"
+            f"{spec.body_number_label}: {number}<br/>"
+            f"Amount: {amount_str}{memo_line}"
             "</p>"
             "<p>"
             f"Submitted By: {submitter}<br/>"
@@ -982,7 +743,7 @@ class ReviewNotificationService:
 
     @staticmethod
     def _format_submitted_date(created_datetime) -> str:
-        """Reformat the bill's created datetime as mm/dd/yyyy."""
+        """Reformat the parent's created datetime as mm/dd/yyyy."""
         if not created_datetime:
             return ""
         if isinstance(created_datetime, datetime):

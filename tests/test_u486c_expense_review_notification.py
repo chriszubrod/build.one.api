@@ -10,7 +10,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from entities.expense.business.service import ExpenseService, _build_qbo_expense_url
-from entities.review.business.notification_service import ReviewNotificationService
+from entities.review.business.notification_service import (
+    EXPENSE_SPEC,
+    ReviewNotificationService,
+)
 from entities.review.business.recipient_model import ResolvedRecipient
 from entities.review.business.service import ReviewService
 
@@ -160,7 +163,7 @@ def _expense_enqueue_patch_stack(*, qbo_url=None, recipients=None, attachment=No
     )
     stack.enter_context(
         patch(
-            "entities.review.business.notification_service.ReviewNotificationService._build_expense_attachment_payload",
+            "entities.review.business.notification_service.ReviewNotificationService._build_attachment_payload",
             return_value=attachment,
         )
     )
@@ -187,7 +190,7 @@ def _expense_enqueue_patch_stack(*, qbo_url=None, recipients=None, attachment=No
     mock_outbox_cls = stack.enter_context(
         patch("integrations.ms.outbox.business.service.MsOutboxService")
     )
-    stack.enter_context(patch.object(ReviewNotificationService, "_advance_expense_to_in_review"))
+    stack.enter_context(patch.object(ReviewNotificationService, "_advance_to_in_review"))
 
     @contextmanager
     def _noop_system_authz():
@@ -305,10 +308,11 @@ def test_non_pdf_expense_attachment_is_skipped():
     )
     storage = MagicMock()
 
-    payload = ReviewNotificationService._build_expense_attachment_payload(
-        expense=expense,
+    payload = ReviewNotificationService._build_attachment_payload(
+        spec=EXPENSE_SPEC,
+        parent=expense,
         line_items=line_items,
-        elia_service=elia,
+        link_service=elia,
         attachment_service=attachment_service,
         storage=storage,
     )
@@ -371,8 +375,9 @@ def _build_expense_html_body_for_test(*, memo=None, **expense_extra):
         memo=memo,
         **expense_extra,
     )
-    return ReviewNotificationService._build_expense_html_body(
-        expense=expense,
+    return ReviewNotificationService._build_html_body(
+        spec=EXPENSE_SPEC,
+        parent=expense,
         vendor_name="Acme",
         project_label="Project A",
         submitter_name="Sam Sub",

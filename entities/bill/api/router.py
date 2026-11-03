@@ -426,8 +426,11 @@ def find_bill_by_conversation_id_router(
     bill_number, total_amount, is_draft, vendor_name, source_email_message_id,
     conversation_id, match_kind) when one is. `match_kind` is
     `'conversation'` for strict matches, `'fuzzy'` for fallback hits.
+
+    A match the caller cannot access (dbo.UserCanAccessBill) answers as null,
+    exactly like a miss (U-759).
     """
-    result = BillRepository().find_for_reviewer_reply(
+    result = BillService().find_for_reviewer_reply(
         conversation_id=conversation_id,
         bill_number_hint=bill_number_hint,
         project_hint=project_hint,

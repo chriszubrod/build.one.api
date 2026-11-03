@@ -26,6 +26,12 @@ No SQL change. Tests: tests/test_u551b_expense_transactional_review_decision.py 
   connection reset / timeout (10054 / 10060) still matches `TRANSIENT_ERROR_MESSAGES` and does — so the decorator retries dead connections but not deadlocks. The r2 read split (no retry inside a caller's transaction) is still right as hardening. Audit every decorated repo method: either map inside the
   decorator's view or make the retry match the mapped classes. `[U-551b follow-up]`
 
+## U-759 follow-ups - bill find-by-conversation access check (booked 2026-11-02)
+
+- [ ] (Pass 3, LOW, accepted for now) Existence oracle by candidate shadowing: `FindBillForReviewerReply` picks the match across ALL bills (strict `TOP 1 ... ORDER BY CreatedDatetime DESC`; fuzzy `TOP 2` must equal 1) BEFORE the service-side access check, so a caller anchored on a bill they CAN see can learn that a hidden same-number draft / same-thread bill exists (existence only, no document data). Expense (U-565) has the same shape. Fix: pass `@ActorUserId`/`@IsSystemAdmin` into both Find*ForReviewerReply sprocs and filter candidates with `dbo.UserCanAccess*` before TOP/count; keep the service check as backstop.
+- [ ] Agent coverage: non-admin agent users (21-31) have UserProject rows on 139/140 projects - project 205 (created 2026-10-15) is missing, so bill/expense reviewer replies on it resolve to null and get flagged. New projects never get agent rows automatically; decide a backfill + an on-create hook (prod write - needs Chris's OK).
+- [ ] `BillRepository.find_for_reviewer_reply` maps `total_amount` with `float(...)`; the expense twin uses Decimal (Decimal convention).
+
 ## U-754 follow-ups - one review-notification pipeline (booked 2026-11-02)
 
 - [ ] (Pass 2, DEFER) Fold the identical never-raise wrappers in `enqueue_for_bill`/`enqueue_for_expense` into one helper; first switch `tests/test_u486c_expense_review_notification.py::test_enqueue_for_expense_swallows_exceptions` from source-introspection to a behavioural check.

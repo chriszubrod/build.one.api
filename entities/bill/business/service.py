@@ -4,7 +4,7 @@ Owns
   dbo.Bill vendor A/P document.
   Line items and attachments live in bill_line_item / child entities, not this service package.
 Invariants
-  RBAC: API gated Modules.BILLS via require_module_api; reads/mutations use assert_can_access_bill (dbo.UserCanAccessBill).
+  RBAC: API gated Modules.BILLS via require_module_api; reads/mutations use assert_can_access_bill (dbo.UserCanAccessBill); find_for_reviewer_reply answers an inaccessible match as no match (U-759).
   Money: total_amount is coerced Decimal(str(...)) on update; line pricing is owned by bill_line_item (create only passes Decimal line_markup/line_price through).
   Concurrency: UpdateBillById takes @RowVersion; finalize uses draft guard instead of rowversion.
   Cascade: delete_by_public_id uses DeleteBillCascadeById for dependent rows.
@@ -50,7 +50,7 @@ from typing import Any, List, Optional
 # Third-party Imports
 
 # Local Imports
-from shared.access import assert_can_access_bill, can_access_bill
+from shared.access import EntityNotAccessibleError, assert_can_access_bill, can_access_bill
 from shared.authz import current_user_id, current_is_system_admin
 from shared.lifecycle.terminal_lock import (
     assert_editable,
@@ -755,6 +755,35 @@ class BillService:
             return None
         assert_can_access_bill(bill.id)
         return bill
+
+    def find_for_reviewer_reply(
+        self,
+        conversation_id: Optional[str] = None,
+        bill_number_hint: Optional[str] = None,
+        project_hint: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Resolve which Bill an emailed reviewer reply targets (U-759, twin of U-565)."""
+        row = self.repo.find_for_reviewer_reply(
+            conversation_id=conversation_id,
+            bill_number_hint=bill_number_hint,
+            project_hint=project_hint,
+        )
+        if row is None:
+            return None
+        try:
+            assert_can_access_bill(row["id"])
+        except EntityNotAccessibleError:
+            # Inaccessible ≡ not found: the caller gets the same null as a miss, so
+            # the hints cannot confirm that a draft exists outside their projects
+            # (the 404 mapping of this error elsewhere exists for the same reason).
+            # Logged (id only, no document data) so a service identity missing a
+            # UserProject row shows up in the logs instead of only as a flagged reply.
+            logger.warning(
+                "find_for_reviewer_reply: matched Bill %s is not accessible to the caller — answering as no match",
+                row["id"],
+            )
+            return None
+        return row
 
     def get_qbo_bill_url(self, bill_id: int) -> Optional[str]:
         """

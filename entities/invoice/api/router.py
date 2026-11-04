@@ -340,6 +340,49 @@ def _budget_sov_for_project(project_id: Optional[int]) -> list:
         return []
 
 
+def _consolidate_basic_toc_rows(rows: list[dict]) -> list[dict]:
+    """
+    Collapse the lines of each source entity into ONE basic-TOC row, keyed by
+    (source_type, parent_public_id) in first-appearance order. The amount is the
+    signed sum of the lines in `rows` — the lines billed on this invoice — and
+    the Description column shows the shared sub cost code name, or "Multiple
+    See Image" when the lines span more than one. A row with no parent (a Manual line)
+    stays its own row.
+    """
+    groups: dict[tuple, list[dict]] = {}
+    for i, r in enumerate(rows):
+        parent = r.get("parent_public_id") or ""
+        key = (r.get("source_type", ""), parent) if parent else ("__row__", i)
+        groups.setdefault(key, []).append(r)
+
+    out = []
+    for group in groups.values():
+        first = group[0]
+        label = _toc_source_label(first.get("source_type", ""))
+        if len(group) == 1:
+            out.append(dict(first, type_label=label))
+            continue
+        names = {(r.get("sub_cost_code_name") or "").strip() for r in group} - {""}
+        if not names:
+            # No line carries a sub cost code: fall back to a shared work
+            # description, as a single-line row would.
+            names = {(r.get("description") or "").strip() for r in group}
+        amounts = [_signed_line_amount(r) for r in group]
+        known = [a for a in amounts if a is not None]
+        out.append(dict(
+            first,
+            sub_cost_code_name=next(iter(names)) if len(names) == 1 else "Multiple See Image",
+            type_label=label,
+            # Carry the signed Decimal sum in `billed_price`, the field the sign
+            # helper reads first for every source type. A credit's sum is already
+            # negative and its sign rule only negates positives, so it passes
+            # through unchanged.
+            # All-unknown stays None so the row prints "—", not a known $0.00.
+            billed_price=sum(known, Decimal("0")) if known else None,
+        ))
+    return out
+
+
 def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
     """
     Generate the basic Table of Contents PDF page.
@@ -380,19 +423,16 @@ def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
         Paragraph("Description", wrap_hdr), Paragraph("Type", wrap_hdr), Paragraph("Amount", hdr_right),
     ]
 
-    # One row per BILLABLE LINE ITEM. This page used to consolidate every line
-    # sharing a source bill into a single summed row, which printed a
-    # parent-level roll-up: for a bill split across cost codes that sum equals
-    # the bill's own TotalAmount, so the customer read an entity total where a
-    # billed line was meant (BR-MAIN-29: Proctor 3953 printed $270,298.00 and
-    # Siteworks 26-0183 $237,776.00, both exactly their bill totals, labelled
-    # "Multiple See Image"). Each row now reflects exactly one billable line,
-    # matching the expanded TOC. The grand total is unchanged either way — the
-    # consolidation summed the same lines — so this is presentation only.
+    # One row per SOURCE ENTITY (bill / credit / expense) on this invoice; the
+    # expanded TOC is the per-sub-cost-code view. A bill split across sub cost
+    # codes prints once, at the sum of ITS LINES BILLED ON THIS INVOICE — never
+    # the bill's own TotalAmount, so a partially billed bill (Clark Crane
+    # NV-13543: one $267.58 line deliberately unbilled) still prints only what
+    # is billed. Reverses e56a5da4's per-line rows at Chris's request
+    # (2026-11-03, HP2-14: Brayan Salina 2026.09.30.HP2 printed 15 rows).
     # Attachment page order is unaffected: the caller derives it from these same
-    # pre-sorted `rows` BEFORE this function and dedupes by attachment id, so
-    # two rows sharing one document still print that document once.
-    line_rows = [dict(r, type_label=_toc_source_label(r.get("source_type", ""))) for r in rows]
+    # pre-sorted `rows` BEFORE this function and dedupes by attachment id.
+    line_rows = _consolidate_basic_toc_rows(rows)
 
     table_data = [headers]
     for r in line_rows:

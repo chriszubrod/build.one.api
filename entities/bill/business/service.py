@@ -77,7 +77,6 @@ from entities.project.business.service import ProjectService
 from entities.vendor.business.service import VendorService
 from entities.sub_cost_code.business.holding_lines import (
     assert_no_holding_on_lines,
-    assert_no_holding_sub_cost_codes,
 )
 from entities.sub_cost_code.business.service import SubCostCodeService
 from entities.module.business.service import ModuleService
@@ -1390,8 +1389,8 @@ class BillService:
         """Bill's half of the shared reviewer-decision engine (U-755).
 
         Built per call so `get_connection`, `SubCostCodeService`,
-        `assert_may_act_as`, `assert_no_holding_sub_cost_codes` and `logger` are
-        read from THIS module at call time (their long-standing patch points)."""
+        `assert_may_act_as` and `logger` are read from THIS module at call time
+        (their long-standing patch points)."""
 
         def _line_service():
             from entities.bill_line_item.business.service import BillLineItemService
@@ -1414,13 +1413,11 @@ class BillService:
             sub_cost_code_service=SubCostCodeService,
             assert_may_act_as=assert_may_act_as,
             logger=logger,
-            # Drift preserved (U-755): SCC first, code line_items[0], refuse a
-            # holding code on any OTHER line; no under-lock recount; fresh
-            # ReviewStatusService for the status-name readback.
-            emailed_line_policy="first_plus_holding_check",
+            # Drift preserved (U-755): no under-lock recount; fresh
+            # ReviewStatusService for the status-name readback. (U-760: the
+            # emailed path codes a single-line bill only, like Expense.)
             emailed_recount_under_lock=False,
             emailed_fresh_status_service_for_readback=True,
-            assert_no_holding_sub_cost_codes=assert_no_holding_sub_cost_codes,
         )
 
     def apply_reviewer_decision(
@@ -1436,8 +1433,9 @@ class BillService:
     ) -> dict:
         """Apply a Project Manager / Owner's emailed review decision to a Bill.
 
-        Wave 3 Phase A — on approval updates the summary BillLineItem (sub cost
-        code + optional description), then inserts the Review (terminal approved
+        Wave 3 Phase A — on approval codes the bill's single BillLineItem (sub cost
+        code + optional description; a multi-line or zero-line bill is
+        refused, U-760), then inserts the Review (terminal approved
         or declined) with the raw reply as Comments, on one connection (U-564).
 
         Authorization: `reviewer_email` must match a Project Manager / Owner in
@@ -1446,9 +1444,9 @@ class BillService:
         reviewer (U-459). The bill must still be a draft.
 
         decision ∈ {'approved', 'rejected'} — 'rejected' also carries "needs
-        revision" / questions. On approval `sub_cost_code_public_id` is required;
-        the first line is coded and every other line must be off the suspense
-        code. Engine: `entities.review.business.reviewer_decision.apply_emailed`.
+        revision" / questions. On approval `sub_cost_code_public_id` is required
+        and the bill must have exactly one line (refused before the sub cost
+        code lookup otherwise — U-760). Engine: `entities.review.business.reviewer_decision.apply_emailed`.
         """
         return apply_emailed(
             self._reviewer_decision_spec(),

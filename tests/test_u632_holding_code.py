@@ -300,9 +300,15 @@ def test_bill_apply_reviewer_decision_refuses_holding_approval():
         "shared.authz.provenance.bind_reviewer_reply_to_review_thread",
         return_value=SimpleNamespace(id=1),
     ), patch(
+        # U-760: the line count is checked before the SCC lookup — one line.
+        "entities.bill_line_item.business.service.BillLineItemService"
+    ) as bli_cls, patch(
         "entities.sub_cost_code.business.service.SubCostCodeService.read_by_public_id",
         return_value=SimpleNamespace(id=10, is_holding_code=True),
     ):
+        bli_cls.return_value.read_by_bill_id.return_value = [
+            SimpleNamespace(id=1, row_version="rv1", sub_cost_code_id=5)
+        ]
         rr.return_value.resolve_for_bill.return_value = {
             "to": [SimpleNamespace(email="pm@x.com", user_id=5)],
             "cc": [],

@@ -13,18 +13,19 @@ Two entry points, one per decision channel:
 Both write the optional line recode and the Review insert on ONE connection
 (U-564). The entity services keep their public methods and delegate here with a
 ``ReviewerDecisionSpec`` built per call, so the collaborators the spec carries
-(``get_connection``, ``SubCostCodeService``, ``assert_may_act_as``, the holding
-check, the logger) are read from the ENTITY service module at call time and the
+(``get_connection``, ``SubCostCodeService``, ``assert_may_act_as``, the
+logger) are read from the ENTITY service module at call time and the
 long-standing patch points ``entities.{bill,expense}.business.service.*`` keep
 taking effect.
 
-The two entities do NOT behave identically on Path A, and this engine preserves
-every difference through an explicit switch rather than silently unifying them:
+Path A codes the ONE line of a single-line parent and refuses anything else
+(zero or several lines), checked BEFORE the sub cost code lookup — for both
+entities (U-760 retired Bill's old "code ``line_items[0]``, holding-check the
+others" policy; a reviewer decision never stamps one cost code over a split).
 
-* ``emailed_line_policy`` — ``"sole"`` (Expense): refuse unless exactly one line,
-  checked BEFORE the sub cost code lookup. ``"first_plus_holding_check"`` (Bill):
-  resolve the sub cost code first, refuse zero lines, code ``line_items[0]`` and
-  refuse when any OTHER line sits on a holding (suspense) code.
+The two entities still differ on Path A in two places, each kept as an explicit
+switch rather than silently unified:
+
 * ``emailed_recount_under_lock`` — Expense re-counts its lines under the lock
   (U-564) and refuses a line added since the fast path; Bill does not.
 * ``emailed_fresh_status_service_for_readback`` — Bill reads the new status name
@@ -39,7 +40,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, Optional
+from typing import Any, Callable, Optional
 
 from entities.review.business.decision_errors import ReviewDecisionApplyError
 from shared.api.errors import ErrorCode
@@ -48,8 +49,6 @@ from shared.database import DatabaseConcurrencyError, DatabaseConstraintError
 from shared.db_constraints import UNIQUE
 from shared.lifecycle.completion_gate import HoldingCodeRefused
 from shared.lifecycle.terminal_lock import StatusLockedError
-
-EmailedLinePolicy = Literal["sole", "first_plus_holding_check"]
 
 
 @dataclass(frozen=True)
@@ -80,10 +79,8 @@ class ReviewerDecisionSpec:
     logger: logging.Logger
 
     # Path A drift switches (see module docstring).
-    emailed_line_policy: EmailedLinePolicy
     emailed_recount_under_lock: bool
     emailed_fresh_status_service_for_readback: bool
-    assert_no_holding_sub_cost_codes: Optional[Callable[..., None]] = None
 
     @property
     def fk_kwarg(self) -> str:
@@ -146,7 +143,7 @@ def _holding_code_refusal(spec: ReviewerDecisionSpec) -> HoldingCodeRefused:
 def _refuse_unless_one_line(
     spec: ReviewerDecisionSpec, public_id: str, line_count: int
 ) -> None:
-    """Emailed `"sole"` policy: code the ONE line; refuse anything else.
+    """Emailed path: code the ONE line; refuse anything else.
 
     Shared by the fast path and the under-lock recheck (U-564), so both refusals
     read the same."""
@@ -162,35 +159,6 @@ def _refuse_unless_one_line(
         "a reviewer decision cannot be auto-applied to a multi-line "
         f"{spec.parent} (would stamp one cost code over a manual split)."
     )
-
-
-def _first_line_refusing_other_holding(
-    spec: ReviewerDecisionSpec, public_id: str, line_items: list
-):
-    """Emailed `"first_plus_holding_check"` policy: the email-driven flow creates
-    one summary line carrying the attachment; with several (rare, manual edits)
-    the first is coded and every OTHER line must be off the suspense code."""
-    if not line_items:
-        raise ValueError(
-            f"{spec.entity_type} {public_id} has no line items to apply the SCC to."
-        )
-    summary_line = line_items[0]
-    summary_id = getattr(summary_line, "id", None)
-    if summary_id is not None:
-        other_line_scc_ids = [
-            li.sub_cost_code_id
-            for li in line_items
-            if getattr(li, "id", None) != summary_id
-        ]
-        spec.assert_no_holding_sub_cost_codes(
-            other_line_scc_ids,
-            message=(
-                f"This {spec.parent} cannot be approved while any line remains on the "
-                "suspense sub cost code. Recode those lines first."
-            ),
-            scc_svc=spec.sub_cost_code_service(),
-        )
-    return summary_line
 
 
 def _no_approved_status() -> ValueError:
@@ -315,19 +283,14 @@ def apply_emailed(
     scc_id: Optional[int] = None
     target_line = None
     if decision == "approved":
-        if spec.emailed_line_policy == "sole":
-            line_items = spec.read_lines(line_service, parent.id)
-            _refuse_unless_one_line(spec, public_id, len(line_items))
-            target_line = line_items[0]
+        line_items = spec.read_lines(line_service, parent.id)
+        _refuse_unless_one_line(spec, public_id, len(line_items))
+        target_line = line_items[0]
         scc, scc_id = _resolve_approval_scc(
             spec, sub_cost_code_public_id, id_none_is_missing=False
         )
         if getattr(scc, "is_holding_code", False):
             raise _holding_code_refusal(spec)
-        if spec.emailed_line_policy == "first_plus_holding_check":
-            target_line = _first_line_refusing_other_holding(
-                spec, public_id, spec.read_lines(line_service, parent.id)
-            )
 
     # A PM approval IS the approval: jump straight to the terminal non-declined
     # status (or to declined); every authorized reply is authoritative and the

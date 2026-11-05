@@ -28,7 +28,7 @@ No SQL change. Tests: tests/test_u551b_expense_transactional_review_decision.py 
 
 ## U-755 follow-ups - shared reviewer-decision engine (booked 2026-11-02)
 
-- [ ] Drift fixes booked as units: U-760 (refuse multi-line emailed bill approvals), U-761 (bill recount under lock + clear 400/409 instead of 500 for SCC id None / stale ROWVERSION / StatusLocked on the emailed path), U-762 (bill emailed route request model). Each removes a drift switch from `ReviewerDecisionSpec` and its row in `SWITCHES` (tests/test_u755_reviewer_decision_engine.py).
+- [ ] Drift fixes booked as units: ~~U-760 (refuse multi-line emailed bill approvals)~~ DONE 2026-11-05 (switch removed), U-761 (bill recount under lock + clear 400/409 instead of 500 for SCC id None / stale ROWVERSION / StatusLocked on the emailed path), U-762 (bill emailed route request model). Each removes a drift switch from `ReviewerDecisionSpec` and its row in `SWITCHES` (tests/test_u755_reviewer_decision_engine.py).
 - [ ] (Pass 2, DEFER) The seven per-entity hook lambdas follow a `*_{parent}_id` naming pattern; derive them by name only once a third entity (BillCredit?) joins, with a contract test.
 - [ ] (Pass 2, DEFER) Let the engine build `apply_error` from `review_decision_apply_error` + `spec.parent`; first decide whether tests should keep importing `_bill_review_decision_apply_error`.
 - [ ] (Pass 2, DEFER) Path A uses `read_all()` + filter while Path B uses `get_approved_status()` / `get_declined_statuses()`; unify with the drift units (the goldens pin the current calls).

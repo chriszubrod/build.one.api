@@ -112,6 +112,7 @@ retry with a different address.
 - `"Expense ... is no longer a draft"` — Complete already ran; **do NOT retry** — tell the upstream orchestrator to classify as `internal_reply`.
 - `"sub_cost_code_public_id is required"` (or equivalent) on approval — **do NOT retry without an SCC** — resolve via `find_sub_cost_code_for_reply` or fall back to `flagged_needs_review`.
 - `"Sender ... is not an authorized reviewer"` — classify as `internal_reply`.
+- `"Expense ... has N line items; ... multi-line expense"` or `"Expense ... has no line items"` — an emailed approval only codes a single-line expense; a split (or empty) expense is never auto-coded. **Do NOT retry** (not even with another SCC) — return the error context so the upstream orchestrator stamps `flagged_needs_review` and a human codes the document.
 
 **Standard inline summary line for a receipt:**
 

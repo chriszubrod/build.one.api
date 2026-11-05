@@ -47,7 +47,9 @@ def test_transactional_reviewer_decision_refuses_holding_scc_before_write():
     bli.update_coding_in_transaction.assert_not_called()
 
 
-def test_apply_reviewer_decision_refuses_when_other_line_stays_on_holding():
+def test_apply_reviewer_decision_refuses_a_multi_line_bill_even_with_other_line_on_holding():
+    """U-760: the emailed path no longer codes line_items[0] of a multi-line bill
+    and holding-checks the rest — it refuses any bill without exactly one line."""
     from entities.bill.business.service import BillService
     from tests.conftest import actor_context
 
@@ -75,13 +77,15 @@ def test_apply_reviewer_decision_refuses_when_other_line_stays_on_holding():
             "to": [SimpleNamespace(email="pm@x.com", user_id=5)],
             "cc": [],
         }
-        with pytest.raises(HoldingCodeRefused):
+        with pytest.raises(ValueError, match="has 2 line items") as exc:
             svc.apply_reviewer_decision(
                 bill_public_id="b1",
                 decision="approved",
                 reviewer_email="pm@x.com",
                 sub_cost_code_public_id="scc-pub",
             )
+        assert not isinstance(exc.value, HoldingCodeRefused)
+        bli_cls.return_value.update_coding_in_transaction.assert_not_called()
 
 
 def test_review_fast_path_refuses_holding_lines_on_bill():

@@ -448,8 +448,9 @@ def apply_reviewer_decision_router(
     Wave 3 — invoked by the bill_specialist agent when delegated from
     email_specialist for a `reviewer_reply`. The orchestrator validates
     the bill is still draft, authorizes the sender against the same
-    recipient set the notification targeted, updates the summary
-    BillLineItem on approval (sub_cost_code + description), and
+    recipient set the notification targeted, codes the bill's ONE
+    BillLineItem on approval (sub_cost_code + description) — a multi-line
+    or zero-line bill is refused (U-760), never auto-coded — and
     transitions the Review state (advance for approval, decline for
     rejection) with `raw_reply_text` persisted in `Review.Comments`.
 
@@ -457,7 +458,7 @@ def apply_reviewer_decision_router(
       decision:                'approved' | 'rejected'
       reviewer_email:          string (must match a PM/Owner on the bill's project)
       sub_cost_code_public_id: string  (required when decision='approved')
-      description:             string  (optional; updates the summary line's description)
+      description:             string  (optional; updates the single line's description)
       raw_reply_text:          string  (the PM's reply body, for audit)
 
     Errors are returned as ValueError → HTTP 400 with a descriptive

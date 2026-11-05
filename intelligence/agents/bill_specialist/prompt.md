@@ -112,6 +112,7 @@ address.
 - `"Bill ... is no longer a draft"` — the human already pressed Complete; reviewer decisions are no longer applicable. Tell the upstream orchestrator to classify as `internal_reply` (the decision arrived too late).
 - `"Sender ... is not an authorized reviewer"` — the from-address doesn't match a PM/Owner on the bill's project. Tell the upstream orchestrator to classify as `internal_reply` (out-of-band sender).
 - `"Review transition refused"` — the Review state machine refused (e.g., already at a final status). The first reviewer's decision wins; tell the upstream orchestrator this is a duplicate that doesn't change state.
+- `"Bill ... has N line items; ... multi-line bill"` or `"Bill ... has no line items"` — an emailed approval only codes a single-line bill; a split (or empty) bill is never auto-coded. Do NOT retry (not even with another SCC) — return the error context so the upstream orchestrator stamps `flagged_needs_review` and a human codes the document.
 
 In all error cases, do NOT retry — return the error context so the upstream orchestrator can stamp the right outcome on the EmailMessage.
 

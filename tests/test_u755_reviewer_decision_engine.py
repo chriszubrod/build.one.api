@@ -19,8 +19,8 @@ from entities.expense.business.service import ExpenseService
 from entities.review.business import reviewer_decision
 
 SWITCHES = {
-    BillService: ("first_plus_holding_check", False, True),
-    ExpenseService: ("sole", True, False),
+    BillService: (False, True),
+    ExpenseService: (True, False),
 }
 
 
@@ -28,14 +28,17 @@ SWITCHES = {
 def test_each_entity_keeps_its_own_drift_switches(svc_cls):
     spec = svc_cls(repo=MagicMock())._reviewer_decision_spec()
     assert (
-        spec.emailed_line_policy,
         spec.emailed_recount_under_lock,
         spec.emailed_fresh_status_service_for_readback,
     ) == SWITCHES[svc_cls]
 
 
-def test_bill_spec_carries_the_other_line_holding_check():
-    assert BillService(repo=MagicMock())._reviewer_decision_spec().assert_no_holding_sub_cost_codes is not None
+def test_emailed_line_policy_is_no_longer_a_switch():
+    # U-760: both entities code a single-line parent only; the Bill-only
+    # "first line + other-line holding check" policy and its hook are gone.
+    fields = set(reviewer_decision.ReviewerDecisionSpec.__dataclass_fields__)
+    assert "emailed_line_policy" not in fields
+    assert "assert_no_holding_sub_cost_codes" not in fields
 
 
 @pytest.mark.parametrize(

@@ -208,10 +208,10 @@ def test_from_db_reads_created_flag_tri_state():
     assert repo._from_db(_row()).created is None  # older sproc body: no [Created] column
 
 
-def test_response_schema_does_not_expose_created():
-    # The route returns item_response(TimeEntry.to_dict()); the wire shape must not grow.
-    assert "created" not in _entry(created=False).to_dict()
-    assert "created" not in _entry(created=True).to_dict()
+def test_to_dict_exposes_created_only_when_known():
+    assert "created" not in _entry(created=None).to_dict()
+    assert _entry(created=True).to_dict()["created"] is True
+    assert _entry(created=False).to_dict()["created"] is False
 
 
 def _svc(created=True, entry_id=7):

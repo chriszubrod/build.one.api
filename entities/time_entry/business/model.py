@@ -29,7 +29,7 @@ class TimeEntry:
     # U-624a: set by CreateTimeEntry (find-or-create). True/False = the sproc wrote (or
     # healed) the 'draft' status row; False = an existing header for (user_id, work_date)
     # was returned. None = the row came from a sproc body without [Created] (pre-U-624a)
-    # and the caller must write the 'draft' status. Internal only -- never serialized.
+    # and the caller must write the 'draft' status. Serialized only when True/False (create path); None is dropped.
     created: Optional[bool] = True
 
     @property
@@ -47,9 +47,13 @@ class TimeEntry:
         return None
 
     def to_dict(self) -> dict:
-        """Convert the time entry dataclass to a dictionary (wire shape; `created` is internal)."""
+        """Convert the time entry dataclass to a dictionary.
+
+        `created` is on the wire only on the create path (True/False); reads omit it.
+        """
         data = asdict(self)
-        data.pop("created", None)
+        if data.get("created") is None:
+            data.pop("created", None)
         return data
 
 

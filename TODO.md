@@ -22,7 +22,7 @@ builder ×3 (SCOPE CLEAN); Pass 1 Opus F2 + adversarial twin r1 CHANGES-REQUESTE
 sproc transaction; impersonation on the found branch; deploy order) → r2 CHANGES-REQUESTED (tri-state `created`: image-first was unsafe too) → r3 PASS;
 Pass 2 3 takes; Pass 3 PASS on six attack goals (+ platform finding → **U-766**: `can_view_team` set in a SYNC dependency is discarded).
 
-- [ ] **⚠️ DEPLOY ORDER (Gate 2): API image FIRST, then apply the SQL** (`./.venv/bin/python scripts/run_sql.py entities/time_entry/sql/dbo.time_entry.sql`
+- [ ] **⚠️ DEPLOY ORDER (Gate 2): API image FIRST, then apply the SQL** — the image also carries **U-624a-f1** `a4a1552a` (`created: true|false` on the create path's 201 body, None stays off; the iOS U-772 cancel-after-POST path keys on it). (`./.venv/bin/python scripts/run_sql.py entities/time_entry/sql/dbo.time_entry.sql`
   from the repo root). SQL-first re-opens submitted/approved days (old service writes 'draft' on every found header). Immediately before the apply: re-run the
   July+ duplicate census (the index refuses to build over a twin) and `sys.sql_modules` SET-options check. **Rollback: revert the sproc body BEFORE any image
   rollback.** After the apply: recount the duplicate census by DISTINCT id (a find is still a `time_entry_create` workflow). `[U-624a follow-up]`

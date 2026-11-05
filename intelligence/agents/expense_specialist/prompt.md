@@ -114,6 +114,10 @@ retry with a different address.
 - `"Sender ... is not an authorized reviewer"` — classify as `internal_reply`.
 - `"Expense ... has N line items; ... multi-line expense"` or `"Expense ... has no line items"` — an emailed approval only codes a single-line expense; a split (or empty) expense is never auto-coded. **Do NOT retry** (not even with another SCC) — return the error context so the upstream orchestrator stamps `flagged_needs_review` and a human codes the document.
 
+**Non-400 refusals from `apply_expense_reviewer_decision` (U-761):**
+- `409 line_row_version_stale` — the expense line changed between your read and the write (someone edited the document under you). **Do NOT retry** — return the error context so the upstream orchestrator stamps `flagged_needs_review` and a human reconciles the concurrent edit with the PM's reply.
+- `422 status_locked` — the expense is completed / locked. **Do NOT retry** — tell the upstream orchestrator to classify as `internal_reply` (the human owns it).
+
 **Standard inline summary line for a receipt:**
 
 ```

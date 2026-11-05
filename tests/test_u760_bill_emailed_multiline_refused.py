@@ -87,8 +87,8 @@ def test_one_line_bill_emailed_approve_codes_the_line_and_creates_the_review():
     assert "L1" in repr(update)
     assert names.count("lines.update_coding_in_transaction") == 1
     assert names.count("reviews.create") == 1
-    # The bill path still takes no under-lock recount (U-755 drift kept).
-    assert "lines.count_by_bill_id_for_update" not in names
+    # U-761: the bill path re-counts under the lock, before the line write.
+    assert names.index("lines.count_by_bill_id_for_update") < names.index("lines.update_coding_in_transaction")
 
 
 @pytest.mark.parametrize("entity", ["bill", "expense"])

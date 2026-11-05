@@ -1413,10 +1413,9 @@ class BillService:
             sub_cost_code_service=SubCostCodeService,
             assert_may_act_as=assert_may_act_as,
             logger=logger,
-            # Drift preserved (U-755): no under-lock recount; fresh
-            # ReviewStatusService for the status-name readback. (U-760: the
-            # emailed path codes a single-line bill only, like Expense.)
-            emailed_recount_under_lock=False,
+            # Drift preserved (U-755): fresh ReviewStatusService for the
+            # status-name readback. (U-760: the emailed path codes a single-line
+            # bill only, like Expense; U-761: and re-counts under the lock.)
             emailed_fresh_status_service_for_readback=True,
         )
 

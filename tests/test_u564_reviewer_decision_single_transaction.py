@@ -469,6 +469,7 @@ def test_bill_created_by_is_authenticated_caller_user_id_is_reviewer(
     svc = _bill_service_stub()
     _wire_bill_recipients(RecipSvc)
     BliSvc.return_value.read_by_bill_id.return_value = [_bill_line()]
+    BliSvc.return_value.count_by_bill_id_for_update.return_value = 1  # U-761 under-lock recount
     SccSvc.return_value.read_by_public_id.return_value = SimpleNamespace(id=9001)
     _wire_review_status(RsSvc)
     ReviewRepo.return_value.read_current_by_bill_id_for_update.return_value = None
@@ -684,6 +685,7 @@ class _FakeCM:
 def _real_chain(monkeypatch, *, service_module, line_repo_module, fail_on="CreateReview"):
     rows = {
         "CountExpenseLineItemsByExpenseIdForUpdate": SimpleNamespace(LineCount=1),
+        "CountBillLineItemsByBillIdForUpdate": SimpleNamespace(LineCount=1),  # U-761
         "UpdateExpenseLineItemById": SimpleNamespace(),
         "UpdateBillLineItemById": SimpleNamespace(),
     }

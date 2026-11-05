@@ -798,7 +798,14 @@ apply_expense_reviewer_decision = Tool(
         "`flagged_needs_review`, or classify the email as "
         "`internal_reply` if the expense is no longer a draft (Complete "
         "already pressed — do NOT retry; the human owns the record once "
-        "`complete_expense` runs)."
+        "`complete_expense` runs).\n\n"
+        "Two non-400 refusals (U-761): 409 `line_row_version_stale` — the "
+        "expense line changed under you (a concurrent edit); do NOT retry — "
+        "return the error so the orchestrator stamps `flagged_needs_review` "
+        "and a human reconciles the edit with the PM's reply. "
+        "422 `status_locked` — the expense is "
+        "completed / locked; do NOT retry — classify as `internal_reply` "
+        "(the human owns it)."
     ),
     input_schema=input_schema_from(ApplyExpenseReviewerDecisionArgs),
     handler=_apply_expense_reviewer_decision,

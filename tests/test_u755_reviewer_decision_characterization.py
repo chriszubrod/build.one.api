@@ -511,6 +511,7 @@ SYNC_CASES = ["ok", "not_found", "not_draft", "draft_none", "no_thread", "copy_e
 def _apply_case(entity, case):
     import importlib
 
+    from entities.review.business.decision_errors import review_decision_apply_error
     from shared.lifecycle.completion_gate import HoldingCodeRefused
 
     r = ROUTES[entity]
@@ -523,6 +524,11 @@ def _apply_case(entity, case):
         "identity": IdentityAssertionRefused("not you"),
         "provenance": ReviewerProvenanceRefused("not on thread"),
         "status_locked": StatusLockedError("done"),
+        # U-761: the engine's mapped refusals reach the emailed routes as these.
+        "apply_error_stale": review_decision_apply_error("line_row_version_stale", parent=entity),
+        "apply_error_locked": review_decision_apply_error(
+            "status_locked", status_code=422, detail=str(StatusLockedError("done")), parent=entity
+        ),
     }
     try:
         with patch.object(router_mod, r["svc"]) as svc:
@@ -547,7 +553,7 @@ def _apply_case(entity, case):
         app.dependency_overrides.pop(dep, None)
 
 
-APPLY_CASES = ["ok", "value_error", "holding", "identity", "provenance", "status_locked"]
+APPLY_CASES = ["ok", "value_error", "holding", "identity", "provenance", "status_locked", "apply_error_stale", "apply_error_locked"]
 
 
 def compute_routes():
@@ -625,6 +631,7 @@ GOLDEN = {'bill:a_approve': {'calls': [['service.read_by_public_id', {'public_id
                               ['reviews.read_current_by_bill_id_for_update',
                                [10],
                                {'conn': '<conn1>'}],
+                              ['lines.count_by_bill_id_for_update', [10], {'conn': '<conn1>'}],
                               ['lines.update_coding_in_transaction',
                                [],
                                {'conn': '<conn1>',
@@ -677,6 +684,9 @@ GOLDEN = {'bill:a_approve': {'calls': [['service.read_by_public_id', {'public_id
                                         ['new ReviewRepository', [], {}],
                                         ['get_connection.enter', 'conn1'],
                                         ['reviews.read_current_by_bill_id_for_update',
+                                         [10],
+                                         {'conn': '<conn1>'}],
+                                        ['lines.count_by_bill_id_for_update',
                                          [10],
                                          {'conn': '<conn1>'}],
                                         ['lines.update_coding_in_transaction',
@@ -741,6 +751,9 @@ GOLDEN = {'bill:a_approve': {'calls': [['service.read_by_public_id', {'public_id
                                            ['reviews.read_current_by_bill_id_for_update',
                                             [10],
                                             {'conn': '<conn1>'}],
+                                           ['lines.count_by_bill_id_for_update',
+                                            [10],
+                                            {'conn': '<conn1>'}],
                                            ['lines.update_coding_in_transaction',
                                             [],
                                             {'conn': '<conn1>',
@@ -765,10 +778,11 @@ GOLDEN = {'bill:a_approve': {'calls': [['service.read_by_public_id', {'public_id
                                            'INFO',
                                            'U-459: reviewer decision on bill applied BY THE AGENT '
                                            'ON THEIR BEHALF (reviewer user_id=20)']],
-                                 'outcome': {'detail': None,
-                                             'error_code': None,
-                                             'raised': 'StatusLockedError',
-                                             'status_code': None,
+                                 'outcome': {'detail': 'This document is completed and can no '
+                                                       'longer be edited: parent completed',
+                                             'error_code': 'status_locked',
+                                             'raised': 'ReviewDecisionApplyError',
+                                             'status_code': 422,
                                              'str': 'This document is completed and can no longer '
                                                     'be edited: parent completed'}},
  'bill:a_created_status_id_none': {'calls': [['service.read_by_public_id', {'public_id': 'PID-1'}],
@@ -794,6 +808,9 @@ GOLDEN = {'bill:a_approve': {'calls': [['service.read_by_public_id', {'public_id
                                              ['new ReviewRepository', [], {}],
                                              ['get_connection.enter', 'conn1'],
                                              ['reviews.read_current_by_bill_id_for_update',
+                                              [10],
+                                              {'conn': '<conn1>'}],
+                                             ['lines.count_by_bill_id_for_update',
                                               [10],
                                               {'conn': '<conn1>'}],
                                              ['lines.update_coding_in_transaction',
@@ -953,6 +970,9 @@ GOLDEN = {'bill:a_approve': {'calls': [['service.read_by_public_id', {'public_id
                                      ['reviews.read_current_by_bill_id_for_update',
                                       [10],
                                       {'conn': '<conn1>'}],
+                                     ['lines.count_by_bill_id_for_update',
+                                      [10],
+                                      {'conn': '<conn1>'}],
                                      ['lines.update_coding_in_transaction',
                                       [],
                                       {'conn': '<conn1>',
@@ -1029,37 +1049,22 @@ GOLDEN = {'bill:a_approve': {'calls': [['service.read_by_public_id', {'public_id
                                             ['reviews.read_current_by_bill_id_for_update',
                                              [10],
                                              {'conn': '<conn1>'}],
-                                            ['lines.update_coding_in_transaction',
-                                             [],
-                                             {'conn': '<conn1>',
-                                              'description': 'New desc',
-                                              'line_item': '<L1>',
-                                              'row_version': 'RV1',
-                                              'sub_cost_code_id': 7}],
-                                            ['reviews.create',
-                                             [],
-                                             {'bill_credit_id': None,
-                                              'bill_id': 10,
-                                              'comments': 'Looks good',
-                                              'conn': '<conn1>',
-                                              'created_by_user_id': 77,
-                                              'email_message_id': 555,
-                                              'expense_id': None,
-                                              'invoice_id': None,
-                                              'review_status_id': 2,
-                                              'user_id': 20}],
-                                            ['get_connection.exit', 'conn1', None],
-                                            ['new ReviewStatusService', [], {}],
-                                            ['statuses.read_by_id', [], {'id': 2}]],
+                                            ['lines.count_by_bill_id_for_update',
+                                             [10],
+                                             {'conn': '<conn1>'}],
+                                            ['get_connection.exit', 'conn1', 'ValueError']],
                                   'logs': [['entities.bill.business.service',
                                             'INFO',
                                             'U-459: reviewer decision on bill applied BY THE AGENT '
                                             'ON THEIR BEHALF (reviewer user_id=20)']],
-                                  'outcome': {'returned': {'bill_public_id': 'PID-1',
-                                                           'decision_applied': 'approved',
-                                                           'is_draft': True,
-                                                           'review_status': 'Approved',
-                                                           'reviewer_user_id': 20}}},
+                                  'outcome': {'detail': None,
+                                              'error_code': None,
+                                              'raised': 'ValueError',
+                                              'status_code': None,
+                                              'str': 'Bill PID-1 has 2 line items; a reviewer '
+                                                     'decision cannot be auto-applied to a '
+                                                     'multi-line bill (would stamp one cost code '
+                                                     'over a manual split).'}},
  'bill:a_non_draft': {'calls': [['service.read_by_public_id', {'public_id': 'PID-1'}]],
                       'logs': [],
                       'outcome': {'detail': None,
@@ -1089,6 +1094,9 @@ GOLDEN = {'bill:a_approve': {'calls': [['service.read_by_public_id', {'public_id
                                     ['new ReviewRepository', [], {}],
                                     ['get_connection.enter', 'conn1'],
                                     ['reviews.read_current_by_bill_id_for_update',
+                                     [10],
+                                     {'conn': '<conn1>'}],
+                                    ['lines.count_by_bill_id_for_update',
                                      [10],
                                      {'conn': '<conn1>'}],
                                     ['lines.update_coding_in_transaction',
@@ -1174,6 +1182,9 @@ GOLDEN = {'bill:a_approve': {'calls': [['service.read_by_public_id', {'public_id
                                       ['reviews.read_current_by_bill_id_for_update',
                                        [10],
                                        {'conn': '<conn1>'}],
+                                      ['lines.count_by_bill_id_for_update',
+                                       [10],
+                                       {'conn': '<conn1>'}],
                                       ['lines.update_coding_in_transaction',
                                        [],
                                        {'conn': '<conn1>',
@@ -1233,6 +1244,9 @@ GOLDEN = {'bill:a_approve': {'calls': [['service.read_by_public_id', {'public_id
                                                 ['reviews.read_current_by_bill_id_for_update',
                                                  [10],
                                                  {'conn': '<conn1>'}],
+                                                ['lines.count_by_bill_id_for_update',
+                                                 [10],
+                                                 {'conn': '<conn1>'}],
                                                 ['lines.update_coding_in_transaction',
                                                  [],
                                                  {'conn': '<conn1>',
@@ -1242,16 +1256,18 @@ GOLDEN = {'bill:a_approve': {'calls': [['service.read_by_public_id', {'public_id
                                                   'sub_cost_code_id': 7}],
                                                 ['get_connection.exit',
                                                  'conn1',
-                                                 'DatabaseConcurrencyError']],
+                                                 'ReviewDecisionApplyError']],
                                       'logs': [['entities.bill.business.service',
                                                 'INFO',
                                                 'U-459: reviewer decision on bill applied BY THE '
                                                 'AGENT ON THEIR BEHALF (reviewer user_id=20)']],
-                                      'outcome': {'detail': None,
-                                                  'error_code': None,
-                                                  'raised': 'DatabaseConcurrencyError',
-                                                  'status_code': None,
-                                                  'str': 'row moved'}},
+                                      'outcome': {'detail': 'The bill line was updated by someone '
+                                                            'else; refetch and re-present.',
+                                                  'error_code': 'line_row_version_stale',
+                                                  'raised': 'ReviewDecisionApplyError',
+                                                  'status_code': 409,
+                                                  'str': 'The bill line was updated by someone '
+                                                         'else; refetch and re-present.'}},
  'bill:a_scc_holding': {'calls': [['service.read_by_public_id', {'public_id': 'PID-1'}],
                                   ['new ReviewRecipientService', [], {}],
                                   ['recipients.resolve_for_bill', [], {'bill_id': 10}],
@@ -1299,10 +1315,9 @@ GOLDEN = {'bill:a_approve': {'calls': [['service.read_by_public_id', {'public_id
                                   'BEHALF (reviewer user_id=20)']],
                         'outcome': {'detail': None,
                                     'error_code': None,
-                                    'raised': 'TypeError',
+                                    'raised': 'ValueError',
                                     'status_code': None,
-                                    'str': 'int() argument must be a string, a bytes-like object '
-                                           "or a real number, not 'NoneType'"}},
+                                    'str': "SubCostCode with public_id 'SCC-PID' not found."}},
  'bill:a_scc_missing': {'calls': [['service.read_by_public_id', {'public_id': 'PID-1'}],
                                   ['new ReviewRecipientService', [], {}],
                                   ['recipients.resolve_for_bill', [], {'bill_id': 10}],
@@ -2972,10 +2987,11 @@ GOLDEN = {'bill:a_approve': {'calls': [['service.read_by_public_id', {'public_id
                                               'INFO',
                                               'U-459: reviewer decision on expense applied BY THE '
                                               'AGENT ON THEIR BEHALF (reviewer user_id=20)']],
-                                    'outcome': {'detail': None,
-                                                'error_code': None,
-                                                'raised': 'StatusLockedError',
-                                                'status_code': None,
+                                    'outcome': {'detail': 'This document is completed and can no '
+                                                          'longer be edited: parent completed',
+                                                'error_code': 'status_locked',
+                                                'raised': 'ReviewDecisionApplyError',
+                                                'status_code': 422,
                                                 'str': 'This document is completed and can no '
                                                        'longer be edited: parent completed'}},
  'expense:a_created_status_id_none': {'calls': [['service.read_by_public_id',
@@ -3463,17 +3479,21 @@ GOLDEN = {'bill:a_approve': {'calls': [['service.read_by_public_id', {'public_id
                                                      'sub_cost_code_id': 7}],
                                                    ['get_connection.exit',
                                                     'conn1',
-                                                    'DatabaseConcurrencyError']],
+                                                    'ReviewDecisionApplyError']],
                                          'logs': [['entities.expense.business.service',
                                                    'INFO',
                                                    'U-459: reviewer decision on expense applied BY '
                                                    'THE AGENT ON THEIR BEHALF (reviewer '
                                                    'user_id=20)']],
-                                         'outcome': {'detail': None,
-                                                     'error_code': None,
-                                                     'raised': 'DatabaseConcurrencyError',
-                                                     'status_code': None,
-                                                     'str': 'row moved'}},
+                                         'outcome': {'detail': 'The expense line was updated by '
+                                                               'someone else; refetch and '
+                                                               're-present.',
+                                                     'error_code': 'line_row_version_stale',
+                                                     'raised': 'ReviewDecisionApplyError',
+                                                     'status_code': 409,
+                                                     'str': 'The expense line was updated by '
+                                                            'someone else; refetch and '
+                                                            're-present.'}},
  'expense:a_scc_holding': {'calls': [['service.read_by_public_id', {'public_id': 'PID-1'}],
                                      ['new ReviewRecipientService', [], {}],
                                      ['recipients.resolve_for_expense', [], {'expense_id': 10}],
@@ -3525,10 +3545,9 @@ GOLDEN = {'bill:a_approve': {'calls': [['service.read_by_public_id', {'public_id
                                      'THEIR BEHALF (reviewer user_id=20)']],
                            'outcome': {'detail': None,
                                        'error_code': None,
-                                       'raised': 'TypeError',
+                                       'raised': 'ValueError',
                                        'status_code': None,
-                                       'str': 'int() argument must be a string, a bytes-like '
-                                              "object or a real number, not 'NoneType'"}},
+                                       'str': "SubCostCode with public_id 'SCC-PID' not found."}},
  'expense:a_scc_missing': {'calls': [['service.read_by_public_id', {'public_id': 'PID-1'}],
                                      ['new ReviewRecipientService', [], {}],
                                      ['recipients.resolve_for_expense', [], {'expense_id': 10}],
@@ -5157,7 +5176,29 @@ GOLDEN = {'bill:a_approve': {'calls': [['service.read_by_public_id', {'public_id
                                       'status_code': None,
                                       'str': 'Expense PID-1 has no line items; a reviewer decision '
                                              'cannot be applied.'}}}
-ROUTE_GOLDEN = {'apply:bill:holding': {'body': {'detail': 'suspense', 'error_code': 'holding_code'},
+ROUTE_GOLDEN = {'apply:bill:apply_error_locked': {'body': {'detail': 'This document is completed and can no '
+                                                      'longer be edited: done',
+                                            'error_code': 'status_locked'},
+                                   'kwargs': [{'bill_public_id': 'PID-1',
+                                               'decision': 'approved',
+                                               'description': 'd',
+                                               'raw_reply_text': 't',
+                                               'reviewer_email': 'pm@example.com',
+                                               'reviewer_email_message_public_id': 'MSG',
+                                               'sub_cost_code_public_id': 'SCC'}],
+                                   'status': 422},
+ 'apply:bill:apply_error_stale': {'body': {'detail': 'The bill line was updated by someone else; '
+                                                     'refetch and re-present.',
+                                           'error_code': 'line_row_version_stale'},
+                                  'kwargs': [{'bill_public_id': 'PID-1',
+                                              'decision': 'approved',
+                                              'description': 'd',
+                                              'raw_reply_text': 't',
+                                              'reviewer_email': 'pm@example.com',
+                                              'reviewer_email_message_public_id': 'MSG',
+                                              'sub_cost_code_public_id': 'SCC'}],
+                                  'status': 409},
+ 'apply:bill:holding': {'body': {'detail': 'suspense', 'error_code': 'holding_code'},
                         'kwargs': [{'bill_public_id': 'PID-1',
                                     'decision': 'approved',
                                     'description': 'd',
@@ -5212,6 +5253,28 @@ ROUTE_GOLDEN = {'apply:bill:holding': {'body': {'detail': 'suspense', 'error_cod
                                         'reviewer_email_message_public_id': 'MSG',
                                         'sub_cost_code_public_id': 'SCC'}],
                             'status': 400},
+ 'apply:expense:apply_error_locked': {'body': {'detail': 'This document is completed and can no '
+                                                         'longer be edited: done',
+                                               'error_code': 'status_locked'},
+                                      'kwargs': [{'decision': 'approved',
+                                                  'description': 'd',
+                                                  'expense_public_id': 'PID-1',
+                                                  'raw_reply_text': 't',
+                                                  'reviewer_email': 'pm@example.com',
+                                                  'reviewer_email_message_public_id': 'MSG',
+                                                  'sub_cost_code_public_id': 'SCC'}],
+                                      'status': 422},
+ 'apply:expense:apply_error_stale': {'body': {'detail': 'The expense line was updated by someone '
+                                                        'else; refetch and re-present.',
+                                              'error_code': 'line_row_version_stale'},
+                                     'kwargs': [{'decision': 'approved',
+                                                 'description': 'd',
+                                                 'expense_public_id': 'PID-1',
+                                                 'raw_reply_text': 't',
+                                                 'reviewer_email': 'pm@example.com',
+                                                 'reviewer_email_message_public_id': 'MSG',
+                                                 'sub_cost_code_public_id': 'SCC'}],
+                                     'status': 409},
  'apply:expense:holding': {'body': {'detail': 'suspense', 'error_code': 'holding_code'},
                            'kwargs': [{'decision': 'approved',
                                        'description': 'd',

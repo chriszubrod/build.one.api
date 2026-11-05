@@ -1,10 +1,14 @@
-"""HTTP-mappable refusals for transactional POST /apply/review-decision/* (U-541/U-551b)."""
+"""HTTP-mappable refusals for the reviewer-decision routes: transactional
+POST /apply/review-decision/* (U-541/U-551b) and the emailed
+apply-reviewer-decision routes (U-761)."""
 
 from __future__ import annotations
 
+from shared.api.errors import ApiError
+
 
 class ReviewDecisionApplyError(Exception):
-    """HTTP-mappable refusal for transactional reviewer edit-and-decide routes."""
+    """HTTP-mappable refusal for the reviewer-decision routes (transactional and emailed)."""
 
     def __init__(self, *, status_code: int, detail: str, error_code: str):
         self.status_code = status_code
@@ -50,4 +54,14 @@ def review_decision_apply_error(
         status_code=status_code,
         detail=detail,
         error_code=error_code,
+    )
+
+
+def review_decision_api_error(err: ReviewDecisionApplyError) -> ApiError:
+    """The one HTTP mapping of a reviewer-decision refusal: its status, detail and
+    error_code, verbatim. Shared by the transactional and the emailed routes."""
+    return ApiError(
+        status_code=err.status_code,
+        detail=err.detail,
+        error_code=err.error_code,
     )

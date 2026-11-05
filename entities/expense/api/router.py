@@ -45,6 +45,10 @@ from core.workflow.api.process_engine import ProcessEngine, TriggerContext, Even
 
 from entities.review.business.completion import gate_completion
 from entities.review.business.model import ParentType
+from entities.review.business.decision_errors import (
+    ReviewDecisionApplyError,
+    review_decision_api_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -694,6 +698,8 @@ def apply_reviewer_decision_router(
     row is attributed to the reviewer, not the caller.
 
     ValueError → HTTP 400. IdentityAssertionRefused → HTTP 403 (existing handler).
+    U-761: a stale line ROWVERSION → 409 `line_row_version_stale`; a
+    completed/locked expense → 422 `status_locked`.
     """
     try:
         result = ExpenseService().apply_reviewer_decision(
@@ -706,6 +712,10 @@ def apply_reviewer_decision_router(
             reviewer_email_message_public_id=body.reviewer_email_message_public_id,
         )
         return item_response(result)
+    except ReviewDecisionApplyError as error:
+        # U-761: stale line ROWVERSION -> 409 line_row_version_stale; terminal
+        # lock -> 422 status_locked (same mapping as the transactional route).
+        raise review_decision_api_error(error) from error
     except ValueError as error:
         raise HTTPException(
             status_code=http_status.HTTP_400_BAD_REQUEST, detail=str(error)

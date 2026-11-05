@@ -388,6 +388,7 @@ def test_bill_happy_path_review_row_carries_bound_message_id(
     BliSvc.return_value.read_by_bill_id.return_value = [
         SimpleNamespace(public_id="bli-1", row_version="rv")
     ]
+    BliSvc.return_value.count_by_bill_id_for_update.return_value = 1  # U-761 under-lock recount
     review_create = ReviewRepo.return_value.create
     review_create.return_value = SimpleNamespace(review_status_id=30)
 

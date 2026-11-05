@@ -907,7 +907,14 @@ apply_reviewer_decision = Tool(
         "line-count refusal above), fall back to "
         "`flagged_needs_review`, or classify the email as "
         "`internal_reply` if the bill is already Completed (the human "
-        "has the final word once `complete_bill` runs)."
+        "has the final word once `complete_bill` runs).\n\n"
+        "Two non-400 refusals (U-761): 409 `line_row_version_stale` — the "
+        "bill line changed under you (a concurrent edit); do NOT retry — "
+        "return the error so the orchestrator stamps `flagged_needs_review` "
+        "and a human reconciles the edit with the PM's reply. "
+        "422 `status_locked` — the bill is completed / "
+        "locked; do NOT retry — classify as `internal_reply` (the human "
+        "owns it)."
     ),
     input_schema=input_schema_from(ApplyReviewerDecisionArgs),
     handler=_apply_reviewer_decision,

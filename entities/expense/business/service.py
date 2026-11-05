@@ -1150,10 +1150,8 @@ class ExpenseService:
             sub_cost_code_service=SubCostCodeService,
             assert_may_act_as=assert_may_act_as,
             logger=logger,
-            # Drift preserved (U-755): re-counted under the lock (U-564); one
-            # ReviewStatusService serves both the target lookup and the
-            # status-name readback.
-            emailed_recount_under_lock=True,
+            # Drift preserved (U-755): one ReviewStatusService serves both the
+            # target lookup and the status-name readback.
             emailed_fresh_status_service_for_readback=False,
         )
 

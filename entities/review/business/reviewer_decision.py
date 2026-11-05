@@ -23,17 +23,19 @@ Path A codes the ONE line of a single-line parent and refuses anything else
 entities (U-760 retired Bill's old "code ``line_items[0]``, holding-check the
 others" policy; a reviewer decision never stamps one cost code over a split).
 
-The two entities still differ on Path A in two places, each kept as an explicit
-switch rather than silently unified:
+U-761 unified three more Path A behaviours with Path B, for both entities:
+the line count is re-checked under the lock (a line added since the fast path is
+refused, U-564); a sub cost code row with ``id=None`` is refused as not found;
+and a stale line ROWVERSION from the coding update (409 ``line_row_version_stale``)
+or a terminal-lock refusal (422 ``status_locked``) raises ``spec.apply_error``
+instead of escaping raw as a 500.
 
-* ``emailed_recount_under_lock`` — Expense re-counts its lines under the lock
-  (U-564) and refuses a line added since the fast path; Bill does not.
+The two entities still differ on Path A in one place, kept as an explicit switch
+rather than silently unified:
+
 * ``emailed_fresh_status_service_for_readback`` — Bill reads the new status name
   back through a fresh ``ReviewStatusService``; Expense reuses the one that
   resolved the target status.
-
-Also preserved as-is on Path A: an approval whose sub cost code row has
-``id=None`` reaches ``int(None)`` (TypeError) — Path B refuses it as not found.
 """
 
 from __future__ import annotations
@@ -78,8 +80,7 @@ class ReviewerDecisionSpec:
     assert_may_act_as: Callable[..., bool]
     logger: logging.Logger
 
-    # Path A drift switches (see module docstring).
-    emailed_recount_under_lock: bool
+    # Path A drift switch (see module docstring).
     emailed_fresh_status_service_for_readback: bool
 
     @property
@@ -112,13 +113,9 @@ def _read_parent_or_raise(spec: ReviewerDecisionSpec, public_id: str):
 def _resolve_approval_scc(
     spec: ReviewerDecisionSpec,
     sub_cost_code_public_id: Optional[str],
-    *,
-    id_none_is_missing: bool,
 ) -> tuple[Any, int]:
-    """Resolve the approval's sub cost code -> (scc, int id).
-
-    Path A checks only the row (`id_none_is_missing=False`, so a row with id None
-    reaches `int(None)`); Path B also refuses an id-less row as not found."""
+    """Resolve the approval's sub cost code -> (scc, int id); a missing row or an
+    id-less row is refused as not found (both paths, U-761)."""
     if not sub_cost_code_public_id:
         raise ValueError(
             "sub_cost_code_public_id is required when decision='approved'."
@@ -126,7 +123,7 @@ def _resolve_approval_scc(
     scc = spec.sub_cost_code_service().read_by_public_id(
         public_id=sub_cost_code_public_id
     )
-    if scc is None or (id_none_is_missing and scc.id is None):
+    if scc is None or scc.id is None:
         raise ValueError(
             f"SubCostCode with public_id '{sub_cost_code_public_id}' not found."
         )
@@ -137,6 +134,41 @@ def _holding_code_refusal(spec: ReviewerDecisionSpec) -> HoldingCodeRefused:
     return HoldingCodeRefused(
         f"This {spec.parent} cannot be approved while coded to the suspense "
         "sub cost code. Recode those lines first."
+    )
+
+
+def _update_line_coding(
+    spec: ReviewerDecisionSpec,
+    line_service,
+    *,
+    line_item,
+    row_version,
+    sub_cost_code_id: Optional[int],
+    description: Optional[str],
+    conn,
+) -> None:
+    """Recode the sole line in the caller's transaction; a stale ROWVERSION from
+    the sproc is a 409 ``line_row_version_stale`` (both paths)."""
+    try:
+        line_service.update_coding_in_transaction(
+            line_item=line_item,
+            row_version=row_version,
+            sub_cost_code_id=sub_cost_code_id,
+            description=description,
+            conn=conn,
+        )
+    except DatabaseConcurrencyError as exc:
+        raise spec.apply_error(ErrorCode.LINE_ROW_VERSION_STALE) from exc
+
+
+def _status_locked_error(
+    spec: ReviewerDecisionSpec, exc: StatusLockedError
+) -> ReviewDecisionApplyError:
+    """A terminal-lock refusal from the sprocs -> 422 ``status_locked`` (both paths)."""
+    return spec.apply_error(
+        ErrorCode.STATUS_LOCKED,
+        status_code=422,
+        detail=str(exc),
     )
 
 
@@ -286,9 +318,7 @@ def apply_emailed(
         line_items = spec.read_lines(line_service, parent.id)
         _refuse_unless_one_line(spec, public_id, len(line_items))
         target_line = line_items[0]
-        scc, scc_id = _resolve_approval_scc(
-            spec, sub_cost_code_public_id, id_none_is_missing=False
-        )
+        scc, scc_id = _resolve_approval_scc(spec, sub_cost_code_public_id)
         if getattr(scc, "is_holding_code", False):
             raise _holding_code_refusal(spec)
 
@@ -318,29 +348,33 @@ def apply_emailed(
     # Authenticated caller (agent vs PM self-serve) — user_id stays the reviewer.
     actor_user_id = current_user_id.get()
 
-    with spec.get_connection() as conn:
-        spec.lock_current_review(review_repo, parent.id, conn)
-        if decision == "approved":
-            if spec.emailed_recount_under_lock:
+    try:
+        with spec.get_connection() as conn:
+            spec.lock_current_review(review_repo, parent.id, conn)
+            if decision == "approved":
                 # Re-checked under the lock: a line added since the fast path above.
                 line_count = spec.count_lines_for_update(line_service, parent.id, conn)
                 _refuse_unless_one_line(spec, public_id, line_count)
-            line_service.update_coding_in_transaction(
-                line_item=target_line,
-                row_version=target_line.row_version,
-                sub_cost_code_id=scc_id,
-                description=description,
+                _update_line_coding(
+                    spec,
+                    line_service,
+                    line_item=target_line,
+                    row_version=target_line.row_version,
+                    sub_cost_code_id=scc_id,
+                    description=description,
+                    conn=conn,
+                )
+            new_review = review_repo.create(
+                review_status_id=target.id,
+                user_id=reviewer_user_id,
+                comments=comments,
+                **_create_review_kwargs(spec, parent.id),
+                email_message_id=email_message_id,
+                created_by_user_id=actor_user_id,
                 conn=conn,
             )
-        new_review = review_repo.create(
-            review_status_id=target.id,
-            user_id=reviewer_user_id,
-            comments=comments,
-            **_create_review_kwargs(spec, parent.id),
-            email_message_id=email_message_id,
-            created_by_user_id=actor_user_id,
-            conn=conn,
-        )
+    except StatusLockedError as exc:
+        raise _status_locked_error(spec, exc) from exc
 
     # Look up the new status name for the response payload.
     if new_review.review_status_id:
@@ -441,9 +475,7 @@ def apply_transactional(
     # read, lock or write (trunk order; the idempotent replay follows).
     scc_id: Optional[int] = None
     if decision == "approved":
-        scc, scc_id = _resolve_approval_scc(
-            spec, sub_cost_code_public_id, id_none_is_missing=True
-        )
+        scc, scc_id = _resolve_approval_scc(spec, sub_cost_code_public_id)
         if getattr(scc, "is_holding_code", False):
             raise _holding_code_refusal(spec)
 
@@ -499,16 +531,15 @@ def apply_transactional(
             if locked_line.row_version != line_row_version:
                 raise spec.apply_error(ErrorCode.LINE_ROW_VERSION_STALE)
             if decision == "approved":
-                try:
-                    line_service.update_coding_in_transaction(
-                        line_item=locked_line,
-                        row_version=line_row_version,
-                        sub_cost_code_id=scc_id,
-                        description=description,
-                        conn=conn,
-                    )
-                except DatabaseConcurrencyError as exc:
-                    raise spec.apply_error(ErrorCode.LINE_ROW_VERSION_STALE) from exc
+                _update_line_coding(
+                    spec,
+                    line_service,
+                    line_item=locked_line,
+                    row_version=line_row_version,
+                    sub_cost_code_id=scc_id,
+                    description=description,
+                    conn=conn,
+                )
             new_review = review_repo.create(
                 review_status_id=target.id,
                 user_id=caller_user_id,
@@ -530,11 +561,7 @@ def apply_transactional(
             return _replay(existing)
         raise
     except StatusLockedError as exc:
-        raise spec.apply_error(
-            ErrorCode.STATUS_LOCKED,
-            status_code=422,
-            detail=str(exc),
-        ) from exc
+        raise _status_locked_error(spec, exc) from exc
 
     return _payload_from_review(
         spec, public_id, new_review, replayed=False, review_status_name=target.name

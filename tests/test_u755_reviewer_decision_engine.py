@@ -19,18 +19,21 @@ from entities.expense.business.service import ExpenseService
 from entities.review.business import reviewer_decision
 
 SWITCHES = {
-    BillService: (False, True),
-    ExpenseService: (True, False),
+    BillService: (True,),
+    ExpenseService: (False,),
 }
 
 
 @pytest.mark.parametrize("svc_cls", [BillService, ExpenseService], ids=["bill", "expense"])
 def test_each_entity_keeps_its_own_drift_switches(svc_cls):
     spec = svc_cls(repo=MagicMock())._reviewer_decision_spec()
-    assert (
-        spec.emailed_recount_under_lock,
-        spec.emailed_fresh_status_service_for_readback,
-    ) == SWITCHES[svc_cls]
+    assert (spec.emailed_fresh_status_service_for_readback,) == SWITCHES[svc_cls]
+
+
+def test_unified_drifts_are_no_longer_switches():
+    # U-761: both entities re-count under the lock and refuse an id-less SCC.
+    assert "emailed_recount_under_lock" not in reviewer_decision.ReviewerDecisionSpec.__dataclass_fields__
+    assert "id_none_is_missing" not in inspect.signature(reviewer_decision._resolve_approval_scc).parameters
 
 
 def test_emailed_line_policy_is_no_longer_a_switch():

@@ -114,7 +114,11 @@ address.
 - `"Review transition refused"` — the Review state machine refused (e.g., already at a final status). The first reviewer's decision wins; tell the upstream orchestrator this is a duplicate that doesn't change state.
 - `"Bill ... has N line items; ... multi-line bill"` or `"Bill ... has no line items"` — an emailed approval only codes a single-line bill; a split (or empty) bill is never auto-coded. Do NOT retry (not even with another SCC) — return the error context so the upstream orchestrator stamps `flagged_needs_review` and a human codes the document.
 
-In all error cases, do NOT retry — return the error context so the upstream orchestrator can stamp the right outcome on the EmailMessage.
+**Non-400 refusals from `apply_reviewer_decision` (U-761):**
+- `409 line_row_version_stale` — the bill line changed between your read and the write (someone edited the document under you). Do NOT retry — return the error context so the upstream orchestrator stamps `flagged_needs_review` and a human reconciles the concurrent edit with the PM's reply.
+- `422 status_locked` — the bill is completed / locked. Do NOT retry — tell the upstream orchestrator to classify as `internal_reply` (the human owns it).
+
+In all other error cases, do NOT retry — return the error context so the upstream orchestrator can stamp the right outcome on the EmailMessage.
 
 # Invoice-number normalization
 

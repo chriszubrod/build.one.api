@@ -42,6 +42,10 @@ from core.workflow.api.process_engine import ProcessEngine, TriggerContext, Even
 
 from entities.review.business.completion import gate_completion
 from entities.review.business.model import ParentType
+from entities.review.business.decision_errors import (
+    ReviewDecisionApplyError,
+    review_decision_api_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -462,7 +466,9 @@ def apply_reviewer_decision_router(
       raw_reply_text:          string  (the PM's reply body, for audit)
 
     Errors are returned as ValueError → HTTP 400 with a descriptive
-    message the agent can read and recover from.
+    message the agent can read and recover from. U-761: a stale line
+    ROWVERSION → 409 `line_row_version_stale`; a completed/locked bill →
+    422 `status_locked`.
     """
     try:
         result = BillService().apply_reviewer_decision(
@@ -475,6 +481,10 @@ def apply_reviewer_decision_router(
             reviewer_email_message_public_id=body.get("reviewer_email_message_public_id"),
         )
         return item_response(result)
+    except ReviewDecisionApplyError as error:
+        # U-761: stale line ROWVERSION -> 409 line_row_version_stale; terminal
+        # lock -> 422 status_locked (same mapping as the transactional route).
+        raise review_decision_api_error(error) from error
     except ValueError as error:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
 

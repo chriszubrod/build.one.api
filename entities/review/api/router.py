@@ -26,7 +26,7 @@ from core.workflow.api.process_engine import (
     TriggerContext,
 )
 from shared.api.auth_user import resolve_user_id
-from shared.api.errors import ApiError, ErrorCode
+from shared.api.errors import ErrorCode
 from shared.api.responses import (
     item_response,
     list_response,
@@ -35,7 +35,10 @@ from shared.api.responses import (
 from entities.review_status.business.service import ReviewStatusShapeError
 from entities.bill.business.service import BillService
 from entities.expense.business.service import ExpenseService
-from entities.review.business.decision_errors import ReviewDecisionApplyError
+from entities.review.business.decision_errors import (
+    ReviewDecisionApplyError,
+    review_decision_api_error,
+)
 from shared.lifecycle.terminal_lock import StatusLockedError
 from shared.lifecycle.completion_gate import HoldingCodeRefused
 from shared.rbac import require_module_api
@@ -158,11 +161,7 @@ def _apply_transactional_review_decision(*, service_call):
     try:
         result = service_call()
     except ReviewDecisionApplyError as err:
-        raise ApiError(
-            status_code=err.status_code,
-            detail=err.detail,
-            error_code=err.error_code,
-        )
+        raise review_decision_api_error(err)
     except HoldingCodeRefused:
         # U-632: 422 holding_code, mapped by the app-level ApiError handler.
         raise

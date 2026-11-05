@@ -552,10 +552,14 @@ def test_unmapped_prefixes_match_the_expense_service_messages():
     import inspect
     from entities.expense.business.service import ExpenseService
     from integrations.ms.outbox.business.worker import _UNMAPPED_MESSAGE_PREFIXES
+    from shared.completion.sharepoint_fanout import upload_to_project_module_folder
+    # U-757a: the module-folder upload delegates to the shared engine, which now
+    # owns the "Module folder not linked for project" literal.
     source = (
         inspect.getsource(ExpenseService.sync_to_excel_workbook)
         + inspect.getsource(ExpenseService.sync_expenses_batch_to_excel)
         + inspect.getsource(ExpenseService._upload_attachments_to_module_folder)
+        + inspect.getsource(upload_to_project_module_folder)
     )
     for prefix in _UNMAPPED_MESSAGE_PREFIXES:
         assert prefix in source, f"ExpenseService no longer emits {prefix!r}"

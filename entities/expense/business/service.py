@@ -1877,129 +1877,73 @@ class ExpenseService:
         """Upload attachments to SharePoint module folder. Mirrors Bill
         _upload_attachments_to_module_folder, including its per-FILE counting:
         an attachment shared by several line items is one upload and counts once.
+
+        The engine is `shared/completion/sharepoint_fanout.py` (U-757a). The MS
+        outbox worker (`_handle_expense_pull_fanout`) keys on this method's
+        message / error STRINGS, and the outbox idempotency guard on the filename
+        below — both must stay byte-identical.
         """
-        try:
-            if self._expense_has_holding_line(expense, line_items):
-                return _holding_deferred_upload_result()
-            module = self.module_service.read_by_name("Expenses") or self.module_service.read_by_name("Expense")
-            if not module:
-                return {"success": False, "message": "Expense module not found — ensure a module named 'Expenses' exists", "synced_count": 0, "skipped_count": 0, "errors": [{"error": "Expense module not found"}]}
-            module_folder = self.project_module_connector.get_folder_for_module(project_id=project_id, module_id=int(module.id))
-            if not module_folder:
-                _record_project_mapping_missing_ms_issue(
-                    entity_type="Expense",
-                    entity_public_id=str(expense.public_id),
-                    project_id=project_id,
-                    mapping_kind="module_folder",
-                    details=f"Module folder not linked for project {project_id}",
-                )
-                return {"success": False, "message": f"Module folder not linked for project {project_id}", "synced_count": 0, "skipped_count": 0, "errors": [{"error": f"Module folder not linked for project {project_id}"}]}
-            folder_ms_drive_id = module_folder.get("ms_drive_id")
-            folder_item_id = module_folder.get("item_id")
-            if not folder_ms_drive_id or not folder_item_id:
-                return {"success": False, "message": "Module folder missing drive or item_id", "synced_count": 0, "skipped_count": 0, "errors": [{"error": "Module folder missing drive or item_id"}]}
-            drive = self.drive_repo.read_by_id(folder_ms_drive_id)
-            if not drive:
-                return {"success": False, "message": "Drive not found", "synced_count": 0, "skipped_count": 0, "errors": [{"error": "Drive not found"}]}
-            vendor = self.vendor_service.read_by_id(id=expense.vendor_id) if expense.vendor_id else None
-            if not vendor:
-                return {"success": False, "message": "Vendor not found", "synced_count": 0, "skipped_count": 0, "errors": [{"error": "Vendor not found"}]}
-            project = self.project_service.read_by_id(id=str(project_id))
-            if not project:
-                return {"success": False, "message": f"Project {project_id} not found", "synced_count": 0, "skipped_count": 0, "errors": [{"error": f"Project {project_id} not found"}]}
-            try:
-                storage = AzureBlobStorage()
-            except Exception as e:
-                return {"success": False, "message": str(e), "synced_count": 0, "skipped_count": 0, "errors": [{"error": str(e)}]}
-            from integrations.ms.outbox.business.service import (
-                MsOutboxService,
-                SharePointUploadTally,
-                sharepoint_upload_outcome,
-            )
-            tally = SharePointUploadTally()
-            ms_outbox = MsOutboxService()
-            for line_item in line_items:
-                try:
-                    if not line_item.public_id:
-                        continue
-                    attachment_link = self.expense_line_item_attachment_service.read_by_expense_line_item_id(expense_line_item_public_id=line_item.public_id)
-                    if not attachment_link or not attachment_link.attachment_id:
-                        continue
-                    # Same file on another line item — the tally counts files.
-                    if tally.already_enqueued(attachment_link.attachment_id):
-                        continue
-                    attachment = self.attachment_service.read_by_id(id=attachment_link.attachment_id)
-                    if not attachment or not attachment.blob_url:
-                        tally.record_error({"line_item_id": line_item.id, "line_item_public_id": line_item.public_id, "error": "Attachment not found or missing blob_url"})
-                        continue
-                    sub_cost_code_number = ""
-                    if line_item.sub_cost_code_id:
-                        scc = self.sub_cost_code_service.read_by_id(id=str(line_item.sub_cost_code_id))
-                        if scc:
-                            sub_cost_code_number = scc.number or ""
-                    project_identifier = project.abbreviation or project.name or ""
-                    vendor_abbreviation = vendor.abbreviation or vendor.name or ""
-                    ref_number = expense.reference_number or ""
-                    description = line_item.description or ""
-                    price = f"${float(line_item.price):,.2f}" if line_item.price is not None else ""
-                    expense_date = ""
-                    if expense.expense_date:
-                        parts = expense.expense_date[:10].split("-")
-                        expense_date = f"{parts[1]}-{parts[2]}-{parts[0]}" if len(parts) == 3 else expense.expense_date[:10]
-                    exp_prefix = "EXP-CR" if expense.is_credit else "EXP"
-                    if expense_line_items_count > 1:
-                        amount_str = f"${float(expense.total_amount):,.2f}" if expense.total_amount is not None else ""
-                        filename_parts = [exp_prefix, project_identifier, vendor_abbreviation, ref_number, "Multiple See Image", amount_str, expense_date]
-                    else:
-                        filename_parts = [exp_prefix, project_identifier, vendor_abbreviation, ref_number, description, sub_cost_code_number, price, expense_date]
-                    base_filename = re.sub(r'[<>:"/\\|?*]', '_', " - ".join(p for p in filename_parts if p))
-                    file_extension = attachment.file_extension or ""
-                    if not file_extension and attachment.original_filename and "." in attachment.original_filename:
-                        file_extension = attachment.original_filename.rsplit(".", 1)[-1]
-                    if not file_extension and attachment.content_type:
-                        file_extension = {"application/pdf": "pdf", "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif"}.get(attachment.content_type, "")
-                    if file_extension and not file_extension.startswith("."):
-                        file_extension = "." + file_extension
-                    sharepoint_filename = base_filename + file_extension
-                    try:
-                        _file_content, _metadata = storage.download_file(attachment.blob_url)
-                    except Exception as e:
-                        tally.record_error({"line_item_id": line_item.id, "error": str(e)})
-                        continue
-                    # Probe the blob (above) to fail-fast if the blob is
-                    # missing. Actual upload happens via outbox; worker
-                    # re-fetches at drain time.
-                    content_type = attachment.content_type or "application/octet-stream"
-                    queued = ms_outbox.enqueue_sharepoint_upload(
-                        entity_type="Expense",
-                        entity_public_id=str(expense.public_id),
-                        drive_id=drive.drive_id,
-                        parent_item_id=folder_item_id,
-                        filename=sharepoint_filename,
-                        content_type=content_type,
-                        blob_path=attachment.blob_url,
-                        attachment_id=attachment.id,
-                    )
-                    outcome = sharepoint_upload_outcome(queued)
-                    if outcome == "refused":
-                        tally.record_error({"line_item_id": line_item.id, "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false)"})
-                        continue
-                    tally.record(attachment_link.attachment_id, outcome)
-                except Exception as e:
-                    tally.record_error({"line_item_id": line_item.id, "error": str(e)})
-            result = tally.as_dict(success=not tally.errors, message=tally.message())
-            result["deferred_holding"] = False
-            return result
-        except Exception as e:
-            logger.exception(f"Error uploading attachments for project {project_id}")
-            return {
-                "success": False,
-                "message": str(e),
-                "synced_count": 0,
-                "skipped_count": 0,
-                "deferred_holding": False,
-                "errors": [{"error": str(e)}],
-            }
+        from shared.completion.sharepoint_fanout import (
+            SharePointModuleSpec,
+            upload_to_project_module_folder,
+        )
+
+        def _filename(line_item, vendor, project, attachment):
+            sub_cost_code_number = ""
+            if line_item.sub_cost_code_id:
+                scc = self.sub_cost_code_service.read_by_id(id=str(line_item.sub_cost_code_id))
+                if scc:
+                    sub_cost_code_number = scc.number or ""
+            project_identifier = project.abbreviation or project.name or ""
+            vendor_abbreviation = vendor.abbreviation or vendor.name or ""
+            ref_number = expense.reference_number or ""
+            description = line_item.description or ""
+            price = f"${float(line_item.price):,.2f}" if line_item.price is not None else ""
+            expense_date = ""
+            if expense.expense_date:
+                parts = expense.expense_date[:10].split("-")
+                expense_date = f"{parts[1]}-{parts[2]}-{parts[0]}" if len(parts) == 3 else expense.expense_date[:10]
+            exp_prefix = "EXP-CR" if expense.is_credit else "EXP"
+            if expense_line_items_count > 1:
+                amount_str = f"${float(expense.total_amount):,.2f}" if expense.total_amount is not None else ""
+                filename_parts = [exp_prefix, project_identifier, vendor_abbreviation, ref_number, "Multiple See Image", amount_str, expense_date]
+            else:
+                filename_parts = [exp_prefix, project_identifier, vendor_abbreviation, ref_number, description, sub_cost_code_number, price, expense_date]
+            base_filename = re.sub(r'[<>:"/\\|?*]', '_', " - ".join(p for p in filename_parts if p))
+            file_extension = attachment.file_extension or ""
+            if not file_extension and attachment.original_filename and "." in attachment.original_filename:
+                file_extension = attachment.original_filename.rsplit(".", 1)[-1]
+            if not file_extension and attachment.content_type:
+                file_extension = {"application/pdf": "pdf", "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif"}.get(attachment.content_type, "")
+            if file_extension and not file_extension.startswith("."):
+                file_extension = "." + file_extension
+            return base_filename + file_extension
+
+        spec = SharePointModuleSpec(
+            entity_type="Expense",
+            entity=expense,
+            logger=logger,
+            read_module_by_name=lambda name: self.module_service.read_by_name(name),
+            module_names=("Expenses", "Expense"),
+            get_folder_for_module=lambda **kw: self.project_module_connector.get_folder_for_module(**kw),
+            record_mapping_missing=_record_project_mapping_missing_ms_issue,
+            read_drive=lambda ms_drive_id: self.drive_repo.read_by_id(ms_drive_id),
+            read_vendor=lambda vendor_id: self.vendor_service.read_by_id(id=vendor_id),
+            read_project=lambda pid: self.project_service.read_by_id(id=pid),
+            read_attachment_link=lambda pid: self.expense_line_item_attachment_service.read_by_expense_line_item_id(
+                expense_line_item_public_id=pid
+            ),
+            read_attachment=lambda aid: self.attachment_service.read_by_id(id=aid),
+            build_filename=_filename,
+            storage_factory=lambda: AzureBlobStorage(),
+            module_missing_message="Expense module not found — ensure a module named 'Expenses' exists",
+            module_missing_error="Expense module not found",
+            module_id_required=True,
+            probe_blob=True,
+            has_holding_line=lambda: self._expense_has_holding_line(expense, line_items),
+            holding_deferred_result=_holding_deferred_upload_result,
+        )
+        return upload_to_project_module_folder(spec, line_items, project_id)
 
     # -------------------------------------------------------------------------
     # General Receipts Folder — 520 - Current Receipts / yyyy / mm

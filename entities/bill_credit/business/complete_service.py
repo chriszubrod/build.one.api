@@ -348,268 +348,118 @@ class BillCreditCompleteService:
         Upload attachments for line items to the project's module folder in SharePoint.
         Enqueues each into the durable MS outbox (see MsOutboxService.enqueue_sharepoint_upload) —
         the worker fetches the blob and performs the actual Graph upload at drain time.
+        The engine is `shared/completion/sharepoint_fanout.py` (U-757a); the filename
+        shape below is this entity's own and must stay byte-identical (the outbox
+        idempotency guard keys on filename).
 
         Returns:
             Dict with success, synced_count, skipped_count, and errors
         """
-        try:
-            # Get the BillCredit module (try multiple names)
-            module = self.module_service.read_by_name("Bill Credits")
-            if not module:
-                module = self.module_service.read_by_name("BillCredits")
-            if not module:
-                module = self.module_service.read_by_name("Vendor Credits")
-            if not module:
-                module = self.module_service.read_by_name("Credits")
-            if not module:
-                # Fall back to Bills module if no specific BillCredit module exists
-                module = self.module_service.read_by_name("Bills")
-            if not module:
-                all_modules = self.module_service.read_all()
-                module = all_modules[0] if all_modules else None
-            
-            if not module:
-                return {
-                    "success": False,
-                    "message": "No modules found",
-                    "synced_count": 0,
-                    "errors": [{"error": "No modules found"}]
-                }
-            
-            module_id = int(module.id) if module.id else None
-            
-            # Get module folder for this project
-            module_folder = self.project_module_connector.get_folder_for_module(
-                project_id=project_id,
-                module_id=module_id
-            )
-            
-            if not module_folder:
-                _record_project_mapping_missing_ms_issue(
-                    entity_type="BillCredit",
-                    entity_public_id=str(bill_credit.public_id),
-                    project_id=project_id,
-                    mapping_kind="module_folder",
-                    details=f"Module folder not linked for project {project_id}",
-                )
-                return {
-                    "success": False,
-                    "message": f"Module folder not linked for project {project_id}",
-                    "synced_count": 0,
-                    "errors": [{"error": f"Module folder not linked for project {project_id}"}]
-                }
-            
-            # Get drive
-            folder_ms_drive_id = module_folder.get("ms_drive_id")
-            folder_item_id = module_folder.get("item_id")
-            if not folder_ms_drive_id or not folder_item_id:
-                return {
-                    "success": False,
-                    "message": "Module folder missing drive or item_id",
-                    "synced_count": 0,
-                    "errors": [{"error": "Module folder missing drive or item_id"}]
-                }
-            
-            drive = self.drive_repo.read_by_id(folder_ms_drive_id)
-            if not drive:
-                return {
-                    "success": False,
-                    "message": "Drive not found",
-                    "synced_count": 0,
-                    "errors": [{"error": "Drive not found"}]
-                }
-            
-            # Get vendor
-            vendor = None
-            if bill_credit.vendor_id:
-                vendor = self.vendor_service.read_by_id(id=bill_credit.vendor_id)
-            
-            if not vendor:
-                return {
-                    "success": False,
-                    "message": "Vendor not found",
-                    "synced_count": 0,
-                    "errors": [{"error": "Vendor not found"}]
-                }
-            
-            # Get project
-            project = self.project_service.read_by_id(id=str(project_id))
-            if not project:
-                return {
-                    "success": False,
-                    "message": f"Project {project_id} not found",
-                    "synced_count": 0,
-                    "errors": [{"error": f"Project {project_id} not found"}]
-                }
-            
-            from integrations.ms.outbox.business.service import (
-                MsOutboxService,
-                SharePointUploadTally,
-                sharepoint_upload_outcome,
-            )
-            tally = SharePointUploadTally()
-            ms_outbox = MsOutboxService()
+        from shared.completion.sharepoint_fanout import (
+            NARRATION_CREDIT,
+            SharePointModuleSpec,
+            upload_to_project_module_folder,
+        )
 
-            print(f"  SharePoint sync: Processing {len(line_items)} line items for project {project_id}")
-            logger.info(f"SharePoint sync: Processing {len(line_items)} line items for project {project_id}")
-            
-            # Process each line item
-            for line_item in line_items:
-                print(f"    Checking line item {line_item.public_id}")
-                logger.info(f"  Checking line item {line_item.public_id}")
+        def _filename(line_item, vendor, project, attachment):
+            # Get SubCostCode for filename
+            sub_cost_code_number = ""
+            if line_item.sub_cost_code_id:
+                sub_cost_code = self.sub_cost_code_service.read_by_id(id=str(line_item.sub_cost_code_id))
+                if sub_cost_code:
+                    sub_cost_code_number = sub_cost_code.number or ""
+
+            # Generate SharePoint filename using final BillCredit/BillCreditLineItem values
+            # Use Project.Abbreviation if available, otherwise Project.Name
+            project_identifier = project.abbreviation or project.name or ""
+            vendor_abbreviation = vendor.abbreviation or vendor.name or ""
+            credit_number = bill_credit.credit_number or ""
+            description = line_item.description or ""
+            # Format amount with $ and commas (e.g., $10,000.00)
+            amount_str = ""
+            if line_item.amount is not None:
                 try:
-                    if not line_item.public_id:
-                        continue
-                    
-                    # Get attachment link
-                    attachment_link = self.bill_credit_line_item_attachment_service.read_by_bill_credit_line_item_id(
-                        bill_credit_line_item_public_id=line_item.public_id
-                    )
-                    
-                    if not attachment_link or not attachment_link.attachment_id:
-                        print(f"      -> No attachment for this line item")
-                        logger.info(f"    No attachment for line item {line_item.public_id}")
-                        continue  # No attachment for this line item
-                    
-                    print(f"      -> Found attachment, attachment_id={attachment_link.attachment_id}")
-                    logger.info(f"    Found attachment link for line item {line_item.public_id}, attachment_id={attachment_link.attachment_id}")
-                    
-                    # Same file on another line item — the tally counts files.
-                    if tally.already_enqueued(attachment_link.attachment_id):
-                        logger.info(f"Attachment {attachment_link.attachment_id} already enqueued for this credit, skipping duplicate line item")
-                        continue
-                    
-                    # Get attachment record
-                    attachment = self.attachment_service.read_by_id(id=attachment_link.attachment_id)
-                    if not attachment or not attachment.blob_url:
-                        tally.record_error({
-                            "line_item_id": line_item.id,
-                            "line_item_public_id": line_item.public_id,
-                            "error": "Attachment not found or missing blob_url"
-                        })
-                        continue
+                    amount_val = Decimal(str(line_item.amount))
+                    amount_str = f"${amount_val:,.2f}"
+                except (ValueError, TypeError):
+                    amount_str = f"${line_item.amount}"
+            # Format date as mm-dd-yyyy
+            credit_date = ""
+            if bill_credit.credit_date:
+                try:
+                    # bill_credit.credit_date is in format "YYYY-MM-DD..." - convert to mm-dd-yyyy
+                    date_str = bill_credit.credit_date[:10]  # Get YYYY-MM-DD part
+                    parts = date_str.split("-")
+                    if len(parts) == 3:
+                        credit_date = f"{parts[1]}-{parts[2]}-{parts[0]}"  # mm-dd-yyyy
+                except Exception:
+                    credit_date = bill_credit.credit_date[:10]  # Fallback to original
 
-                    # Get SubCostCode for filename
-                    sub_cost_code_number = ""
-                    if line_item.sub_cost_code_id:
-                        sub_cost_code = self.sub_cost_code_service.read_by_id(id=str(line_item.sub_cost_code_id))
-                        if sub_cost_code:
-                            sub_cost_code_number = sub_cost_code.number or ""
-                    
-                    # Generate SharePoint filename using final BillCredit/BillCreditLineItem values
-                    # Use Project.Abbreviation if available, otherwise Project.Name
-                    project_identifier = project.abbreviation or project.name or ""
-                    vendor_abbreviation = vendor.abbreviation or vendor.name or ""
-                    credit_number = bill_credit.credit_number or ""
-                    description = line_item.description or ""
-                    # Format amount with $ and commas (e.g., $10,000.00)
-                    amount_str = ""
-                    if line_item.amount is not None:
-                        try:
-                            amount_val = Decimal(str(line_item.amount))
-                            amount_str = f"${amount_val:,.2f}"
-                        except (ValueError, TypeError):
-                            amount_str = f"${line_item.amount}"
-                    # Format date as mm-dd-yyyy
-                    credit_date = ""
-                    if bill_credit.credit_date:
-                        try:
-                            # bill_credit.credit_date is in format "YYYY-MM-DD..." - convert to mm-dd-yyyy
-                            date_str = bill_credit.credit_date[:10]  # Get YYYY-MM-DD part
-                            parts = date_str.split("-")
-                            if len(parts) == 3:
-                                credit_date = f"{parts[1]}-{parts[2]}-{parts[0]}"  # mm-dd-yyyy
-                        except Exception:
-                            credit_date = bill_credit.credit_date[:10]  # Fallback to original
-                    
-                    filename_parts = [
-                        project_identifier,
-                        vendor_abbreviation,
-                        credit_number,
-                        description,
-                        sub_cost_code_number,
-                        amount_str,
-                        credit_date
-                    ]
-                    filename_parts = [part for part in filename_parts if part]
-                    base_filename = " - ".join(filename_parts)
-                    base_filename = re.sub(r'[<>:"/\\|?*]', '_', base_filename)
-                    
-                    # Get file extension - try multiple sources
-                    file_extension = attachment.file_extension or ""
-                    if not file_extension and attachment.original_filename:
-                        # Try to extract from original filename
-                        if '.' in attachment.original_filename:
-                            file_extension = attachment.original_filename.rsplit('.', 1)[-1]
-                    if not file_extension and attachment.content_type:
-                        # Try to infer from content type
-                        content_type_map = {
-                            'application/pdf': 'pdf',
-                            'image/jpeg': 'jpg',
-                            'image/png': 'png',
-                            'image/gif': 'gif',
-                            'application/msword': 'doc',
-                            'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
-                            'application/vnd.ms-excel': 'xls',
-                            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
-                        }
-                        file_extension = content_type_map.get(attachment.content_type, '')
-                    
-                    if file_extension and not file_extension.startswith("."):
-                        file_extension = "." + file_extension
-                    
-                    sharepoint_filename = base_filename + file_extension
+            filename_parts = [
+                project_identifier,
+                vendor_abbreviation,
+                credit_number,
+                description,
+                sub_cost_code_number,
+                amount_str,
+                credit_date
+            ]
+            filename_parts = [part for part in filename_parts if part]
+            base_filename = " - ".join(filename_parts)
+            base_filename = re.sub(r'[<>:"/\\|?*]', '_', base_filename)
 
-                    content_type = attachment.content_type or "application/octet-stream"
-                    queued = ms_outbox.enqueue_sharepoint_upload(
-                        entity_type="BillCredit",
-                        entity_public_id=str(bill_credit.public_id),
-                        drive_id=drive.drive_id,
-                        parent_item_id=folder_item_id,
-                        filename=sharepoint_filename,
-                        content_type=content_type,
-                        blob_path=attachment.blob_url,
-                        attachment_id=attachment.id,
-                    )
-                    outcome = sharepoint_upload_outcome(queued)
-                    if outcome == "refused":
-                        logger.error(f"SharePoint upload enqueue refused for '{sharepoint_filename}'")
-                        tally.record_error({
-                            "line_item_id": line_item.id,
-                            "line_item_public_id": line_item.public_id,
-                            "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
-                        })
-                        continue
+            # Get file extension - try multiple sources
+            file_extension = attachment.file_extension or ""
+            if not file_extension and attachment.original_filename:
+                # Try to extract from original filename
+                if '.' in attachment.original_filename:
+                    file_extension = attachment.original_filename.rsplit('.', 1)[-1]
+            if not file_extension and attachment.content_type:
+                # Try to infer from content type
+                content_type_map = {
+                    'application/pdf': 'pdf',
+                    'image/jpeg': 'jpg',
+                    'image/png': 'png',
+                    'image/gif': 'gif',
+                    'application/msword': 'doc',
+                    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+                    'application/vnd.ms-excel': 'xls',
+                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+                }
+                file_extension = content_type_map.get(attachment.content_type, '')
 
-                    tally.record(attachment_link.attachment_id, outcome)
-                    logger.info(
-                        f"Queued SharePoint upload: '{sharepoint_filename}' "
-                        f"(outbox {queued.public_id}, attachment_id={attachment.id})"
-                    )
+            if file_extension and not file_extension.startswith("."):
+                file_extension = "." + file_extension
 
-                except Exception as e:
-                    logger.exception(f"Error processing line item {line_item.id}")
-                    tally.record_error({
-                        "line_item_id": line_item.id,
-                        "line_item_public_id": line_item.public_id,
-                        "error": f"Unexpected error: {str(e)}"
-                    })
-            
-            success = tally.synced_count > 0 or tally.skipped_count > 0 or len(tally.errors) == 0
-            return tally.as_dict(
-                success=success,
-                message=tally.message(with_error_count=True),
-            )
-            
-        except Exception as e:
-            logger.exception(f"Error uploading attachments for project {project_id}")
-            return {
-                "success": False,
-                "message": f"Error: {str(e)}",
-                "synced_count": 0,
-                "skipped_count": 0,
-                "errors": [{"error": str(e)}]
-            }
+            return base_filename + file_extension
+
+        spec = SharePointModuleSpec(
+            entity_type="BillCredit",
+            entity=bill_credit,
+            logger=logger,
+            read_module_by_name=lambda name: self.module_service.read_by_name(name),
+            # Fall back to the Bills module, then to any module, if no BillCredit module exists.
+            module_names=("Bill Credits", "BillCredits", "Vendor Credits", "Credits", "Bills"),
+            read_all_modules=lambda: self.module_service.read_all(),
+            get_folder_for_module=lambda **kw: self.project_module_connector.get_folder_for_module(**kw),
+            record_mapping_missing=_record_project_mapping_missing_ms_issue,
+            read_drive=lambda ms_drive_id: self.drive_repo.read_by_id(ms_drive_id),
+            read_vendor=lambda vendor_id: self.vendor_service.read_by_id(id=vendor_id),
+            read_project=lambda pid: self.project_service.read_by_id(id=pid),
+            read_attachment_link=lambda pid: self.bill_credit_line_item_attachment_service.read_by_bill_credit_line_item_id(
+                bill_credit_line_item_public_id=pid
+            ),
+            read_attachment=lambda aid: self.attachment_service.read_by_id(id=aid),
+            build_filename=_filename,
+            module_missing_message="No modules found",
+            module_missing_error="No modules found",
+            early_return_skipped_count=False,
+            lenient_success=True,
+            rich_errors=True,
+            outer_error_prefix="Error: ",
+            narration=NARRATION_CREDIT,
+        )
+        return upload_to_project_module_folder(spec, line_items, project_id)
 
     def sync_to_excel_workbook(
         self,

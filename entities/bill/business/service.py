@@ -2704,226 +2704,56 @@ class BillService:
     ) -> dict:
         """
         Upload attachments for line items to the project's module folder in SharePoint.
-        Downloads from Azure Blob Storage and uploads to SharePoint with final filename.
+        Enqueues each file on the durable MS outbox; the worker fetches the blob and
+        uploads it with the final filename at drain time.
         When bill has >1 line item, filename: {Project} - {Vendor} - {BillNumber} - Multiple See Image - {Amount} - {Date}.
 
         Counting is per FILE, not per line item — see `SharePointUploadTally`.
+        The engine is `shared/completion/sharepoint_fanout.py` (U-757a); the
+        filename shape is shared with Box uploads via `_build_module_filename`.
 
         Returns:
             Dict with success, synced_count, skipped_count, and errors
         """
-        try:
-            # Get the Bills module — fail fast if not found
-            module = self.module_service.read_by_name("Bills")
-            if not module:
-                module = self.module_service.read_by_name("Bill")
+        from shared.completion.sharepoint_fanout import (
+            NARRATION_BILL,
+            SharePointModuleSpec,
+            upload_to_project_module_folder,
+        )
 
-            if not module:
-                return {
-                    "success": False,
-                    "message": "Bills module not found. Create a module named 'Bills' before syncing.",
-                    "synced_count": 0,
-                    "skipped_count": 0,
-                    "errors": [{"error": "Bills module not found"}]
-                }
-            
-            module_id = int(module.id) if module.id else None
-            
-            # Get module folder for this project
-            module_folder = self.project_module_connector.get_folder_for_module(
-                project_id=project_id,
-                module_id=module_id
+        def _filename(line_item, vendor, project, attachment):
+            return self._build_module_filename(
+                bill=bill,
+                line_item=line_item,
+                vendor=vendor,
+                project=project,
+                bill_line_items_count=bill_line_items_count,
+                attachment=attachment,
             )
-            
-            if not module_folder:
-                _record_project_mapping_missing_ms_issue(
-                    entity_type="Bill",
-                    entity_public_id=str(bill.public_id),
-                    project_id=project_id,
-                    mapping_kind="module_folder",
-                    details=f"Module folder not linked for project {project_id}",
-                )
-                return {
-                    "success": False,
-                    "message": f"Module folder not linked for project {project_id}",
-                    "synced_count": 0,
-                    "skipped_count": 0,
-                    "errors": [{"error": f"Module folder not linked for project {project_id}"}]
-                }
-            
-            # Get drive
-            folder_ms_drive_id = module_folder.get("ms_drive_id")
-            folder_item_id = module_folder.get("item_id")
-            if not folder_ms_drive_id or not folder_item_id:
-                return {
-                    "success": False,
-                    "message": "Module folder missing drive or item_id",
-                    "synced_count": 0,
-                    "skipped_count": 0,
-                    "errors": [{"error": "Module folder missing drive or item_id"}]
-                }
-            
-            drive = self.drive_repo.read_by_id(folder_ms_drive_id)
-            if not drive:
-                return {
-                    "success": False,
-                    "message": "Drive not found",
-                    "synced_count": 0,
-                    "skipped_count": 0,
-                    "errors": [{"error": "Drive not found"}]
-                }
-            
-            # Get vendor
-            vendor = None
-            if bill.vendor_id:
-                vendor = self.vendor_service.read_by_id(id=bill.vendor_id)
-            
-            if not vendor:
-                return {
-                    "success": False,
-                    "message": "Vendor not found",
-                    "synced_count": 0,
-                    "skipped_count": 0,
-                    "errors": [{"error": "Vendor not found"}]
-                }
-            
-            # Get project
-            project = self.project_service.read_by_id(id=str(project_id))
-            if not project:
-                return {
-                    "success": False,
-                    "message": f"Project {project_id} not found",
-                    "synced_count": 0,
-                    "skipped_count": 0,
-                    "errors": [{"error": f"Project {project_id} not found"}]
-                }
-            
-            # Initialize Azure Blob Storage
-            try:
-                storage = AzureBlobStorage()
-            except Exception as e:
-                return {
-                    "success": False,
-                    "message": f"Failed to initialize storage: {str(e)}",
-                    "synced_count": 0,
-                    "skipped_count": 0,
-                    "errors": [{"error": f"Failed to initialize storage: {str(e)}"}]
-                }
-            
-            from integrations.ms.outbox.business.service import (
-                MsOutboxService,
-                SharePointUploadTally,
-                sharepoint_upload_outcome,
-            )
-            tally = SharePointUploadTally()
-            ms_outbox = MsOutboxService()
 
-            logger.info(f"SharePoint sync: Processing {len(line_items)} line items for project {project_id}")
-
-            # Process each line item
-            for line_item in line_items:
-                try:
-                    if not line_item.public_id:
-                        continue
-
-                    # Get attachment link
-                    attachment_link = self.bill_line_item_attachment_service.read_by_bill_line_item_id(
-                        bill_line_item_public_id=line_item.public_id
-                    )
-
-                    if not attachment_link or not attachment_link.attachment_id:
-                        logger.debug(f"No attachment for line item {line_item.public_id}")
-                        continue
-
-                    logger.debug(f"Found attachment for line item {line_item.public_id}, attachment_id={attachment_link.attachment_id}")
-                    
-                    # Same file on another line item — already enqueued, and
-                    # the tally counts files, not line items.
-                    if tally.already_enqueued(attachment_link.attachment_id):
-                        logger.info(f"Attachment {attachment_link.attachment_id} already enqueued for this bill, skipping duplicate line item")
-                        continue
-                    
-                    # Get attachment record
-                    attachment = self.attachment_service.read_by_id(id=attachment_link.attachment_id)
-                    if not attachment or not attachment.blob_url:
-                        tally.record_error({
-                            "line_item_id": line_item.id,
-                            "line_item_public_id": line_item.public_id,
-                            "error": "Attachment not found or missing blob_url"
-                        })
-                        continue
-
-                    # Filename shape is shared with Box uploads — see
-                    # `_build_module_filename` docstring for the two branches
-                    # (single-line uses SubCostCode.Name; multi-line collapses to
-                    # "Multiple See Image").
-                    sharepoint_filename = self._build_module_filename(
-                        bill=bill,
-                        line_item=line_item,
-                        vendor=vendor,
-                        project=project,
-                        bill_line_items_count=bill_line_items_count,
-                        attachment=attachment,
-                    )
-                    
-                    # Determine content_type (needed by the worker to set upload
-                    # Content-Type header). We trust `attachment.content_type`
-                    # first; the worker does not re-read blob metadata.
-                    # TODO(Phase 3.x): inline compression moved to TODO. The
-                    # worker currently uploads the raw blob. Compression gain
-                    # was 20-30% on image-heavy PDFs; acceptable loss for the
-                    # Phase 3 outbox win.
-                    content_type = attachment.content_type or "application/octet-stream"
-
-                    # Enqueue SharePoint upload. Worker fetches blob at drain
-                    # time, uploads, and links the resulting DriveItem back
-                    # to the Attachment record (via `attachment_id` in payload).
-                    queued = ms_outbox.enqueue_sharepoint_upload(
-                        entity_type="Bill",
-                        entity_public_id=str(bill.public_id),
-                        drive_id=drive.drive_id,
-                        parent_item_id=folder_item_id,
-                        filename=sharepoint_filename,
-                        content_type=content_type,
-                        blob_path=attachment.blob_url,
-                        attachment_id=attachment.id,
-                    )
-                    outcome = sharepoint_upload_outcome(queued)
-                    if outcome == "refused":
-                        logger.error(f"SharePoint upload enqueue refused for '{sharepoint_filename}'")
-                        tally.record_error({
-                            "line_item_id": line_item.id,
-                            "line_item_public_id": line_item.public_id,
-                            "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
-                        })
-                        continue
-
-                    tally.record(attachment_link.attachment_id, outcome)
-                    logger.info(
-                        f"Queued SharePoint upload: '{sharepoint_filename}' "
-                        f"(outbox {queued.public_id}, attachment_id={attachment.id}, outcome={outcome})"
-                    )
-                    
-                except Exception as e:
-                    logger.exception(f"Error processing line item {line_item.id}")
-                    tally.record_error({
-                        "line_item_id": line_item.id,
-                        "line_item_public_id": line_item.public_id,
-                        "error": f"Unexpected error: {str(e)}"
-                    })
-            
-            success = tally.synced_count > 0 or tally.skipped_count > 0 or len(tally.errors) == 0
-            return tally.as_dict(
-                success=success,
-                message=tally.message(with_error_count=True),
-            )
-            
-        except Exception as e:
-            logger.exception(f"Error uploading attachments for project {project_id}")
-            return {
-                "success": False,
-                "message": f"Error: {str(e)}",
-                "synced_count": 0,
-                "skipped_count": 0,
-                "errors": [{"error": str(e)}]
-            }
+        spec = SharePointModuleSpec(
+            entity_type="Bill",
+            entity=bill,
+            logger=logger,
+            read_module_by_name=lambda name: self.module_service.read_by_name(name),
+            module_names=("Bills", "Bill"),
+            get_folder_for_module=lambda **kw: self.project_module_connector.get_folder_for_module(**kw),
+            record_mapping_missing=_record_project_mapping_missing_ms_issue,
+            read_drive=lambda ms_drive_id: self.drive_repo.read_by_id(ms_drive_id),
+            read_vendor=lambda vendor_id: self.vendor_service.read_by_id(id=vendor_id),
+            read_project=lambda pid: self.project_service.read_by_id(id=pid),
+            read_attachment_link=lambda pid: self.bill_line_item_attachment_service.read_by_bill_line_item_id(
+                bill_line_item_public_id=pid
+            ),
+            read_attachment=lambda aid: self.attachment_service.read_by_id(id=aid),
+            build_filename=_filename,
+            storage_factory=lambda: AzureBlobStorage(),
+            module_missing_message="Bills module not found. Create a module named 'Bills' before syncing.",
+            module_missing_error="Bills module not found",
+            storage_error_prefix="Failed to initialize storage: ",
+            lenient_success=True,
+            rich_errors=True,
+            outer_error_prefix="Error: ",
+            narration=NARRATION_BILL,
+        )
+        return upload_to_project_module_folder(spec, line_items, project_id)

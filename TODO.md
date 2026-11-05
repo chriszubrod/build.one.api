@@ -26,6 +26,7 @@ Pass 2 3 takes; Pass 3 PASS on six attack goals (+ platform finding → **U-766*
   from the repo root). SQL-first re-opens submitted/approved days (old service writes 'draft' on every found header). Immediately before the apply: re-run the
   July+ duplicate census (the index refuses to build over a twin) and `sys.sql_modules` SET-options check. **Rollback: revert the sproc body BEFORE any image
   rollback.** After the apply: recount the duplicate census by DISTINCT id (a find is still a `time_entry_create` workflow). `[U-624a follow-up]`
+- [ ] **U-624a-f2 (P2, api — found by U-772's adversarial review): a deferred header DELETE can cascade logs the client never saw.** Under find-or-create, a device that queues a delete for a header (a cancelled create, or any synced-day delete) may send it days later, after another device or the office attached logs to that same day; `DeleteTimeEntry` cascades logs + status. Fix: the header DELETE takes a precondition — refuse (409 `time_entry_not_empty` or a `row_version`/`expected_log_count` check) when the header has logs the caller did not name; the device then drops its stale delete intent and reloads. Pair with U-624b. `[U-624a follow-up]`
 - [ ] **U-624b — iOS claim-first create + purge fence** (design D4): pre-query on EVERY header create; `recoverOrphanedLog` claims the server header before
   rebuilding a parent; `loadEntries` purge skips headers created after the request started. After U-624a is DEPLOYED. `[U-624 follow-up]`
 

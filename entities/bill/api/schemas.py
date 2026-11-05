@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 
 # Local Imports
 from entities.bill_line_item.api.schemas import CodingPrefillStateLiteral
+from entities.review.api.schemas import EmailedReviewerDecisionRequestBase
 
 BillCreateIntakeSource = Literal["pdf_drop", "pdf_upload"]
 
@@ -183,3 +184,7 @@ class BillUpdate(BaseModel):
     # Bill was NOT immune via its computed column: UpdateBillById translates
     # @IsDraft = 0 into Status = 'completed'. Pydantic ignores unknown fields,
     # so a client still sending it gets a 200 and the value is ignored.
+
+
+class BillApplyReviewerDecisionRequest(EmailedReviewerDecisionRequestBase):
+    """Body for POST /bill/{public_id}/apply-reviewer-decision."""

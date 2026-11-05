@@ -12,7 +12,12 @@ from fastapi import status as http_status
 from fastapi.responses import JSONResponse
 
 # Local Imports
-from entities.bill.api.schemas import BillCompleteRequest, BillCreate, BillUpdate
+from entities.bill.api.schemas import (
+    BillApplyReviewerDecisionRequest,
+    BillCompleteRequest,
+    BillCreate,
+    BillUpdate,
+)
 from entities.bill.business.duplicate_check import effective_mode_for_path, is_agent_username
 from entities.bill.business.duplicate_gate import (
     apply_post_create_duplicate_audit_fail_open,
@@ -444,7 +449,7 @@ def find_bill_by_conversation_id_router(
 @router.post("/bill/{public_id}/apply-reviewer-decision")
 def apply_reviewer_decision_router(
     public_id: str,
-    body: dict,
+    body: BillApplyReviewerDecisionRequest,
     current_user: dict = Depends(require_module_api(Modules.BILLS, "can_update")),
 ):
     """Apply an emailed Project Manager / Owner review decision to a Bill.
@@ -464,6 +469,11 @@ def apply_reviewer_decision_router(
       sub_cost_code_public_id: string  (required when decision='approved')
       description:             string  (optional; updates the single line's description)
       raw_reply_text:          string  (the PM's reply body, for audit)
+      reviewer_email_message_public_id: string (required; provenance binding)
+
+    U-762: the body is the typed `BillApplyReviewerDecisionRequest` (shared
+    base with the expense model), so a malformed or missing-field body is a
+    FastAPI 422 before any code runs.
 
     Errors are returned as ValueError → HTTP 400 with a descriptive
     message the agent can read and recover from. U-761: a stale line
@@ -473,12 +483,12 @@ def apply_reviewer_decision_router(
     try:
         result = BillService().apply_reviewer_decision(
             bill_public_id=public_id,
-            decision=body.get("decision"),
-            reviewer_email=body.get("reviewer_email"),
-            sub_cost_code_public_id=body.get("sub_cost_code_public_id"),
-            description=body.get("description"),
-            raw_reply_text=body.get("raw_reply_text"),
-            reviewer_email_message_public_id=body.get("reviewer_email_message_public_id"),
+            decision=body.decision,
+            reviewer_email=body.reviewer_email,
+            sub_cost_code_public_id=body.sub_cost_code_public_id,
+            description=body.description,
+            raw_reply_text=body.raw_reply_text,
+            reviewer_email_message_public_id=body.reviewer_email_message_public_id,
         )
         return item_response(result)
     except ReviewDecisionApplyError as error:

@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from uuid import UUID
 
 # Local Imports
+from entities.review.api.schemas import EmailedReviewerDecisionRequestBase
 
 
 class ExpenseCreate(BaseModel):
@@ -139,31 +140,5 @@ class ExpenseAttachReceiptRequest(BaseModel):
     attachment_public_id: UUID
 
 
-class ExpenseApplyReviewerDecisionRequest(BaseModel):
+class ExpenseApplyReviewerDecisionRequest(EmailedReviewerDecisionRequestBase):
     """Body for POST /expense/{public_id}/apply-reviewer-decision."""
-
-    decision: str = Field(
-        description="Review outcome: 'approved' or 'rejected'."
-    )
-    reviewer_email: str = Field(
-        description=(
-            "Email of the PM/Owner who replied; must match the expense's "
-            "notification recipient envelope."
-        )
-    )
-    sub_cost_code_public_id: Optional[str] = Field(
-        default=None,
-        description="Required when decision is 'approved'."
-    )
-    description: Optional[str] = Field(
-        default=None,
-        description="Optional line description update on approval."
-    )
-    raw_reply_text: Optional[str] = Field(
-        default=None,
-        description="PM reply body persisted to Review.Comments when non-empty."
-    )
-    reviewer_email_message_public_id: str = Field(
-        ...,
-        description="Required inbound reply EmailMessage public id; the server refuses without provenance binding.",
-    )

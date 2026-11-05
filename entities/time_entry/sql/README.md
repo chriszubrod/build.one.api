@@ -47,9 +47,9 @@ whole `dbo.UserCanAccess*` family. See `shared/sql/README.md`.
    - `007_2026_05_28_add_source_time_entry_id_to_line_items.sql`
 
 4. **`scripts/migrations/time_log_update_guards_and_unique_indexes.sql`** —
-   unique indexes only (`UX_TimeLog_TimeEntry_ClockIn`,
-   `UX_TimeEntry_UserId_WorkDate`). Sproc bodies in this file are superseded
-   stubs (U-045).
+   nothing to run: sprocs superseded (U-045), indexes superseded (U-624a); kept
+   for lineage. Both unique indexes (`UX_TimeLog_TimeEntry_ClockIn`,
+   `UX_TimeEntry_UserId_WorkDate`) are defined, filtered, in `dbo.time_entry.sql`.
 
 5. **`entities/role_module/sql/dbo.rolemodule.sql`** — creates the
    `RoleModule.CanViewTeam` column that step 6's seed updates. Canonical for the
@@ -89,9 +89,8 @@ those sprocs:
   (U-045) **and** the RoleModule column + CRUD sproc sections (U-048, canonical
   in `entities/role_module/sql/dbo.rolemodule.sql`); the only live content left
   is the RoleModule `CanViewTeam` seed grants
-- `scripts/migrations/time_log_update_guards_and_unique_indexes.sql` — Update*
-  sproc sections only; still carries live unique indexes
-  (`UX_TimeLog_TimeEntry_ClockIn`, `UX_TimeEntry_UserId_WorkDate`)
+- `scripts/migrations/time_log_update_guards_and_unique_indexes.sql` — nothing to
+  run: sprocs superseded (U-045), indexes superseded (U-624a); kept for lineage
 
 ## Resolved issues
 

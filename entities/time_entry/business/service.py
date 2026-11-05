@@ -5,6 +5,7 @@ Owns
 Invariants
   RBAC: Modules.TIME_TRACKING require_module_api; the API read/update/delete/count sprocs take @ActorUserId (16 of 27 — Create*, Aggregate, Stamp, digest/lineage reads do not).
   Money: AggregateTimeEntryOnSubmit applies two-shot labor rounding in SQL.
+  One header per (UserId, WorkDate) — CreateTimeEntry is find-or-create under an applock; filtered unique index UX_TimeEntry_UserId_WorkDate (WorkDate ≥ 2026-07-01) is the backstop.
   Concurrency: UpdateTimeEntryById and UpdateTimeLogById take @RowVersion.
 External writes
   review_submitted_time_entry via intelligence outbox on submit (best-effort).
@@ -49,8 +50,9 @@ from entities.time_entry.persistence.repo import TimeEntryRepository
 from entities.time_entry.persistence.time_entry_status_repo import TimeEntryStatusRepository
 from entities.time_entry.persistence.time_log_repo import TimeLogRepository
 from entities.user.business.service import UserService
+from shared.access import EntityNotAccessibleError
 from shared.api.responses import entry_lock_prefix
-from shared.authz import current_user_id, current_is_system_admin, current_can_view_team
+from shared.authz import current_user_id, current_is_system_admin, current_is_system_context, current_can_view_team
 
 logger = logging.getLogger(__name__)
 
@@ -113,13 +115,37 @@ class TimeEntryService:
         created_by_user_id: Optional[int] = None,
     ) -> TimeEntry:
         """
-        Create a new time entry and set initial status to 'draft'.
+        Create a time entry -- or, if a header already exists for (user, work_date), return
+        it unchanged (find-or-create, U-624a). The initial 'draft' TimeEntryStatus row is
+        written by the CreateTimeEntry sproc in its own transaction (and healed there if a
+        found header has none); this method writes it only when the sproc body predates
+        U-624a (no [Created] column -> `created is None`).
+
+        A caller creating (or finding) another worker's day needs standing: system admin or
+        can_view_team. No standing -> EntityNotAccessibleError (404 by house rule), and an
+        unknown worker is the same 404 for a non-admin (no user-existence oracle). A found
+        header is returned only if the actor can read it through the scoped read path.
+        System/CLI context is identified by the positive `current_is_system_context` marker.
         """
+        scope_user_id, scope_is_system_admin, scope_can_view_team = _actor_scope()
+        is_system_context = current_is_system_context.get()
+
         # Validate and resolve user
         user = UserService().read_by_public_id(public_id=user_public_id)
         if not user:
-            raise ValueError(f"User with public_id '{user_public_id}' not found.")
+            if scope_is_system_admin or is_system_context:
+                raise ValueError(f"User with public_id '{user_public_id}' not found.")
+            raise EntityNotAccessibleError("TimeEntry", 0)
         user_id = user.id
+
+        # U-624a: never create or find another worker's day without standing.
+        if not (
+            scope_user_id == user_id
+            or scope_is_system_admin
+            or is_system_context
+            or scope_can_view_team
+        ):
+            raise EntityNotAccessibleError("TimeEntry", 0)
 
         # Resolve actor for CreatedByUserId attribution. Caller may pass
         # explicitly (e.g. clerk-on-behalf-of-worker); else fall back to the
@@ -127,7 +153,7 @@ class TimeEntryService:
         # for system/scheduler context.
         actor_user_id = created_by_user_id if created_by_user_id is not None else current_user_id.get()
 
-        # Create the time entry
+        # Create (or find) the time entry
         time_entry = self.repo.create(
             user_id=user_id,
             work_date=work_date,
@@ -135,14 +161,29 @@ class TimeEntryService:
             created_by_user_id=actor_user_id,
         )
 
-        # Create initial 'draft' status
-        status_user_id = actor_user_id or user_id
-        TimeEntryStatusRepository().create(
-            time_entry_id=time_entry.id,
-            status="draft",
-            user_id=status_user_id,
-        )
-
+        if time_entry.created is None:
+            # legacy sproc body (no [Created]); the U-624a sproc owns this write
+            TimeEntryStatusRepository().create(
+                time_entry_id=time_entry.id,
+                status="draft",
+                user_id=actor_user_id or user_id,
+            )
+        elif time_entry.created is False:
+            logger.info(
+                "time_entry.create.found_existing",
+                extra={"user_id": user_id, "work_date": work_date, "id": time_entry.id},
+            )
+            # A can_view_team actor with no shared project must not receive the worker's
+            # PublicId/RowVersion/Note: re-read through the scoped path.
+            if scope_user_id != user_id and not scope_is_system_admin and not is_system_context:
+                visible = self.repo.read_by_public_id(
+                    public_id=time_entry.public_id,
+                    actor_user_id=scope_user_id,
+                    actor_is_system_admin=scope_is_system_admin,
+                    actor_can_view_team=scope_can_view_team,
+                )
+                if not visible:
+                    raise EntityNotAccessibleError("TimeEntry", 0)
         return time_entry
 
     def read_all(self) -> list[TimeEntry]:

@@ -26,6 +26,12 @@ class TimeEntry:
     work_date: Optional[str]           # Date worked (YYYY-MM-DD)
     note: Optional[str]                # Worker's note for the day
 
+    # U-624a: set by CreateTimeEntry (find-or-create). True/False = the sproc wrote (or
+    # healed) the 'draft' status row; False = an existing header for (user_id, work_date)
+    # was returned. None = the row came from a sproc body without [Created] (pre-U-624a)
+    # and the caller must write the 'draft' status. Internal only -- never serialized.
+    created: Optional[bool] = True
+
     @property
     def row_version_bytes(self) -> Optional[bytes]:
         """Decode base64 row version to bytes."""
@@ -41,8 +47,10 @@ class TimeEntry:
         return None
 
     def to_dict(self) -> dict:
-        """Convert the time entry dataclass to a dictionary."""
-        return asdict(self)
+        """Convert the time entry dataclass to a dictionary (wire shape; `created` is internal)."""
+        data = asdict(self)
+        data.pop("created", None)
+        return data
 
 
 @dataclass

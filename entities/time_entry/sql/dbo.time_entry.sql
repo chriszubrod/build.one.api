@@ -1,6 +1,6 @@
 -- Contract: dbo.TimeEntry   (U-631; mirror of entities/time_entry/business/service.py docstring)
 -- Owns: TimeEntry, TimeLog, and TimeEntryStatus sprocs (single canonical file U-045).
--- Invariants: @ActorUserId RBAC on the 16 API read/update/delete/count sprocs (Read*/Update*/Delete*/CountTimeEntries); NOT on Create*, AggregateTimeEntryOnSubmit, StampTimeEntryReview, IsTimeEntryDownstreamLocked, the digest/lineage/batch reads; AggregateTimeEntryOnSubmit two-shot money; @RowVersion updates.
+-- Invariants: @ActorUserId RBAC on the 16 API read/update/delete/count sprocs (Read*/Update*/Delete*/CountTimeEntries); NOT on Create*, AggregateTimeEntryOnSubmit, StampTimeEntryReview, IsTimeEntryDownstreamLocked, the digest/lineage/batch reads; AggregateTimeEntryOnSubmit two-shot money; @RowVersion updates; one header per (UserId, WorkDate) — CreateTimeEntry find-or-create under applock, UX_TimeEntry_UserId_WorkDate (WorkDate >= 2026-07-01) backstop.
 -- Sprocs: AggregateTimeEntryOnSubmit, CountTimeEntries, CreateTimeEntry, CreateTimeEntryStatus, CreateTimeLog, DeleteTimeEntryById, DeleteTimeLogById, IsTimeEntryDownstreamLocked, ReadCurrentTimeEntryStatus, ReadCurrentTimeEntryStatusesByTimeEntryIds, ReadDistinctProjectIdsByTimeEntryIds, ReadTimeEntries, ReadTimeEntriesByProjectId, ReadTimeEntriesByUserId, ReadTimeEntriesForDigestByWorkDate, ReadTimeEntriesPaginated, ReadTimeEntryBilledLineage, ReadTimeEntryById, ReadTimeEntryByPublicId, ReadTimeEntryStatusesByTimeEntryId, ReadTimeLogById, ReadTimeLogByPublicId, ReadTimeLogsByTimeEntryId, ReadTimeLogsByTimeEntryIds, StampTimeEntryReview, UpdateTimeEntryById, UpdateTimeLogById
 -- ============================================================================
 -- SINGLE CANONICAL SOURCE (U-045, 2026-07-16): this file is the ONE home for
@@ -300,12 +300,40 @@ CREATE INDEX IX_TimeEntryStatus_TimeEntryId_CreatedDatetime_Id ON [dbo].[TimeEnt
 END
 GO
 
+-- U-624a: one header per (worker, day). Filtered from 2026-07-01 because three approved June
+-- (UserId, WorkDate) groups (36/06-26, 36/06-29, 39/06-24) are paid history with hours on both
+-- headers; uniqueness holds from the filter forward. Supersedes the index sections of
+-- scripts/migrations/time_log_update_guards_and_unique_indexes.sql (never applied to prod).
+IF OBJECT_ID('dbo.TimeEntry', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_TimeEntry_UserId_WorkDate' AND object_id = OBJECT_ID('dbo.TimeEntry'))
+BEGIN
+CREATE UNIQUE NONCLUSTERED INDEX UX_TimeEntry_UserId_WorkDate ON dbo.[TimeEntry] ([UserId], [WorkDate]) WHERE [WorkDate] >= '2026-07-01';
+END
+GO
+
+-- U-624a: no duplicate clock-in per header. Filtered to [Id] > 191 because one May pair
+-- (TimeEntryId 88, logs 190/191: same ClockIn, different ClockOut) is paid history and an
+-- office call, not a merge. Supersedes the same migration's index section.
+IF OBJECT_ID('dbo.TimeLog', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_TimeLog_TimeEntry_ClockIn' AND object_id = OBJECT_ID('dbo.TimeLog'))
+BEGIN
+CREATE UNIQUE NONCLUSTERED INDEX UX_TimeLog_TimeEntry_ClockIn ON dbo.[TimeLog] ([TimeEntryId], [ClockIn]) WHERE [Id] > 191;
+END
+GO
+
 -- ============================================
 -- TimeEntry Stored Procedures
 -- ============================================
 
 GO
 
+-- Contract: CreateTimeEntry is FIND-OR-CREATE (U-624a). Invariant: one TimeEntry header per
+-- (UserId, WorkDate). Under an exclusive applock on that key it returns the existing header
+-- (lowest Id, [Created] = 0) or inserts one ([Created] = 1). A found header's @Note is ignored --
+-- finding is not an edit. Same OUTPUT column shape on both branches plus [Created] BIT. It
+-- writes the initial 'draft' TimeEntryStatus in the same transaction; a found header with no
+-- status rows is healed with one. The filtered unique index UX_TimeEntry_UserId_WorkDate
+-- (WorkDate >= 2026-07-01) is the backstop.
+-- Always COMMITs (never ROLLBACK inside a sproc -- pyodbc error 266); the applock is
+-- transaction-owned and releases with the commit.
 CREATE OR ALTER PROCEDURE CreateTimeEntry
 (
     @UserId BIGINT,
@@ -315,25 +343,88 @@ CREATE OR ALTER PROCEDURE CreateTimeEntry
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Lock NVARCHAR(255) = CONCAT('TimeEntry:', @UserId, ':', CONVERT(VARCHAR(10), @WorkDate, 120));
+    DECLARE @LockResult INT;
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+    DECLARE @ExistingId BIGINT;
+    DECLARE @NewIds TABLE ([Id] BIGINT NOT NULL);
+    DECLARE @NewId BIGINT;
+
     BEGIN TRANSACTION;
 
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+    EXEC @LockResult = sp_getapplock
+        @Resource = @Lock,
+        @LockMode = 'Exclusive',
+        @LockOwner = 'Transaction',
+        @LockTimeout = 10000;
 
-    INSERT INTO dbo.[TimeEntry] (
-        [CreatedDatetime], [ModifiedDatetime], [UserId], [WorkDate], [Note], [CreatedByUserId]
-    )
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[UserId],
-        CONVERT(VARCHAR(10), INSERTED.[WorkDate], 120) AS [WorkDate],
-        INSERTED.[Note]
-    VALUES (
-        @Now, @Now, @UserId, @WorkDate, @Note, COALESCE(@CreatedByUserId, 17)
-    );
+    IF @LockResult < 0
+    BEGIN
+        COMMIT TRANSACTION;
+        RAISERROR('CreateTimeEntry: could not serialize the create for this worker-day; retry', 16, 1);
+        RETURN;
+    END
+
+    -- Existing header? Lowest Id is "the" day header every client already treats as canonical
+    -- (ReadTimeEntriesPaginated orders te.Id ASC).
+    SELECT TOP 1 @ExistingId = te.[Id]
+    FROM dbo.[TimeEntry] te
+    WHERE te.[UserId] = @UserId AND te.[WorkDate] = @WorkDate
+    ORDER BY te.[Id] ASC;
+
+    IF @ExistingId IS NOT NULL
+    BEGIN
+        -- Self-heal: a status-less header is the stuck shape (submit would fail forever).
+        IF NOT EXISTS (SELECT 1 FROM dbo.[TimeEntryStatus] WHERE [TimeEntryId] = @ExistingId)
+        BEGIN
+            INSERT INTO dbo.[TimeEntryStatus] ([CreatedDatetime], [TimeEntryId], [Status], [UserId], [Note])
+            VALUES (@Now, @ExistingId, 'draft', COALESCE(@CreatedByUserId, @UserId), NULL);
+        END
+
+        SELECT TOP 1
+            te.[Id],
+            te.[PublicId],
+            te.[RowVersion],
+            CONVERT(VARCHAR(19), te.[CreatedDatetime], 120) AS [CreatedDatetime],
+            CONVERT(VARCHAR(19), te.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+            te.[UserId],
+            CONVERT(VARCHAR(10), te.[WorkDate], 120) AS [WorkDate],
+            te.[Note],
+            CAST(0 AS BIT) AS [Created]
+        FROM dbo.[TimeEntry] te
+        WHERE te.[Id] = @ExistingId
+        ORDER BY te.[Id] ASC;
+    END
+    ELSE
+    BEGIN
+        INSERT INTO dbo.[TimeEntry] (
+            [CreatedDatetime], [ModifiedDatetime], [UserId], [WorkDate], [Note], [CreatedByUserId]
+        )
+        OUTPUT INSERTED.[Id] INTO @NewIds ([Id])
+        VALUES (
+            @Now, @Now, @UserId, @WorkDate, @Note, COALESCE(@CreatedByUserId, 17)
+        );
+
+        SELECT @NewId = [Id] FROM @NewIds;
+
+        INSERT INTO dbo.[TimeEntryStatus] ([CreatedDatetime], [TimeEntryId], [Status], [UserId], [Note])
+        VALUES (@Now, @NewId, 'draft', COALESCE(@CreatedByUserId, @UserId), NULL);
+
+        SELECT
+            te.[Id],
+            te.[PublicId],
+            te.[RowVersion],
+            CONVERT(VARCHAR(19), te.[CreatedDatetime], 120) AS [CreatedDatetime],
+            CONVERT(VARCHAR(19), te.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+            te.[UserId],
+            CONVERT(VARCHAR(10), te.[WorkDate], 120) AS [WorkDate],
+            te.[Note],
+            CAST(1 AS BIT) AS [Created]
+        FROM dbo.[TimeEntry] te
+        WHERE te.[Id] = @NewId;
+    END
 
     COMMIT TRANSACTION;
 END;

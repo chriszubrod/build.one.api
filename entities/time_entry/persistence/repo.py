@@ -39,6 +39,8 @@ class TimeEntryRepository:
             return None
 
         try:
+            _c = getattr(row, "Created", None)
+            _created = None if _c is None else bool(_c)
             return TimeEntry(
                 id=row.Id,
                 public_id=str(row.PublicId) if row.PublicId else None,
@@ -48,6 +50,9 @@ class TimeEntryRepository:
                 user_id=getattr(row, "UserId", None),
                 work_date=getattr(row, "WorkDate", None),
                 note=getattr(row, "Note", None),
+                # CreateTimeEntry's [Created] flag, tri-state: None = no [Created] column
+                # (other sprocs, or a pre-U-624a CreateTimeEntry body).
+                created=_created,
             )
         except AttributeError as error:
             logger.error(f"Attribute error during time entry mapping: {error}")

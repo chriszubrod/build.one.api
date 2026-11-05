@@ -1976,139 +1976,41 @@ class BillService:
             }
 
     def _enqueue_box_uploads(self, bill, line_items: List) -> None:
+        """Enqueue Box uploads for the bill's line-item attachments.
+
+        Delegates to ``shared.completion.box_fanout.enqueue_box_uploads`` (U-756):
+        one enqueue per unique (project, attachment) pair to the project's mapped
+        'invoices' Box folder; gated on ALLOW_BOX_WRITES; failure-isolated.
+        Filename shape matches SharePoint via ``self._build_module_filename``
+        (public_ids are for blob storage only, per Chris' 2026-07-02 call).
         """
-        Enqueue Box uploads for the bill's line-item attachments.
+        from shared.completion.box_fanout import (
+            FILENAME_MODULE,
+            BoxUploadSpec,
+            enqueue_box_uploads,
+        )
 
-        Mirrors the SharePoint module-folder upload: one enqueue per unique
-        (project, attachment) pair, routed to the project's mapped Box
-        folder. Projects without a Box mapping are skipped (one info log
-        per project). Filename shape MATCHES SharePoint (via the shared
-        `_build_module_filename` helper — public_ids are for blob storage
-        only per Chris' 2026-07-02 call). Additive + failure-isolated —
-        any exception is logged and swallowed so Box can never affect the
-        completion flow.
-        """
-        import os as _os
-        if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() != "true":
-            return  # gate closed — skip the DB legwork, not just the enqueue
-        try:
-            from integrations.box.folder.business.service import (
-                BoxProjectFolderService,
-                DOC_CLASS_INVOICES,
-            )
-            from integrations.box.outbox.business.service import BoxOutboxService
-
-            folder_service = BoxProjectFolderService()
-            box_outbox = BoxOutboxService()
-            mapping_cache: dict = {}  # project_id -> mapping dict or None
-            project_cache: dict = {}  # project_id -> project object (for filename)
-            enqueued_keys = set()  # (project_id, attachment_id)
-            bill_line_items_count = len(line_items)
-
-            # Look up vendor once per bill (needed by _build_module_filename).
-            vendor = self.vendor_service.read_by_id(id=bill.vendor_id) if bill.vendor_id else None
-
-            for line_item in line_items:
-                try:
-                    if not line_item.project_id or not line_item.public_id:
-                        continue
-                    project_id = line_item.project_id
-                    if project_id not in mapping_cache:
-                        # Vendor bill docs file to the project's "14 - Invoices"
-                        # (AP/'invoices') folder.
-                        mapping_cache[project_id] = folder_service.read_mapping_by_project_id_and_class(
-                            project_id, DOC_CLASS_INVOICES
-                        )
-                        if mapping_cache[project_id] is None:
-                            logger.info(f"box.enqueue.skipped_unmapped_project project_id={project_id} doc_class=invoices")
-                    mapping = mapping_cache[project_id]
-                    if not mapping:
-                        continue
-                    attachment_link = self.bill_line_item_attachment_service.read_by_bill_line_item_id(
-                        bill_line_item_public_id=line_item.public_id
-                    )
-                    if not attachment_link or not attachment_link.attachment_id:
-                        continue
-                    if (project_id, attachment_link.attachment_id) in enqueued_keys:
-                        continue
-                    attachment = self.attachment_service.read_by_id(id=attachment_link.attachment_id)
-                    if not attachment or not attachment.blob_url:
-                        continue
-
-                    # Project lookup for the human-readable filename (cache per-bill).
-                    if project_id not in project_cache:
-                        project_cache[project_id] = self.project_service.read_by_id(id=str(project_id))
-                    project = project_cache[project_id]
-
-                    box_filename = self._build_module_filename(
-                        bill=bill,
-                        line_item=line_item,
-                        vendor=vendor,
-                        project=project,
-                        bill_line_items_count=bill_line_items_count,
-                        attachment=attachment,
-                    )
-                    # Fallback if the helper produced an empty base (missing vendor/
-                    # project/etc.) — never enqueue a bare `.pdf` or empty name.
-                    if not box_filename or box_filename in (".pdf", ".", "."):
-                        box_filename = attachment.original_filename or attachment.filename or "document"
-
-                    box_outbox.enqueue_box_upload(
-                        entity_type="bill",
-                        entity_public_id=str(bill.public_id),
-                        doc_kind="attachment",
-                        blob_path=attachment.blob_url,
-                        filename=box_filename,
-                        content_type=attachment.content_type or "application/octet-stream",
-                        box_folder_id=mapping["box_folder_id"],
-                        attachment_id=attachment.id,
-                        project_id=project_id,
-                    )
-                    enqueued_keys.add((project_id, attachment_link.attachment_id))
-                except Exception as line_error:
-                    logger.warning(
-                        f"box.enqueue.failed bill={bill.public_id} line_item={line_item.id}: {line_error}"
-                    )
-        except Exception as e:
-            logger.warning(f"box.enqueue.failed bill={bill.public_id}: {e}")
+        spec = BoxUploadSpec(
+            entity_type="bill",
+            read_attachment_link=lambda public_id: self.bill_line_item_attachment_service.read_by_bill_line_item_id(
+                bill_line_item_public_id=public_id
+            ),
+            read_attachment=lambda attachment_id: self.attachment_service.read_by_id(id=attachment_id),
+            logger=logger,
+            filename_strategy=FILENAME_MODULE,
+            owner=self,
+        )
+        enqueue_box_uploads(spec, bill, line_items, "attachment")
 
     def _enqueue_box_excel(self, bill, project_id: int) -> None:
+        """Enqueue a Box DETAILS-tab Excel update for this bill's project.
+
+        Delegates to ``shared.completion.box_fanout.enqueue_box_excel`` (U-756):
+        gated on ALLOW_BOX_WRITES; skips unmapped projects; failure-isolated.
         """
-        Enqueue a Box DETAILS-tab Excel update for this bill's project.
+        from shared.completion.box_fanout import enqueue_box_excel
 
-        Sibling of _enqueue_box_uploads, called from the same completion flow
-        right where sync_to_excel_workbook (the MS Excel sync) runs. Looks up
-        the project's mapped Box workbook; if mapped, enqueues a single
-        update_box_excel outbox row (the drain handler re-fetches the entity +
-        rebuilds rows + edits the .xlsx with openpyxl). Idempotency is via
-        column Z, so one row per (entity, workbook) is safe.
-
-        Additive + failure-isolated — early-returns when ALLOW_BOX_WRITES is not
-        'true' (skip the DB legwork) and swallows every exception so Box can
-        never affect the completion flow.
-        """
-        import os as _os
-        if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() != "true":
-            return  # gate closed — skip the DB legwork, not just the enqueue
-        try:
-            from integrations.box.excel.business.mapping_service import (
-                BoxProjectWorkbookService,
-            )
-            from integrations.box.outbox.business.service import BoxOutboxService
-
-            mapping = BoxProjectWorkbookService().read_by_project_id(project_id)
-            if not mapping:
-                logger.info(f"box.excel.skipped_unmapped_project project_id={project_id}")
-                return
-            BoxOutboxService().enqueue_box_excel(
-                entity_type="bill",
-                entity_public_id=str(bill.public_id),
-                project_id=project_id,
-                box_file_id=mapping["box_file_id"],
-                worksheet_name=mapping["worksheet_name"],
-            )
-        except Exception as e:
-            logger.warning(f"box.excel.enqueue.failed bill={bill.public_id} project_id={project_id}: {e}")
+        enqueue_box_excel(entity_type="bill", entity=bill, project_id=project_id, logger=logger)
 
     def push_to_qbo(self, bill, realm_id: str):
         """

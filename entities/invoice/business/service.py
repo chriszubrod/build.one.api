@@ -1413,40 +1413,15 @@ class InvoiceService:
             return {"success": False, "enqueued": 0, "skipped": 0, "reason": str(e)}
 
     def _enqueue_box_excel(self, invoice, project_id: int) -> None:
+        """Enqueue a Box DETAILS-tab DRAW REQUEST stamp for this invoice's project.
+
+        Delegates to ``shared.completion.box_fanout.enqueue_box_excel`` (U-756):
+        gated on ALLOW_BOX_WRITES; skips unmapped projects; failure-isolated. The worker
+        treats the invoice row as UPDATE-only (col H stamped onto existing rows).
         """
-        Enqueue a Box DETAILS-tab DRAW REQUEST stamp for this invoice's project.
+        from shared.completion.box_fanout import enqueue_box_excel
 
-        Sibling of BillService._enqueue_box_excel / ExpenseService._enqueue_box_excel,
-        but the worker treats this row as UPDATE-only — column H stamped onto
-        rows already in DETAILS, matched by col-Z public_id. The MS / SharePoint
-        equivalent runs in sync_to_excel_workbook above; this is the Box mirror,
-        invoked from the same completion-flow point.
-
-        Additive + failure-isolated — early-returns when ALLOW_BOX_WRITES is not
-        'true' and swallows every exception so Box can never affect the
-        completion flow.
-        """
-        import os as _os
-        if _os.getenv("ALLOW_BOX_WRITES", "").strip().lower() != "true":
-            return
-        try:
-            from integrations.box.excel.business.mapping_service import (
-                BoxProjectWorkbookService,
-            )
-            from integrations.box.outbox.business.service import BoxOutboxService
-
-            mapping = BoxProjectWorkbookService().read_by_project_id(project_id)
-            if not mapping:
-                logger.info(f"box.excel.skipped_unmapped_project project_id={project_id}")
-                return
-            BoxOutboxService().enqueue_box_excel_draw_stamp(
-                invoice_public_id=str(invoice.public_id),
-                project_id=project_id,
-                box_file_id=mapping["box_file_id"],
-                worksheet_name=mapping["worksheet_name"],
-            )
-        except Exception as e:
-            logger.warning(f"box.excel.enqueue.failed invoice={invoice.public_id} project_id={project_id}: {e}")
+        enqueue_box_excel(entity_type="invoice", entity=invoice, project_id=project_id, logger=logger, draw_stamp=True)
 
     def _enqueue_box_excel_clear(self, invoice, project_id: int, source_public_ids: list) -> dict:
         """

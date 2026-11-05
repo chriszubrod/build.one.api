@@ -2066,11 +2066,9 @@ class ExpenseService:
             vendor = self.vendor_service.read_by_id(id=expense.vendor_id) if expense.vendor_id else None
             vendor_abbreviation = (vendor.abbreviation or vendor.name or "Unknown") if vendor else "Unknown"
 
-            from integrations.ms.outbox.business.service import (
-                MsOutboxService,
-                SharePointUploadTally,
-                sharepoint_upload_outcome,
-            )
+            from integrations.ms.outbox.business.service import MsOutboxService, SharePointUploadTally
+            from shared.completion.sharepoint_fanout import REFUSED_ERROR_PLAIN, enqueue_attachment_file
+
             tally = SharePointUploadTally()
             ms_outbox = MsOutboxService()
 
@@ -2136,7 +2134,9 @@ class ExpenseService:
 
                     content_type = attachment.content_type or metadata.get("content_type", "application/octet-stream")
                     # Receipts-folder uploads go via outbox too.
-                    queued = ms_outbox.enqueue_sharepoint_upload(
+                    outcome, queued = enqueue_attachment_file(
+                        ms_outbox=ms_outbox,
+                        tally=tally,
                         entity_type="Expense",
                         entity_public_id=str(expense.public_id),
                         drive_id=shared_docs_drive.drive_id,
@@ -2145,13 +2145,11 @@ class ExpenseService:
                         content_type=content_type,
                         blob_path=attachment.blob_url,
                         attachment_id=attachment.id,
+                        tally_key=attachment_link.attachment_id,
+                        refused_error=lambda: {"line_item_id": line_item.id, "error": REFUSED_ERROR_PLAIN},
                     )
-                    outcome = sharepoint_upload_outcome(queued)
                     if outcome == "refused":
-                        tally.record_error({"line_item_id": line_item.id, "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false)"})
                         continue
-
-                    tally.record(attachment_link.attachment_id, outcome)
                     logger.info(f"Queued receipts upload: {sharepoint_filename} (outbox {queued.public_id}, outcome={outcome})")
                 except Exception as e:
                     tally.record_error({"line_item_id": line_item.id, "error": str(e)})

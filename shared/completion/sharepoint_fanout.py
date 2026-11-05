@@ -1,12 +1,12 @@
-"""SharePoint completion fan-out shared by Bill / BillCredit / Expense (U-757a).
+"""SharePoint completion fan-out shared by Bill / BillCredit / Expense (U-757a) and Invoice (U-757b).
 
 Two layers, formerly hand-copied into each entity service:
 
 - ``enqueue_attachment_file`` — the per-FILE core: enqueue one SharePoint
   upload on the durable MS outbox, classify the result via
   ``sharepoint_upload_outcome``, and credit ``SharePointUploadTally`` (or record
-  the caller's refused-error). Folder-agnostic, so the invoice / receipts loops
-  can adopt it later (U-757b).
+  the caller's refused-error). Folder-agnostic: also used directly by the
+  expense general-receipts loop and the invoice line / packet loops (U-757b).
 - ``upload_to_project_module_folder`` — the module-folder engine: resolve the
   module -> the project's module folder (unmapped -> mapping-missing issue) ->
   drive -> vendor -> project -> (storage) -> per-line link / dedupe / attachment
@@ -39,8 +39,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
 
-_REFUSED_ERROR_RICH = "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
-_REFUSED_ERROR_PLAIN = "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false)"
+REFUSED_ERROR_RICH = "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
+REFUSED_ERROR_PLAIN = "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false)"
 _MISSING_BLOB_ERROR = "Attachment not found or missing blob_url"
 
 
@@ -179,6 +179,13 @@ def enqueue_attachment_file(
     else:
         tally.record(tally_key, outcome)
     return outcome, queued
+
+
+def _line_error(line_item, text: str, *, rich: bool) -> Dict[str, Any]:
+    """The engine's per-line error dict; ``rich`` adds ``line_item_public_id`` (key order is observable)."""
+    if rich:
+        return {"line_item_id": line_item.id, "line_item_public_id": line_item.public_id, "error": text}
+    return {"line_item_id": line_item.id, "error": text}
 
 
 # --------------------------------------------------------------------------- narration
@@ -371,11 +378,7 @@ def upload_to_project_module_folder(
 
                 attachment = spec.read_attachment(attachment_link.attachment_id)
                 if not attachment or not attachment.blob_url:
-                    tally.record_error({
-                        "line_item_id": line_item.id,
-                        "line_item_public_id": line_item.public_id,
-                        "error": _MISSING_BLOB_ERROR,
-                    })
+                    tally.record_error(_line_error(line_item, _MISSING_BLOB_ERROR, rich=True))
                     continue
 
                 sharepoint_filename = spec.build_filename(line_item, vendor, project, attachment)
@@ -385,17 +388,11 @@ def upload_to_project_module_folder(
                     try:
                         _file_content, _metadata = storage.download_file(attachment.blob_url)
                     except Exception as e:
-                        tally.record_error({"line_item_id": line_item.id, "error": str(e)})
+                        tally.record_error(_line_error(line_item, str(e), rich=False))
                         continue
 
-                if spec.rich_errors:
-                    refused_error = lambda: {
-                        "line_item_id": line_item.id,
-                        "line_item_public_id": line_item.public_id,
-                        "error": _REFUSED_ERROR_RICH,
-                    }
-                else:
-                    refused_error = lambda: {"line_item_id": line_item.id, "error": _REFUSED_ERROR_PLAIN}
+                refused_text = REFUSED_ERROR_RICH if spec.rich_errors else REFUSED_ERROR_PLAIN
+                refused_error = lambda: _line_error(line_item, refused_text, rich=spec.rich_errors)
 
                 outcome, queued = enqueue_attachment_file(
                     ms_outbox=ms_outbox,
@@ -420,13 +417,9 @@ def upload_to_project_module_folder(
             except Exception as e:
                 if spec.rich_errors:
                     log.exception(f"Error processing line item {line_item.id}")
-                    tally.record_error({
-                        "line_item_id": line_item.id,
-                        "line_item_public_id": line_item.public_id,
-                        "error": f"Unexpected error: {str(e)}",
-                    })
+                    tally.record_error(_line_error(line_item, f"Unexpected error: {str(e)}", rich=True))
                 else:
-                    tally.record_error({"line_item_id": line_item.id, "error": str(e)})
+                    tally.record_error(_line_error(line_item, str(e), rich=False))
 
         if spec.lenient_success:
             success = tally.synced_count > 0 or tally.skipped_count > 0 or len(tally.errors) == 0

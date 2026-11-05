@@ -1783,10 +1783,9 @@ class InvoiceService:
                 invoice=invoice, line_items=line_items
             )
 
-            from integrations.ms.outbox.business.service import (
-                MsOutboxService,
-                sharepoint_upload_outcome,
-            )
+            from integrations.ms.outbox.business.service import MsOutboxService
+            from shared.completion.sharepoint_fanout import REFUSED_ERROR_RICH, enqueue_attachment_file
+
             ms_outbox = MsOutboxService()
 
             # 3. Upload each unique attachment
@@ -1816,7 +1815,9 @@ class InvoiceService:
                 )
 
                 try:
-                    queued = ms_outbox.enqueue_sharepoint_upload(
+                    enqueue_attachment_file(
+                        ms_outbox=ms_outbox,
+                        tally=tally,
                         entity_type="Invoice",
                         entity_public_id=str(invoice.public_id),
                         drive_id=drive.drive_id,
@@ -1825,16 +1826,9 @@ class InvoiceService:
                         content_type=row_data["content_type"] or "application/octet-stream",
                         blob_path=blob_url,
                         attachment_id=att_id,
+                        tally_key=att_id,
+                        refused_error=lambda: {"attachment_id": att_id, "error": REFUSED_ERROR_RICH},
                     )
-                    outcome = sharepoint_upload_outcome(queued)
-                    if outcome == "refused":
-                        tally.record_error({
-                            "attachment_id": att_id,
-                            "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
-                        })
-                        continue
-
-                    tally.record(att_id, outcome)
                 except Exception as e:
                     tally.record_error({"attachment_id": att_id, "error": str(e)})
                     continue
@@ -1854,7 +1848,9 @@ class InvoiceService:
                 try:
                     from entities.invoice.business.naming import build_packet_filename
                     packet_filename = build_packet_filename(invoice_number)
-                    queued = ms_outbox.enqueue_sharepoint_upload(
+                    outcome, _queued = enqueue_attachment_file(
+                        ms_outbox=ms_outbox,
+                        tally=tally,
                         entity_type="Invoice",
                         entity_public_id=str(invoice.public_id),
                         drive_id=drive.drive_id,
@@ -1863,16 +1859,11 @@ class InvoiceService:
                         content_type="application/pdf",
                         blob_path=packet_att.blob_url,
                         attachment_id=packet_att.id,
+                        tally_key=packet_att.id,
+                        refused_error=lambda: {"packet": True, "error": REFUSED_ERROR_RICH},
                     )
-                    outcome = sharepoint_upload_outcome(queued)
-                    if outcome == "refused":
-                        tally.record_error({
-                            "packet": True,
-                            "error": "SharePoint upload enqueue refused (ALLOW_MS_WRITES=false or enqueue failure)"
-                        })
-                        continue
-                    enqueued_packet_ids.add(packet_att.id)
-                    tally.record(packet_att.id, outcome)
+                    if outcome != "refused":
+                        enqueued_packet_ids.add(packet_att.id)
                 except Exception as e:
                     tally.record_error({"packet": True, "error": str(e)})
 

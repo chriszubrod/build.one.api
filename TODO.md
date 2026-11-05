@@ -2,6 +2,33 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+### 🚪 U-624a SHIPPED 2026-11-05 `eff795c8` — one TimeEntry header per (worker, day): `CreateTimeEntry` is find-or-create under an applock — NOT DEPLOYED, prod SQL apply = Gate 2 (Chris)
+
+Design: `build.one.team/engineering/designs/u624-one-header-per-worker-day.md`. Prod census 11-05: 22 (worker, work_date) groups got more than one header
+create since July (46 headers, six workers; still on iOS build 12); the twin is always empty (46/46 had 0 logs); Chris has hand-deleted 61 twins since
+May. `CreateTimeEntry` was a plain INSERT; neither June unique index existed in prod (the migration refused while duplicates existed — README said "live").
+Now: exclusive `sp_getapplock` on `TimeEntry:<UserId>:<WorkDate>`, returns the existing header (lowest Id, `[Created]=0`) or inserts (`[Created]=1`), the
+'draft' TimeEntryStatus written in the same transaction (a status-less found header is healed), @Note ignored on a find, lock-timeout text carries no
+"lock"/"already exists" (a 409 would make iOS discard the edit); route stays 201. Filtered unique indexes in the base file: `UX_TimeEntry_UserId_WorkDate`
+WHERE WorkDate >= 2026-07-01 (three approved June groups are paid history), `UX_TimeLog_TimeEntry_ClockIn` WHERE Id > 191; the June migration's index
+sections are stubs. `TimeEntry.created` is tri-state (None = legacy sproc body → the service writes the draft row; never on the wire). `service.create`
+refuses to create or find another worker's day without standing (actor == worker, system admin, `current_is_system_context`, or can_view_team — and a found
+header is re-read through the scoped path for a non-admin), unknown user = 404 for non-admins. Bulk import (CSV / contract-labor Excel) groups rows by
+(worker, day): one header, one log per row staggered from 09:00, one submit; a header that pre-exists outside the import fails its group and writes nothing.
+Prod proof (rolled back, 18 checks): the 22 groups found their survivor and inserted nothing; new key create→find; status row once, actor-or-worker
+attributed; self-heal once; both indexes built on live rows; July+ raw twin refused (2601), June accepted; pyodbc SET options compatible. Gate-2 checks: no
+module with QUOTED_IDENTIFIER/ANSI_NULLS off touches TimeEntry/TimeLog; 0 status-less headers. Battery 15 mutants, 15 killed. Full suite 10325/10325 after the rebase (10293 pre-rebase). Review: Sonnet
+builder ×3 (SCOPE CLEAN); Pass 1 Opus F2 + adversarial twin r1 CHANGES-REQUESTED (importer merge path unreachable + 09:00 collision; status row outside the
+sproc transaction; impersonation on the found branch; deploy order) → r2 CHANGES-REQUESTED (tri-state `created`: image-first was unsafe too) → r3 PASS;
+Pass 2 3 takes; Pass 3 PASS on six attack goals (+ platform finding → **U-766**: `can_view_team` set in a SYNC dependency is discarded).
+
+- [ ] **⚠️ DEPLOY ORDER (Gate 2): API image FIRST, then apply the SQL** (`./.venv/bin/python scripts/run_sql.py entities/time_entry/sql/dbo.time_entry.sql`
+  from the repo root). SQL-first re-opens submitted/approved days (old service writes 'draft' on every found header). Immediately before the apply: re-run the
+  July+ duplicate census (the index refuses to build over a twin) and `sys.sql_modules` SET-options check. **Rollback: revert the sproc body BEFORE any image
+  rollback.** After the apply: recount the duplicate census by DISTINCT id (a find is still a `time_entry_create` workflow). `[U-624a follow-up]`
+- [ ] **U-624b — iOS claim-first create + purge fence** (design D4): pre-query on EVERY header create; `recoverOrphanedLog` claims the server header before
+  rebuilding a parent; `loadEntries` purge skips headers created after the request started. After U-624a is DEPLOYED. `[U-624 follow-up]`
+
 ### 🚪 U-551b SHIPPED 2026-11-02 `01aee21f` — an Expense reviewer can approve or decline from the app in one transaction (`POST /apply/review-decision/expense/{public_id}`)
 
 The parked 2026-10-13 commit (836deded) landed on today's trunk: the Expense twin of the Bill route (U-541) — gated `Modules.EXPENSES can_approve`, the caller must be

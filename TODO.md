@@ -22,7 +22,7 @@ builder ×3 (SCOPE CLEAN); Pass 1 Opus F2 + adversarial twin r1 CHANGES-REQUESTE
 sproc transaction; impersonation on the found branch; deploy order) → r2 CHANGES-REQUESTED (tri-state `created`: image-first was unsafe too) → r3 PASS;
 Pass 2 3 takes; Pass 3 PASS on six attack goals (+ platform finding → **U-766**: `can_view_team` set in a SYNC dependency is discarded).
 
-- [ ] **⚠️ DEPLOY ORDER (Gate 2): API image FIRST, then apply the SQL** — the image also carries **U-624a-f1** `a4a1552a` (`created: true|false` on the create path's 201 body, None stays off; the iOS U-772 cancel-after-POST path keys on it). (`./.venv/bin/python scripts/run_sql.py entities/time_entry/sql/dbo.time_entry.sql`
+- [ ] **⚠️ DEPLOY ORDER (Gate 2): API image FIRST ✅ (DEPLOYED 2026-11-06 as `31bed988`, rode the U-551b-f6 deploy), then apply the SQL — STILL PENDING (Chris's go). Pre-checks 2026-11-06 03:1xZ, read-only: July+ duplicate header groups 0; duplicate (TimeEntryId, ClockIn) log groups past Id 191 0; no TimeEntry/TimeLog module with QUOTED_IDENTIFIER/ANSI_NULLS off; no status-less headers.** — the image also carries **U-624a-f1** `a4a1552a` (`created: true|false` on the create path's 201 body, None stays off; the iOS U-772 cancel-after-POST path keys on it). (`./.venv/bin/python scripts/run_sql.py entities/time_entry/sql/dbo.time_entry.sql`
   from the repo root). SQL-first re-opens submitted/approved days (old service writes 'draft' on every found header). Immediately before the apply: re-run the
   July+ duplicate census (the index refuses to build over a twin) and `sys.sql_modules` SET-options check. **Rollback: revert the sproc body BEFORE any image
   rollback.** After the apply: recount the duplicate census by DISTINCT id (a find is still a `time_entry_create` workflow). `[U-624a follow-up]`
@@ -36,7 +36,7 @@ One mapping (`entity_modules.py`: Bill↔BILLS, Expense↔EXPENSES, BillCredit�
 `has_module_permission(can_read)`. A requested type outside the grants answers `[]` without a DB call (device-side the row just disappears);
 otherwise the allowed list threads aggregator → feed → repo → `dbo.ReadInboxTasks @EntityTypes` (comma list, NULL = all for the old image);
 counts filtered in Python. Base == live checked before the edit. 42 targeted green (19 new cases + both inbox routes pinned in the rbac table). Battery 17 mutants, 17 killed. Full suite 10631/10631 collected (trunk 10610 + 21 new), 0 failed, 1 pre-existing skip. Review: Pass 1 Codex xhigh r1 (P2 ×2 on tests) → r2 PASS; Pass 2 4 takes folded; Pass 3 + twin: no bypass, deploy window = 500 not a leak; prod proof on user 18's live inbox.
-- [ ] **⚠️ DEPLOY ORDER (Gate 2): SQL FIRST** (`./.venv/bin/python scripts/run_sql.py entities/review/sql/dbo.inbox_tasks.sql` from the repo
+- [x] **DEPLOYED 2026-11-06** — SQL applied 03:04Z (live sproc == base; pre→post diff exactly the parameter + four predicates; live `EXEC` for user 18: NULL 57 rows, `Bill` 38, `BillCredit,Invoice` 0), image `31bed988` (ACR run caen) pulled 03:08:28Z, app up 03:08:48Z. The image also carries U-624a + U-624a-f1 (image-first state), U-756, U-757a, U-757b. ~~**⚠️ DEPLOY ORDER (Gate 2): SQL FIRST** (`./.venv/bin/python scripts/run_sql.py entities/review/sql/dbo.inbox_tasks.sql` from the repo
   root — additive parameter, old image unaffected), THEN the image. Prove on prod data right before: run the new arm predicate read-only for a
   real TASKS-only user and confirm the Expense rows drop. `[U-551b-f6 follow-up]`
 - [x] **U-551b-f6** ✅ this unit.

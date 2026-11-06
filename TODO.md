@@ -111,6 +111,14 @@ The builder preserved these quirks deliberately, and the U-757b goldens pin them
 - [ ] Expense recipients resolve via `ReviewRepository().resolve_review_recipients_by_expense_id` + `_bucket`, bills via `ReviewRecipientService().resolve_for_bill` - two repos over the same sproc family with different error handling; unify (behaviour change - own unit).
 - [ ] (pre-existing) `tests/test_ls01c_review_attribution_and_next_status.py` ~L380-397: the AST guard-order check picks the LAST `If` mentioning to/cc that returns, so deleting the BCC-only guard could still pass via the early all-empty guard. Match only an `If` whose test has no `bcc_with_email`. (The U-754 `bcc_only` golden now covers it behaviourally.)
 
+## U-751 follow-ups - single-code labor proposal rescore (booked 2026-11-06; verdict FAIL)
+
+- **[product, decide]** The bar sits behind split DETECTION: perfect flagging would put the same proposals at 83.5 % exact (K=7). Next lever is a better multi-task detector on the notes (flag recall is 34-40 %), not a better code picker. Revisit with the December split work.
+- **[refactor, U-750] Lift `run_backtest`'s population setup into a public helper** (IDF, crew days, windows, analyze, fit) so U-751 `build_population` stops copying ~15 lines; the parity test pins them meanwhile. (Pass 2 #8.)
+- **[refactor, U-750] Parameterise `write_outputs`** (`prefix`, `model_version`, `render`) so U-751's line-for-line copy goes away. (Pass 2 #9.)
+- **[refactor, U-750] Move the out-dir-under-.data check and the HP2 named-case lookup into U-750 helpers.** (Pass 2 #10.)
+- **[robustness, U-750] `LlmCache.get` raises TypeError on a valid-JSON non-object envelope** (`[]`, `null`); U-751 catches it at its call site (Pass 1). Catch it in U-750 itself.
+
 ## U-750 follow-ups - labor follow-up proposed coding backtest (booked 2026-11-02; verdict FAIL)
 
 - [ ] **U-751 (booked, design-gated, $0):** single-code follow-up proposals - rescore the cached Sonnet answers (`.data/u750/armB*/llm_cache`) as single-code-only, with days whose notes describe several tasks flagged "may need splitting" instead of coded; measure exact on the uncoded@T population against the same 80 % bar. If it passes, Phase B = single-code follow-up email only (no split apply path).

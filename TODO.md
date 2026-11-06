@@ -63,7 +63,17 @@ No SQL change. Tests: tests/test_u551b_expense_transactional_review_decision.py 
 - **[test-infra] Goldens to a JSON fixture with a regenerate switch (U-756 + U-757).** `tests/test_u757a_sharepoint_fanout_characterization.py` (~5.6k lines) and the U-756 Box file embed pprinted golden dicts inline and say "never edit by hand", but nothing regenerates them. The drift-fix units that change these exact messages would have to hand-edit them. Move them to `tests/fixtures/u75{6,7a}_*_goldens.json` (the `_ordered` output is already JSON-shaped) and add `UPDATE_GOLDENS=1`. Keep the scenario builders and the structural tests in Python. (Pass 2 #10.)
 - **[drift] Bill builds `AzureBlobStorage()` it never uses.** Bill does not probe blobs. The construction survives only because its failure is the observable "Failed to initialize storage: …" early return, which the goldens pin. Dropping it is a small behaviour change: book with the other bill/expense drift fixes. (Pass 2 #4.)
 - **[accepted residual] Refused-path log order (bill/credit).** If `line_item.id` raised on a refused enqueue, the original logged "SharePoint upload enqueue refused for …" before the error; the engine now records the error first, so that one log line is skipped. Production models always declare `id`, so this is unreachable. (Pass 1 re-review.)
-- **[readability, skipped] Repeated rich line-error dict.** It is written out three times in `shared/completion/sharepoint_fanout.py`; a `_line_error(line_item, text, *, rich)` helper would fold them. Fold it when U-757b touches the loop. (Pass 2 #6.)
+- ~~**[readability] Repeated rich line-error dict.**~~ DONE in U-757b (`5d14f9d0`): `_line_error` now serves all five engine sites.
+
+## U-757b follow-ups - receipts + invoice enqueues on the shared core (booked 2026-11-05)
+
+The builder preserved these quirks deliberately, and the U-757b goldens pin them. Each fix is a behaviour change, so book it as a drift unit.
+
+- **[drift] Expense general-receipts `content_type=None`.** If the attachment has no content type and the blob metadata holds `None`, `None` reaches the enqueue instead of `application/octet-stream`.
+- **[drift] Receipts skip silently.** A missing attachment or `blob_url` is skipped with no per-line error, while the module-folder engine reports one.
+- **[drift] A refused upload is retried by a sibling line.** When lines share an attachment, a refused enqueue is not recorded in the dedupe set, so the next line tries the same attachment again.
+- **[drift] Invoice packet double-enqueue.** A packet whose attachment id equals a line attachment's is enqueued twice, because packet and line dedupe sets are separate.
+- **[bug, U-768] Still preserved.** Pinned three ways in `tests/test_u757b_sharepoint_enqueue_characterization.py`; updating those pins is part of fixing U-768.
 
 ## U-755 follow-ups - shared reviewer-decision engine (booked 2026-11-02)
 

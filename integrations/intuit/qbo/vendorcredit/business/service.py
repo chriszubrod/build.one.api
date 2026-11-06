@@ -6,6 +6,7 @@ from typing import List, Optional
 # Third-party Imports
 
 # Local Imports
+from integrations.intuit.qbo.base.charge_link import reimburse_charge_id_from_linked_txn
 from integrations.intuit.qbo.vendorcredit.business.model import QboVendorCredit, QboVendorCreditLine
 from integrations.intuit.qbo.vendorcredit.persistence.repo import QboVendorCreditRepository
 from integrations.intuit.qbo.vendorcredit.external.client import QboVendorCreditClient
@@ -295,6 +296,8 @@ class QboVendorCreditService:
                     customer_ref_value = detail.customer_ref.value
                     customer_ref_name = detail.customer_ref.name
             
+            reimburse_charge_qbo_id = reimburse_charge_id_from_linked_txn(line.linked_txn)
+
             # Match an existing stored line by stable QBO Line.Id (upsert-in-place).
             existing_line = None
             if line.id:
@@ -325,10 +328,11 @@ class QboVendorCreditService:
                 customer_ref_name=customer_ref_name,
                 account_ref_value=account_ref_value,
                 account_ref_name=account_ref_name,
+                reimburse_charge_qbo_id=reimburse_charge_qbo_id,
             )
 
             if existing_line:
-                self.repo.update_line_by_id(local_line)
+                self.repo.update_line_by_id(local_line, set_reimburse_charge_qbo_id=True)
             else:
                 self.repo.create_line(local_line)
 

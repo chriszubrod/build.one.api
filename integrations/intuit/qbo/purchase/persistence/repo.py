@@ -8,6 +8,7 @@ from typing import List, Optional
 import pyodbc
 
 # Local Imports
+from integrations.intuit.qbo.base.charge_link import MissingChargeLine
 from integrations.intuit.qbo.purchase.business.model import QboPurchase, QboPurchaseLine
 from integrations.intuit.qbo.billable_refresh.business.staged import StagedBillableQboLine
 from shared.database import (
@@ -433,6 +434,7 @@ class QboPurchaseLineRepository:
                 qty=Decimal(str(getattr(row, "Qty"))) if getattr(row, "Qty", None) is not None else None,
                 unit_price=Decimal(str(getattr(row, "UnitPrice"))) if getattr(row, "UnitPrice", None) is not None else None,
                 markup_percent=Decimal(str(getattr(row, "MarkupPercent"))) if getattr(row, "MarkupPercent", None) is not None else None,
+                reimburse_charge_qbo_id=getattr(row, "ReimburseChargeQboId", None),
             )
         except AttributeError as error:
             logger.error(f"Attribute error during qbo purchase line mapping: {error}")
@@ -462,6 +464,7 @@ class QboPurchaseLineRepository:
         qty: Optional[Decimal],
         unit_price: Optional[Decimal],
         markup_percent: Optional[Decimal],
+        reimburse_charge_qbo_id: Optional[str] = None,
     ) -> QboPurchaseLine:
         """
         Create a new QboPurchaseLine.
@@ -489,6 +492,7 @@ class QboPurchaseLineRepository:
                         "Qty": Decimal(str(qty)) if qty is not None else None,
                         "UnitPrice": Decimal(str(unit_price)) if unit_price is not None else None,
                         "MarkupPercent": Decimal(str(markup_percent)) if markup_percent is not None else None,
+                        "ReimburseChargeQboId": reimburse_charge_qbo_id,
                     }
                     call_procedure(
                         cursor=cursor,
@@ -577,6 +581,8 @@ class QboPurchaseLineRepository:
         qty: Optional[Decimal],
         unit_price: Optional[Decimal],
         markup_percent: Optional[Decimal],
+        reimburse_charge_qbo_id: Optional[str] = None,
+        set_reimburse_charge_qbo_id: bool = False,
     ) -> Optional[QboPurchaseLine]:
         """
         Update a QboPurchaseLine by ID.
@@ -604,6 +610,8 @@ class QboPurchaseLineRepository:
                         "Qty": Decimal(str(qty)) if qty is not None else None,
                         "UnitPrice": Decimal(str(unit_price)) if unit_price is not None else None,
                         "MarkupPercent": Decimal(str(markup_percent)) if markup_percent is not None else None,
+                        "ReimburseChargeQboId": reimburse_charge_qbo_id,
+                        "SetReimburseChargeQboId": 1 if set_reimburse_charge_qbo_id else 0,
                     }
                     call_procedure(
                         cursor=cursor,
@@ -622,6 +630,52 @@ class QboPurchaseLineRepository:
                         pass
         except Exception as error:
             logger.error(f"Error during update qbo purchase line by ID: {error}")
+            raise map_database_error(error)
+
+    def read_lines_missing_reimburse_charge_by_realm_id(self, realm_id: str) -> List[MissingChargeLine]:
+        """U-778a: Billable/HasBeenBilled lines in the realm with no stored ReimburseCharge link (numeric header order)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadQboPurchaseLinesMissingReimburseChargeByRealmId",
+                        params={"RealmId": realm_id},
+                    )
+                    return [
+                        MissingChargeLine(int(r.Id), str(r.QboLineId), str(r.HeaderQboId))
+                        for r in cursor.fetchall()
+                    ]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during ReadQboPurchaseLinesMissingReimburseChargeByRealmId: {error}")
+            raise map_database_error(error)
+
+    def update_reimburse_charge_by_id(self, id: int, reimburse_charge_qbo_id: str) -> bool:
+        """Set the ReimburseCharge link; True iff a row was actually written (0 rows = already current)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="UpdateQboPurchaseLineReimburseChargeById",
+                        params={"Id": id, "ReimburseChargeQboId": reimburse_charge_qbo_id},
+                    )
+                    row = cursor.fetchone()
+                    return row is not None
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during UpdateQboPurchaseLineReimburseChargeById: {error}")
             raise map_database_error(error)
 
     def delete_by_id(self, id: int) -> Optional[QboPurchaseLine]:

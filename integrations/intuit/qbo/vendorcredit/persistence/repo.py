@@ -8,6 +8,7 @@ from decimal import Decimal
 import pyodbc
 
 # Local Imports
+from integrations.intuit.qbo.base.charge_link import MissingChargeLine
 from integrations.intuit.qbo.vendorcredit.business.model import QboVendorCredit, QboVendorCreditLine
 from integrations.intuit.qbo.billable_refresh.business.staged import StagedBillableQboLine
 from shared.api.money import to_decimal_or_none
@@ -74,6 +75,7 @@ class QboVendorCreditRepository:
                 customer_ref_name=row.CustomerRefName,
                 account_ref_value=row.AccountRefValue,
                 account_ref_name=row.AccountRefName,
+                reimburse_charge_qbo_id=getattr(row, "ReimburseChargeQboId", None),
             )
         except Exception as e:
             logger.error(f"Error mapping VendorCreditLine row: {e}")
@@ -189,6 +191,7 @@ class QboVendorCreditRepository:
                     "CustomerRefName": line.customer_ref_name,
                     "AccountRefValue": line.account_ref_value,
                     "AccountRefName": line.account_ref_name,
+                    "ReimburseChargeQboId": line.reimburse_charge_qbo_id,
                 })
                 row = cursor.fetchone()
                 return self._line_from_db(row)
@@ -237,8 +240,13 @@ class QboVendorCreditRepository:
             logger.error(f"Error reading VendorCreditLine by VendorCreditId and QboLineId: {e}")
             raise map_database_error(e)
 
-    def update_line_by_id(self, line: QboVendorCreditLine) -> Optional[QboVendorCreditLine]:
-        """Update a stored line in place (keeps the PK so the BillCredit mapping survives)."""
+    def update_line_by_id(
+        self, line: QboVendorCreditLine, set_reimburse_charge_qbo_id: bool = False
+    ) -> Optional[QboVendorCreditLine]:
+        """Update a stored line in place (keeps the PK so the BillCredit mapping survives).
+
+        U-778a: line.reimburse_charge_qbo_id is written only when set_reimburse_charge_qbo_id is True
+        (then straight, so None clears a stale link); otherwise the stored link is preserved."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -260,11 +268,59 @@ class QboVendorCreditRepository:
                     "CustomerRefName": line.customer_ref_name,
                     "AccountRefValue": line.account_ref_value,
                     "AccountRefName": line.account_ref_name,
+                    "ReimburseChargeQboId": line.reimburse_charge_qbo_id,
+                    "SetReimburseChargeQboId": 1 if set_reimburse_charge_qbo_id else 0,
                 })
                 row = cursor.fetchone()
                 return self._line_from_db(row)
         except Exception as e:
             logger.error(f"Error updating VendorCreditLine by Id: {e}")
+            raise map_database_error(e)
+
+    def read_lines_missing_reimburse_charge_by_realm_id(self, realm_id: str) -> List[MissingChargeLine]:
+        """U-778a: Billable/HasBeenBilled lines in the realm with no stored ReimburseCharge link (numeric header order)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadQboVendorCreditLinesMissingReimburseChargeByRealmId",
+                        params={"RealmId": realm_id},
+                    )
+                    return [
+                        MissingChargeLine(int(r.Id), str(r.QboLineId), str(r.HeaderQboId))
+                        for r in cursor.fetchall()
+                    ]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during ReadQboVendorCreditLinesMissingReimburseChargeByRealmId: {error}")
+            raise map_database_error(error)
+
+    def update_line_reimburse_charge_by_id(self, id: int, reimburse_charge_qbo_id: str) -> bool:
+        """Set the ReimburseCharge link; True iff a row was actually written (0 rows = already current)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="UpdateQboVendorCreditLineReimburseChargeById",
+                        params={"Id": id, "ReimburseChargeQboId": reimburse_charge_qbo_id},
+                    )
+                    row = cursor.fetchone()
+                    return row is not None
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.error(f"Error updating VendorCreditLine reimburse charge by Id: {e}")
             raise map_database_error(e)
 
     def delete_line_by_id(self, id: int) -> None:

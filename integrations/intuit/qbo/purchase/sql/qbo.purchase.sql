@@ -105,8 +105,20 @@ CREATE TABLE [qbo].[PurchaseLine]
     [Qty] DECIMAL(18,6) NULL,
     [UnitPrice] DECIMAL(18,6) NULL,
     [MarkupPercent] DECIMAL(18,6) NULL,
+    [ReimburseChargeQboId] NVARCHAR(50) NULL,
     CONSTRAINT [FK_QboPurchaseLine_QboPurchase] FOREIGN KEY ([QboPurchaseId]) REFERENCES [qbo].[Purchase]([Id]) ON DELETE CASCADE
 );
+END
+GO
+
+-- U-778a: existing prod table (CREATE TABLE above is skipped) gets the column from the base file itself.
+IF OBJECT_ID('qbo.PurchaseLine', 'U') IS NOT NULL AND COL_LENGTH('qbo.PurchaseLine', 'ReimburseChargeQboId') IS NULL
+ALTER TABLE [qbo].[PurchaseLine] ADD [ReimburseChargeQboId] NVARCHAR(50) NULL;
+GO
+
+IF OBJECT_ID('qbo.PurchaseLine', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_PurchaseLine_ReimburseChargeQboId' AND object_id = OBJECT_ID('qbo.PurchaseLine'))
+BEGIN
+CREATE INDEX IX_PurchaseLine_ReimburseChargeQboId ON [qbo].[PurchaseLine] ([ReimburseChargeQboId]) WHERE [ReimburseChargeQboId] IS NOT NULL;
 END
 GO
 
@@ -623,7 +635,8 @@ CREATE OR ALTER PROCEDURE CreateQboPurchaseLine
     @BillableStatus NVARCHAR(50),
     @Qty DECIMAL(18,6),
     @UnitPrice DECIMAL(18,6),
-    @MarkupPercent DECIMAL(18,6)
+    @MarkupPercent DECIMAL(18,6),
+    @ReimburseChargeQboId NVARCHAR(50) = NULL
 )
 AS
 BEGIN
@@ -637,7 +650,8 @@ BEGIN
         [CreatedDatetime], [ModifiedDatetime], [QboPurchaseId], [QboLineId], [LineNum],
         [Description], [Amount], [DetailType], [ItemRefValue], [ItemRefName],
         [AccountRefValue], [AccountRefName], [CustomerRefValue], [CustomerRefName],
-        [ClassRefValue], [ClassRefName], [BillableStatus], [Qty], [UnitPrice], [MarkupPercent]
+        [ClassRefValue], [ClassRefName], [BillableStatus], [Qty], [UnitPrice], [MarkupPercent],
+        [ReimburseChargeQboId]
     )
     OUTPUT
         INSERTED.[Id],
@@ -662,12 +676,14 @@ BEGIN
         INSERTED.[BillableStatus],
         INSERTED.[Qty],
         INSERTED.[UnitPrice],
-        INSERTED.[MarkupPercent]
+        INSERTED.[MarkupPercent],
+        INSERTED.[ReimburseChargeQboId]
     VALUES (
         @Now, @Now, @QboPurchaseId, @QboLineId, @LineNum,
         @Description, @Amount, @DetailType, @ItemRefValue, @ItemRefName,
         @AccountRefValue, @AccountRefName, @CustomerRefValue, @CustomerRefName,
-        @ClassRefValue, @ClassRefName, @BillableStatus, @Qty, @UnitPrice, @MarkupPercent
+        @ClassRefValue, @ClassRefName, @BillableStatus, @Qty, @UnitPrice, @MarkupPercent,
+        @ReimburseChargeQboId
     );
 
     COMMIT TRANSACTION;
@@ -708,7 +724,8 @@ BEGIN
         [BillableStatus],
         [Qty],
         [UnitPrice],
-        [MarkupPercent]
+        [MarkupPercent],
+        [ReimburseChargeQboId]
     FROM [qbo].[PurchaseLine]
     WHERE [QboPurchaseId] = @QboPurchaseId
     ORDER BY [LineNum] ASC;
@@ -752,7 +769,8 @@ BEGIN
         [BillableStatus],
         [Qty],
         [UnitPrice],
-        [MarkupPercent]
+        [MarkupPercent],
+        [ReimburseChargeQboId]
     FROM [qbo].[PurchaseLine]
     WHERE [QboPurchaseId] = @QboPurchaseId AND [QboLineId] = @QboLineId;
 
@@ -782,7 +800,9 @@ CREATE OR ALTER PROCEDURE UpdateQboPurchaseLineById
     @BillableStatus NVARCHAR(50),
     @Qty DECIMAL(18,6),
     @UnitPrice DECIMAL(18,6),
-    @MarkupPercent DECIMAL(18,6)
+    @MarkupPercent DECIMAL(18,6),
+    @ReimburseChargeQboId NVARCHAR(50) = NULL,
+    @SetReimburseChargeQboId BIT = 0
 )
 AS
 BEGIN
@@ -810,7 +830,9 @@ BEGIN
         [BillableStatus] = CASE WHEN @BillableStatus IS NULL THEN [BillableStatus] ELSE @BillableStatus END,
         [Qty] = CASE WHEN @Qty IS NULL THEN [Qty] ELSE @Qty END,
         [UnitPrice] = CASE WHEN @UnitPrice IS NULL THEN [UnitPrice] ELSE @UnitPrice END,
-        [MarkupPercent] = CASE WHEN @MarkupPercent IS NULL THEN [MarkupPercent] ELSE @MarkupPercent END
+        [MarkupPercent] = CASE WHEN @MarkupPercent IS NULL THEN [MarkupPercent] ELSE @MarkupPercent END,
+        -- U-778a: flag-gated, NOT the NULL-preserve idiom: flag 1 writes straight (NULL clears a stale link).
+        [ReimburseChargeQboId] = CASE WHEN @SetReimburseChargeQboId = 1 THEN @ReimburseChargeQboId ELSE [ReimburseChargeQboId] END
     OUTPUT
         INSERTED.[Id],
         INSERTED.[PublicId],
@@ -834,7 +856,8 @@ BEGIN
         INSERTED.[BillableStatus],
         INSERTED.[Qty],
         INSERTED.[UnitPrice],
-        INSERTED.[MarkupPercent]
+        INSERTED.[MarkupPercent],
+        INSERTED.[ReimburseChargeQboId]
     WHERE [Id] = @Id AND [RowVersion] = @RowVersion;
 
     COMMIT TRANSACTION;
@@ -850,6 +873,7 @@ CREATE OR ALTER PROCEDURE DeleteQboPurchaseLineById
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
     BEGIN TRANSACTION;
 
     DELETE FROM [qbo].[PurchaseLine]
@@ -876,10 +900,38 @@ BEGIN
         DELETED.[BillableStatus],
         DELETED.[Qty],
         DELETED.[UnitPrice],
-        DELETED.[MarkupPercent]
+        DELETED.[MarkupPercent],
+        DELETED.[ReimburseChargeQboId]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;
+END;
+GO
+
+-- U-778a: narrow writer for the ReimburseCharge link (bite-2 backfill). FILL-ONLY: writes only when the
+-- stored link is NULL (never overwrites a fresher pull) and never writes NULL; OUTPUT counts real writes.
+CREATE OR ALTER PROCEDURE UpdateQboPurchaseLineReimburseChargeById
+(
+    @Id BIGINT,
+    @ReimburseChargeQboId NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @ReimburseChargeQboId IS NULL
+    BEGIN
+        RAISERROR('ReimburseChargeQboId must not be NULL.', 16, 1);
+        RETURN;
+    END
+
+    UPDATE [qbo].[PurchaseLine]
+    SET
+        [ReimburseChargeQboId] = @ReimburseChargeQboId,
+        [ModifiedDatetime] = SYSUTCDATETIME()
+    OUTPUT INSERTED.[Id], INSERTED.[ReimburseChargeQboId]
+    WHERE [Id] = @Id
+      AND [ReimburseChargeQboId] IS NULL;  -- Pass 3 P3-1: fill-only; never overwrites a stored (possibly fresher) link
 END;
 GO
 
@@ -934,5 +986,27 @@ BEGIN
     OUTPUT INSERTED.[Id]
     WHERE [Id] = @Id
       AND [BillableStatus] = @ExpectedBillableStatus;
+END;
+GO
+
+
+CREATE OR ALTER PROCEDURE ReadQboPurchaseLinesMissingReimburseChargeByRealmId
+(
+    @RealmId NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        line.[Id],
+        line.[QboLineId],
+        header.[QboId] AS [HeaderQboId]
+    FROM [qbo].[PurchaseLine] AS line
+    INNER JOIN [qbo].[Purchase] AS header ON header.[Id] = line.[QboPurchaseId]
+    WHERE header.[RealmId] = @RealmId
+      AND line.[BillableStatus] IN ('Billable', 'HasBeenBilled')
+      AND line.[ReimburseChargeQboId] IS NULL
+    ORDER BY TRY_CAST(header.[QboId] AS BIGINT), header.[QboId], line.[Id];
 END;
 GO

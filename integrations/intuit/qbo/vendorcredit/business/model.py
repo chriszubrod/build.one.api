@@ -36,6 +36,8 @@ class QboVendorCreditLine:
     # Account-based detail fields
     account_ref_value: Optional[str]
     account_ref_name: Optional[str]
+    # U-778a: the ReimburseCharge QBO created for this line (line-level LinkedTxn); NULL = none/unknown
+    reimburse_charge_qbo_id: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

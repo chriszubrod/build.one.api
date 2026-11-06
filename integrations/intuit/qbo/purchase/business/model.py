@@ -37,6 +37,8 @@ class QboPurchaseLine:
     qty: Optional[Decimal]
     unit_price: Optional[Decimal]
     markup_percent: Optional[Decimal]
+    # U-778a: the ReimburseCharge QBO created for this line (line-level LinkedTxn); NULL = none/unknown
+    reimburse_charge_qbo_id: Optional[str] = None
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

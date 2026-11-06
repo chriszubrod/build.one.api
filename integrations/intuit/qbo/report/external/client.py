@@ -14,7 +14,8 @@ logger = logging.getLogger(__name__)
 # names should be added here intentionally rather than passed straight through,
 # so an upstream typo can't trigger a 404 hit on the QBO API.
 ALLOWED_REPORTS: frozenset[str] = frozenset({
-    "UnbilledCharges",
+    # No "UnbilledCharges": QBO has no such report (answers "Permission Denied"); the Unbilled Charges
+    # report equals the live un-invoiced ReimburseCharge lines (U-778a).
     "ProfitAndLoss",
     "BalanceSheet",
     "GeneralLedger",

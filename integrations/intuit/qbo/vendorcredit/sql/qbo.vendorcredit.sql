@@ -75,8 +75,20 @@ CREATE TABLE [qbo].[VendorCreditLine]
     -- Account-based fields
     [AccountRefValue] NVARCHAR(50) NULL,
     [AccountRefName] NVARCHAR(255) NULL,
+    [ReimburseChargeQboId] NVARCHAR(50) NULL,
     CONSTRAINT [FK_QboVendorCreditLine_QboVendorCredit] FOREIGN KEY ([QboVendorCreditId]) REFERENCES [qbo].[VendorCredit]([Id]) ON DELETE CASCADE
 );
+END
+GO
+
+-- U-778a: existing prod table (CREATE TABLE above is skipped) gets the column from the base file itself.
+IF OBJECT_ID('qbo.VendorCreditLine', 'U') IS NOT NULL AND COL_LENGTH('qbo.VendorCreditLine', 'ReimburseChargeQboId') IS NULL
+ALTER TABLE [qbo].[VendorCreditLine] ADD [ReimburseChargeQboId] NVARCHAR(50) NULL;
+GO
+
+IF OBJECT_ID('qbo.VendorCreditLine', 'U') IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_VendorCreditLine_ReimburseChargeQboId' AND object_id = OBJECT_ID('qbo.VendorCreditLine'))
+BEGIN
+CREATE INDEX IX_VendorCreditLine_ReimburseChargeQboId ON [qbo].[VendorCreditLine] ([ReimburseChargeQboId]) WHERE [ReimburseChargeQboId] IS NOT NULL;
 END
 GO
 
@@ -281,10 +293,12 @@ CREATE OR ALTER PROCEDURE CreateQboVendorCreditLine
     @CustomerRefValue NVARCHAR(50) NULL,
     @CustomerRefName NVARCHAR(255) NULL,
     @AccountRefValue NVARCHAR(50) NULL,
-    @AccountRefName NVARCHAR(255) NULL
+    @AccountRefName NVARCHAR(255) NULL,
+    @ReimburseChargeQboId NVARCHAR(50) = NULL
 )
 AS
 BEGIN
+    SET NOCOUNT ON;
     BEGIN TRANSACTION;
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
     
@@ -292,7 +306,8 @@ BEGIN
         [CreatedDatetime], [ModifiedDatetime], [QboVendorCreditId], [QboLineId], [LineNum],
         [Description], [Amount], [DetailType], [ItemRefValue], [ItemRefName],
         [ClassRefValue], [ClassRefName], [UnitPrice], [Qty], [BillableStatus],
-        [CustomerRefValue], [CustomerRefName], [AccountRefValue], [AccountRefName]
+        [CustomerRefValue], [CustomerRefName], [AccountRefValue], [AccountRefName],
+        [ReimburseChargeQboId]
     )
     OUTPUT
         INSERTED.[Id], INSERTED.[PublicId], INSERTED.[RowVersion],
@@ -303,12 +318,14 @@ BEGIN
         INSERTED.[ItemRefValue], INSERTED.[ItemRefName], INSERTED.[ClassRefValue], INSERTED.[ClassRefName],
         INSERTED.[UnitPrice], INSERTED.[Qty], INSERTED.[BillableStatus],
         INSERTED.[CustomerRefValue], INSERTED.[CustomerRefName],
-        INSERTED.[AccountRefValue], INSERTED.[AccountRefName]
+        INSERTED.[AccountRefValue], INSERTED.[AccountRefName],
+        INSERTED.[ReimburseChargeQboId]
     VALUES (
         @Now, @Now, @QboVendorCreditId, @QboLineId, @LineNum,
         @Description, @Amount, @DetailType, @ItemRefValue, @ItemRefName,
         @ClassRefValue, @ClassRefName, @UnitPrice, @Qty, @BillableStatus,
-        @CustomerRefValue, @CustomerRefName, @AccountRefValue, @AccountRefName
+        @CustomerRefValue, @CustomerRefName, @AccountRefValue, @AccountRefName,
+        @ReimburseChargeQboId
     );
     
     COMMIT TRANSACTION;
@@ -332,7 +349,8 @@ BEGIN
         [ItemRefValue], [ItemRefName], [ClassRefValue], [ClassRefName],
         [UnitPrice], [Qty], [BillableStatus],
         [CustomerRefValue], [CustomerRefName],
-        [AccountRefValue], [AccountRefName]
+        [AccountRefValue], [AccountRefName],
+        [ReimburseChargeQboId]
     FROM [qbo].[VendorCreditLine]
     WHERE [QboVendorCreditId] = @QboVendorCreditId
     ORDER BY [LineNum] ASC;
@@ -374,7 +392,8 @@ BEGIN
         [ItemRefValue], [ItemRefName], [ClassRefValue], [ClassRefName],
         [UnitPrice], [Qty], [BillableStatus],
         [CustomerRefValue], [CustomerRefName],
-        [AccountRefValue], [AccountRefName]
+        [AccountRefValue], [AccountRefName],
+        [ReimburseChargeQboId]
     FROM [qbo].[VendorCreditLine]
     WHERE [QboVendorCreditId] = @QboVendorCreditId AND [QboLineId] = @QboLineId;
 END;
@@ -399,7 +418,9 @@ CREATE OR ALTER PROCEDURE UpdateQboVendorCreditLineById
     @CustomerRefValue NVARCHAR(50) NULL,
     @CustomerRefName NVARCHAR(255) NULL,
     @AccountRefValue NVARCHAR(50) NULL,
-    @AccountRefName NVARCHAR(255) NULL
+    @AccountRefName NVARCHAR(255) NULL,
+    @ReimburseChargeQboId NVARCHAR(50) = NULL,
+    @SetReimburseChargeQboId BIT = 0
 )
 AS
 BEGIN
@@ -425,7 +446,9 @@ BEGIN
         [CustomerRefValue] = @CustomerRefValue,
         [CustomerRefName] = @CustomerRefName,
         [AccountRefValue] = @AccountRefValue,
-        [AccountRefName] = @AccountRefName
+        [AccountRefName] = @AccountRefName,
+        -- U-778a: flag-gated: flag 1 writes straight (NULL clears a stale link); flag 0 preserves.
+        [ReimburseChargeQboId] = CASE WHEN @SetReimburseChargeQboId = 1 THEN @ReimburseChargeQboId ELSE [ReimburseChargeQboId] END
     OUTPUT
         INSERTED.[Id], INSERTED.[PublicId], INSERTED.[RowVersion],
         CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
@@ -435,7 +458,8 @@ BEGIN
         INSERTED.[ItemRefValue], INSERTED.[ItemRefName], INSERTED.[ClassRefValue], INSERTED.[ClassRefName],
         INSERTED.[UnitPrice], INSERTED.[Qty], INSERTED.[BillableStatus],
         INSERTED.[CustomerRefValue], INSERTED.[CustomerRefName],
-        INSERTED.[AccountRefValue], INSERTED.[AccountRefName]
+        INSERTED.[AccountRefValue], INSERTED.[AccountRefName],
+        INSERTED.[ReimburseChargeQboId]
     WHERE [Id] = @Id;
 
     COMMIT TRANSACTION;
@@ -451,6 +475,33 @@ AS
 BEGIN
     SET NOCOUNT ON;
     DELETE FROM [qbo].[VendorCreditLine] WHERE [Id] = @Id;
+END;
+GO
+
+-- U-778a: narrow writer for the ReimburseCharge link (bite-2 backfill). FILL-ONLY: writes only when the
+-- stored link is NULL (never overwrites a fresher pull) and never writes NULL; OUTPUT counts real writes.
+CREATE OR ALTER PROCEDURE UpdateQboVendorCreditLineReimburseChargeById
+(
+    @Id BIGINT,
+    @ReimburseChargeQboId NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @ReimburseChargeQboId IS NULL
+    BEGIN
+        RAISERROR('ReimburseChargeQboId must not be NULL.', 16, 1);
+        RETURN;
+    END
+
+    UPDATE [qbo].[VendorCreditLine]
+    SET
+        [ReimburseChargeQboId] = @ReimburseChargeQboId,
+        [ModifiedDatetime] = SYSUTCDATETIME()
+    OUTPUT INSERTED.[Id], INSERTED.[ReimburseChargeQboId]
+    WHERE [Id] = @Id
+      AND [ReimburseChargeQboId] IS NULL;  -- Pass 3 P3-1: fill-only; never overwrites a stored (possibly fresher) link
 END;
 GO
 
@@ -535,3 +586,24 @@ BEGIN
 END;
 GO
 
+
+CREATE OR ALTER PROCEDURE ReadQboVendorCreditLinesMissingReimburseChargeByRealmId
+(
+    @RealmId NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        line.[Id],
+        line.[QboLineId],
+        header.[QboId] AS [HeaderQboId]
+    FROM [qbo].[VendorCreditLine] AS line
+    INNER JOIN [qbo].[VendorCredit] AS header ON header.[Id] = line.[QboVendorCreditId]
+    WHERE header.[RealmId] = @RealmId
+      AND line.[BillableStatus] IN ('Billable', 'HasBeenBilled')
+      AND line.[ReimburseChargeQboId] IS NULL
+    ORDER BY TRY_CAST(header.[QboId] AS BIGINT), header.[QboId], line.[Id];
+END;
+GO

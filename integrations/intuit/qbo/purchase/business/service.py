@@ -5,6 +5,7 @@ from typing import List, Optional
 # Third-party Imports
 
 # Local Imports
+from integrations.intuit.qbo.base.charge_link import reimburse_charge_id_from_linked_txn
 from integrations.intuit.qbo.purchase.business.model import QboPurchase, QboPurchaseLine
 from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository, QboPurchaseLineRepository
 from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
@@ -287,6 +288,8 @@ class QboPurchaseService:
                 if detail.markup_info and isinstance(detail.markup_info, dict):
                     markup_percent = detail.markup_info.get("Percent")
             
+            reimburse_charge_qbo_id = reimburse_charge_id_from_linked_txn(line.linked_txn)
+
             # Check if line exists
             existing_line = None
             if line.id:
@@ -316,6 +319,8 @@ class QboPurchaseService:
                     qty=qty,
                     unit_price=unit_price,
                     markup_percent=markup_percent,
+                    reimburse_charge_qbo_id=reimburse_charge_qbo_id,
+                    set_reimburse_charge_qbo_id=True,
                 )
             else:
                 # Create new line
@@ -338,6 +343,7 @@ class QboPurchaseService:
                     qty=qty,
                     unit_price=unit_price,
                     markup_percent=markup_percent,
+                    reimburse_charge_qbo_id=reimburse_charge_qbo_id,
                 )
 
         # Stale lines — any locally-stored QboPurchaseLine whose qbo_line_id is no longer

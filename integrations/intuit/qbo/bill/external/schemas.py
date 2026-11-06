@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 # Local Imports
 from integrations.intuit.qbo.base.schemas import _QboBaseModel
 from integrations.intuit.qbo.base.id_validation import require_non_blank_qbo_id
+from integrations.intuit.qbo.base.schemas import QboLinkedTxn  # noqa: F401  (U-778a: shared definition; re-exported)
 
 
 class QboReferenceType(BaseModel):
@@ -64,20 +65,15 @@ class QboBillLine(BaseModel):
         default=None, alias="AccountBasedExpenseLineDetail"
     )
 
+    # U-778a: read-only on pull (ReimburseCharge link); never emitted on writes to QBO.
+    linked_txn: Optional[List[QboLinkedTxn]] = Field(default_factory=list, alias="LinkedTxn", exclude=True)
+
     @field_validator('id', mode='before')
     @classmethod
     def convert_id_to_string(cls, v):
         if v is None:
             return None
         return str(v)
-
-
-class QboLinkedTxn(BaseModel):
-    """Linked transaction reference."""
-    model_config = ConfigDict(populate_by_name=True)
-    
-    txn_id: Optional[str] = Field(default=None, alias="TxnId")
-    txn_type: Optional[str] = Field(default=None, alias="TxnType")
 
 
 class QboBillBase(_QboBaseModel):

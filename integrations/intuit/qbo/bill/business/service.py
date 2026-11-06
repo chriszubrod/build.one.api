@@ -5,6 +5,7 @@ from typing import List, Optional
 # Third-party Imports
 
 # Local Imports
+from integrations.intuit.qbo.base.charge_link import reimburse_charge_id_from_linked_txn
 from integrations.intuit.qbo.bill.business.model import QboBill, QboBillLine
 from integrations.intuit.qbo.bill.persistence.repo import QboBillRepository, QboBillLineRepository
 from integrations.intuit.qbo.bill.external.client import QboBillClient
@@ -370,6 +371,8 @@ class QboBillService:
                 if detail.markup_info and isinstance(detail.markup_info, dict):
                     markup_percent = detail.markup_info.get("Percent")
             
+            reimburse_charge_qbo_id = reimburse_charge_id_from_linked_txn(line.linked_txn)
+
             # Check if line exists
             existing_line = None
             if line.id:
@@ -399,6 +402,8 @@ class QboBillService:
                     qty=qty,
                     unit_price=unit_price,
                     markup_percent=markup_percent,
+                    reimburse_charge_qbo_id=reimburse_charge_qbo_id,
+                    set_reimburse_charge_qbo_id=True,
                 )
             else:
                 # Create new line
@@ -421,6 +426,7 @@ class QboBillService:
                     qty=qty,
                     unit_price=unit_price,
                     markup_percent=markup_percent,
+                    reimburse_charge_qbo_id=reimburse_charge_qbo_id,
                 )
 
         # Delete stale lines — any locally-stored QboBillLine whose qbo_line_id is

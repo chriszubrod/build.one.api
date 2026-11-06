@@ -464,6 +464,7 @@ def test_stale_line_cleanup_deletes_the_staging_line_directly():
         SimpleNamespace(
             id="1", line_num=1, description="d", amount=Decimal("1"), detail_type="AccountBasedExpenseLineDetail",
             item_based_expense_line_detail=None, account_based_expense_line_detail=None,
+            linked_txn=[],  # U-778a: the parsed line model always carries linked_txn
         )
     ]
 

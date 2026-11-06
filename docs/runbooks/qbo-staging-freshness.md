@@ -86,3 +86,33 @@ shows as open A/R until someone decides what to do with it.
 
 Keep both timers deployed (the API before the scheduler). The CDC window is clamped to 696 h (29 days;
 QBO's CDC limit is 30), so a scheduler outage longer than that needs a manual full run.
+
+## The ReimburseCharge link on staged source lines (U-778a)
+
+`qbo.BillLine`, `qbo.PurchaseLine` and `qbo.VendorCreditLine` carry `ReimburseChargeQboId`: the id of the QBO
+ReimburseCharge (the "billable expense" charge) for that line, read from the line's own
+`LinkedTxn [{TxnType: "ReimburseCharge"}]`. It is the deterministic link source line → charge, used by the reverse
+billable flip (U-778b) and the invoice push (U-778d). Rules:
+
+- **Every pull writes it straight** from the payload (`@SetReimburseChargeQboId = 1`): a line whose charge was removed
+  or recreated is cleared or re-pointed. Any other caller of `UpdateQbo*LineById` preserves it (flag defaults to 0).
+- **Only a valid id is stored:** an ASCII digit string of 1-50 characters (or a non-negative int). Anything malformed,
+  and a line carrying two distinct charge ids, stores nothing — a missing link is acceptable, a wrong one is not.
+- It is the CURRENT link, not history: editing the source in QBO recreates the charge under a new id.
+
+**Backfill** (lines staged before U-778a have no link; new pulls fill new and changed lines):
+
+```bash
+./.venv/bin/python scripts/backfill_u778a_charge_links.py --entity bill                 # dry-run (default)
+./.venv/bin/python scripts/backfill_u778a_charge_links.py --entity bill --apply
+```
+
+Run per entity (`bill`, `purchase`, `vendor_credit`). Dry-run writes no links (the QBO transport still meters its
+reads). It re-fetches headers 100 per QBO call; any client or DB error aborts the whole run and prints `resume_from` —
+re-run with `--entity <that entity> --resume-from <id>`. The writer is fill-only: it never overwrites a link a fresher
+pull already wrote. Counters: `written`, `not_written` (already linked, or the row vanished), `no_link_live`,
+`ambiguous`, `line_gone`, `header_gone`.
+
+**Verify:** `SELECT COUNT(*) FROM qbo.BillLine WHERE BillableStatus IN ('Billable','HasBeenBilled') AND
+ReimburseChargeQboId IS NULL` (and the Purchase / VendorCredit twins) falls to roughly the `no_link_live` +
+`header_gone` counts.

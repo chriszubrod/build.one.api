@@ -84,7 +84,7 @@ The builder preserved these quirks deliberately, and the U-757b goldens pin them
 - **[drift] Receipts skip silently.** A missing attachment or `blob_url` is skipped with no per-line error, while the module-folder engine reports one.
 - **[drift] A refused upload is retried by a sibling line.** When lines share an attachment, a refused enqueue is not recorded in the dedupe set, so the next line tries the same attachment again.
 - **[drift] Invoice packet double-enqueue.** A packet whose attachment id equals a line attachment's is enqueued twice, because packet and line dedupe sets are separate.
-- **[bug, U-768] Still preserved.** Pinned three ways in `tests/test_u757b_sharepoint_enqueue_characterization.py`; updating those pins is part of fixing U-768.
+- **[bug, U-768] FIXED 2026-11-06 (`b7cc594c`); pins updated.** Pinned three ways in `tests/test_u757b_sharepoint_enqueue_characterization.py`; updating those pins is part of fixing U-768.
 
 ## U-755 follow-ups - shared reviewer-decision engine (booked 2026-11-02)
 
@@ -315,7 +315,7 @@ problem when scoping.
 
 ## U-739 follow-ups (booked 2026-10-27)
 
-- [ ] **`_get_or_create_subfolder` KeyError when it CREATES a folder** (entities/expense/business/service.py ~2146): reads `create_result["item"]["id"]`; the listing path uses `item_id`. Folder is created, then the receipt copy to 520 - Current Receipts/yyyy/mm fails. Hit expenses 10904 and 19618 (MR2-MAIN) during the U-739 backfill - re-run their general-receipts upload after the fix.
+- [x] **DONE 2026-11-06 (U-768 `b7cc594c`, deployed 13:10Z; receipts for 10904, 19618, 21961, 32371 re-sent and verified in SharePoint).** **`_get_or_create_subfolder` KeyError when it CREATES a folder** (entities/expense/business/service.py ~2146): reads `create_result["item"]["id"]`; the listing path uses `item_id`. Folder is created, then the receipt copy to 520 - Current Receipts/yyyy/mm fails. Hit expenses 10904 and 19618 (MR2-MAIN) during the U-739 backfill - re-run their general-receipts upload after the fix.
 - [ ] **WR (project 203) has no SharePoint DETAILS workbook mapping** (ms.DriveItemProjectExcel) - only a Box workbook. Every WR completion reports a mapping-missing error; map it or mark WR Box-only.
 - [ ] **The pull fan-out writes DRAFT (possibly uncoded) expense lines into SharePoint DETAILS workbooks** before they are coded/approved (all 82 SharePoint-mapped lines of the 86 auto-completed drafts were already there). Check against the 00.02 / no-sync-before-approval rule (Chris 2026-10-23).
 - [ ] **Auto-complete runs synchronous workbook work inside the 15-min purchase pull** while the purchase lock is held - watch pull duration.

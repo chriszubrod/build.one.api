@@ -1,0 +1,2344 @@
+{
+  "bar": {
+    "coverage": 0.5,
+    "exact_correct": 0.8,
+    "min_proposals": 20
+  },
+  "by_k": {
+    "k14": {
+      "arm_a_fit_u750": {
+        "calibration_coverage": 0.675789,
+        "calibration_days": 475,
+        "calibration_exact_correct": 0.800623,
+        "calibration_false_split_rate": 0.0,
+        "calibration_proposals": 321,
+        "m": 2,
+        "status": "qualified",
+        "tau": 0.65
+      },
+      "cache_hits": 315,
+      "cache_misses": 0,
+      "detectors": {
+        "S_haiku": {
+          "all_holdout": {
+            "confusion": {
+              "fn": 2,
+              "fp": 127,
+              "tn": 135,
+              "tp": 51
+            },
+            "days": 315,
+            "f1": 0.44155844155844154,
+            "flags": 178,
+            "flags_on_single_truth": 127,
+            "haiku_missing_days": 0,
+            "precision": 0.286517,
+            "recall": 0.962264,
+            "split_truth_days": 53,
+            "status": "scored"
+          },
+          "uncoded_at_T_k14": {
+            "confusion": {
+              "fn": 2,
+              "fp": 84,
+              "tn": 81,
+              "tp": 46
+            },
+            "days": 213,
+            "f1": 0.5168539325842697,
+            "flags": 130,
+            "flags_on_single_truth": 84,
+            "haiku_missing_days": 0,
+            "precision": 0.353846,
+            "recall": 0.958333,
+            "split_truth_days": 48,
+            "status": "scored"
+          }
+        },
+        "S_haiku_or_S_sonnet": {
+          "all_holdout": {
+            "confusion": {
+              "fn": 2,
+              "fp": 127,
+              "tn": 135,
+              "tp": 51
+            },
+            "days": 315,
+            "f1": 0.44155844155844154,
+            "flags": 178,
+            "flags_on_single_truth": 127,
+            "haiku_missing_days": 0,
+            "precision": 0.286517,
+            "recall": 0.962264,
+            "split_truth_days": 53,
+            "status": "scored"
+          },
+          "uncoded_at_T_k14": {
+            "confusion": {
+              "fn": 2,
+              "fp": 84,
+              "tn": 81,
+              "tp": 46
+            },
+            "days": 213,
+            "f1": 0.5168539325842697,
+            "flags": 130,
+            "flags_on_single_truth": 84,
+            "haiku_missing_days": 0,
+            "precision": 0.353846,
+            "recall": 0.958333,
+            "split_truth_days": 48,
+            "status": "scored"
+          }
+        },
+        "S_sonnet": {
+          "all_holdout": {
+            "confusion": {
+              "fn": 39,
+              "fp": 4,
+              "tn": 258,
+              "tp": 14
+            },
+            "days": 315,
+            "f1": 0.39436619718309857,
+            "flags": 18,
+            "flags_on_single_truth": 4,
+            "haiku_missing_days": 0,
+            "precision": 0.777778,
+            "recall": 0.264151,
+            "split_truth_days": 53,
+            "status": "scored"
+          },
+          "uncoded_at_T_k14": {
+            "confusion": {
+              "fn": 34,
+              "fp": 4,
+              "tn": 161,
+              "tp": 14
+            },
+            "days": 213,
+            "f1": 0.42424242424242425,
+            "flags": 18,
+            "flags_on_single_truth": 4,
+            "haiku_missing_days": 0,
+            "precision": 0.777778,
+            "recall": 0.291667,
+            "split_truth_days": 48,
+            "status": "scored"
+          }
+        },
+        "S_text": {
+          "all_holdout": {
+            "confusion": {
+              "fn": 25,
+              "fp": 12,
+              "tn": 250,
+              "tp": 28
+            },
+            "days": 315,
+            "f1": 0.6021505376344086,
+            "flags": 40,
+            "flags_on_single_truth": 12,
+            "haiku_missing_days": 0,
+            "precision": 0.7,
+            "recall": 0.528302,
+            "split_truth_days": 53,
+            "status": "scored"
+          },
+          "uncoded_at_T_k14": {
+            "confusion": {
+              "fn": 22,
+              "fp": 3,
+              "tn": 162,
+              "tp": 26
+            },
+            "days": 213,
+            "f1": 0.6753246753246753,
+            "flags": 29,
+            "flags_on_single_truth": 3,
+            "haiku_missing_days": 0,
+            "precision": 0.896552,
+            "recall": 0.541667,
+            "split_truth_days": 48,
+            "status": "scored"
+          }
+        },
+        "S_text_or_S_haiku_or_S_sonnet": {
+          "all_holdout": {
+            "confusion": {
+              "fn": 1,
+              "fp": 128,
+              "tn": 134,
+              "tp": 52
+            },
+            "days": 315,
+            "f1": 0.44635193133047213,
+            "flags": 180,
+            "flags_on_single_truth": 128,
+            "haiku_missing_days": 0,
+            "precision": 0.288889,
+            "recall": 0.981132,
+            "split_truth_days": 53,
+            "status": "scored"
+          },
+          "uncoded_at_T_k14": {
+            "confusion": {
+              "fn": 1,
+              "fp": 84,
+              "tn": 81,
+              "tp": 47
+            },
+            "days": 213,
+            "f1": 0.5251396648044693,
+            "flags": 131,
+            "flags_on_single_truth": 84,
+            "haiku_missing_days": 0,
+            "precision": 0.358779,
+            "recall": 0.979167,
+            "split_truth_days": 48,
+            "status": "scored"
+          }
+        },
+        "S_text_or_S_sonnet": {
+          "all_holdout": {
+            "confusion": {
+              "fn": 15,
+              "fp": 16,
+              "tn": 246,
+              "tp": 38
+            },
+            "days": 315,
+            "f1": 0.7102803738317757,
+            "flags": 54,
+            "flags_on_single_truth": 16,
+            "haiku_missing_days": 0,
+            "precision": 0.703704,
+            "recall": 0.716981,
+            "split_truth_days": 53,
+            "status": "scored"
+          },
+          "uncoded_at_T_k14": {
+            "confusion": {
+              "fn": 12,
+              "fp": 7,
+              "tn": 158,
+              "tp": 36
+            },
+            "days": 213,
+            "f1": 0.7912087912087912,
+            "flags": 43,
+            "flags_on_single_truth": 7,
+            "haiku_missing_days": 0,
+            "precision": 0.837209,
+            "recall": 0.75,
+            "split_truth_days": 48,
+            "status": "scored"
+          }
+        }
+      },
+      "holdout_days": 315,
+      "rules": {
+        "R_haiku": {
+          "all_holdout": {
+            "metrics": {
+              "abstains": 41,
+              "cache_misses": 0,
+              "coverage_A": 0.304762,
+              "coverage_A_ci95": [
+                0.256533,
+                0.357695
+              ],
+              "coverage_B": 0.869841,
+              "coverage_B_ci95": [
+                0.828183,
+                0.902587
+              ],
+              "days": 315,
+              "days_scored": 315,
+              "exact_correct": 0.895833,
+              "exact_correct_ci95": [
+                0.818777,
+                0.942429
+              ],
+              "exact_correct_count": 86,
+              "flag_precision": 0.286517,
+              "flags": 178,
+              "flags_on_split_truth": 51,
+              "haiku_missing_days": 0,
+              "proposals": 96,
+              "single_on_split_truth_rate": 0.010417,
+              "single_proposals_on_split_truth": 1,
+              "split_recall": 0.962264,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "PASS"
+          },
+          "uncoded_at_T_k14": {
+            "metrics": {
+              "abstains": 36,
+              "cache_misses": 0,
+              "coverage_A": 0.220657,
+              "coverage_A_ci95": [
+                0.170189,
+                0.281024
+              ],
+              "coverage_B": 0.830986,
+              "coverage_B_ci95": [
+                0.774897,
+                0.875347
+              ],
+              "days": 213,
+              "days_scored": 213,
+              "exact_correct": 0.787234,
+              "exact_correct_ci95": [
+                0.650957,
+                0.880104
+              ],
+              "exact_correct_count": 37,
+              "flag_precision": 0.353846,
+              "flags": 130,
+              "flags_on_split_truth": 46,
+              "haiku_missing_days": 0,
+              "proposals": 47,
+              "single_on_split_truth_rate": 0.021277,
+              "single_proposals_on_split_truth": 1,
+              "split_recall": 0.958333,
+              "split_truth_days_scored": 48
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "FAIL"
+          }
+        },
+        "R_haiku_or_sonnet": {
+          "all_holdout": {
+            "metrics": {
+              "abstains": 41,
+              "cache_misses": 0,
+              "coverage_A": 0.304762,
+              "coverage_A_ci95": [
+                0.256533,
+                0.357695
+              ],
+              "coverage_B": 0.869841,
+              "coverage_B_ci95": [
+                0.828183,
+                0.902587
+              ],
+              "days": 315,
+              "days_scored": 315,
+              "exact_correct": 0.895833,
+              "exact_correct_ci95": [
+                0.818777,
+                0.942429
+              ],
+              "exact_correct_count": 86,
+              "flag_precision": 0.286517,
+              "flags": 178,
+              "flags_on_split_truth": 51,
+              "haiku_missing_days": 0,
+              "proposals": 96,
+              "single_on_split_truth_rate": 0.010417,
+              "single_proposals_on_split_truth": 1,
+              "split_recall": 0.962264,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "PASS"
+          },
+          "uncoded_at_T_k14": {
+            "metrics": {
+              "abstains": 36,
+              "cache_misses": 0,
+              "coverage_A": 0.220657,
+              "coverage_A_ci95": [
+                0.170189,
+                0.281024
+              ],
+              "coverage_B": 0.830986,
+              "coverage_B_ci95": [
+                0.774897,
+                0.875347
+              ],
+              "days": 213,
+              "days_scored": 213,
+              "exact_correct": 0.787234,
+              "exact_correct_ci95": [
+                0.650957,
+                0.880104
+              ],
+              "exact_correct_count": 37,
+              "flag_precision": 0.353846,
+              "flags": 130,
+              "flags_on_split_truth": 46,
+              "haiku_missing_days": 0,
+              "proposals": 47,
+              "single_on_split_truth_rate": 0.021277,
+              "single_proposals_on_split_truth": 1,
+              "split_recall": 0.958333,
+              "split_truth_days_scored": 48
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "FAIL"
+          }
+        },
+        "R_sonnet": {
+          "all_holdout": {
+            "metrics": {
+              "abstains": 90,
+              "cache_misses": 0,
+              "coverage_A": 0.657143,
+              "coverage_A_ci95": [
+                0.603113,
+                0.707386
+              ],
+              "coverage_B": 0.714286,
+              "coverage_B_ci95": [
+                0.662049,
+                0.761358
+              ],
+              "days": 315,
+              "days_scored": 315,
+              "exact_correct": 0.797101,
+              "exact_correct_ci95": [
+                0.737135,
+                0.846242
+              ],
+              "exact_correct_count": 165,
+              "flag_precision": 0.777778,
+              "flags": 18,
+              "flags_on_split_truth": 14,
+              "haiku_missing_days": 0,
+              "proposals": 207,
+              "single_on_split_truth_rate": 0.120773,
+              "single_proposals_on_split_truth": 25,
+              "split_recall": 0.264151,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "FAIL"
+          },
+          "uncoded_at_T_k14": {
+            "metrics": {
+              "abstains": 75,
+              "cache_misses": 0,
+              "coverage_A": 0.56338,
+              "coverage_A_ci95": [
+                0.496234,
+                0.628281
+              ],
+              "coverage_B": 0.647887,
+              "coverage_B_ci95": [
+                0.58164,
+                0.708895
+              ],
+              "days": 213,
+              "days_scored": 213,
+              "exact_correct": 0.683333,
+              "exact_correct_ci95": [
+                0.59552,
+                0.759773
+              ],
+              "exact_correct_count": 82,
+              "flag_precision": 0.777778,
+              "flags": 18,
+              "flags_on_split_truth": 14,
+              "haiku_missing_days": 0,
+              "proposals": 120,
+              "single_on_split_truth_rate": 0.191667,
+              "single_proposals_on_split_truth": 23,
+              "split_recall": 0.291667,
+              "split_truth_days_scored": 48
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "FAIL"
+          }
+        },
+        "R_text": {
+          "all_holdout": {
+            "metrics": {
+              "abstains": 91,
+              "cache_misses": 0,
+              "coverage_A": 0.584127,
+              "coverage_A_ci95": [
+                0.529003,
+                0.637224
+              ],
+              "coverage_B": 0.711111,
+              "coverage_B_ci95": [
+                0.658751,
+                0.758384
+              ],
+              "days": 315,
+              "days_scored": 315,
+              "exact_correct": 0.853261,
+              "exact_correct_ci95": [
+                0.79492,
+                0.897152
+              ],
+              "exact_correct_count": 157,
+              "flag_precision": 0.7,
+              "flags": 40,
+              "flags_on_split_truth": 28,
+              "haiku_missing_days": 0,
+              "proposals": 184,
+              "single_on_split_truth_rate": 0.059783,
+              "single_proposals_on_split_truth": 11,
+              "split_recall": 0.528302,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "PASS",
+            "verdict_B": "PASS"
+          },
+          "uncoded_at_T_k14": {
+            "metrics": {
+              "abstains": 79,
+              "cache_misses": 0,
+              "coverage_A": 0.492958,
+              "coverage_A_ci95": [
+                0.426538,
+                0.559627
+              ],
+              "coverage_B": 0.629108,
+              "coverage_B_ci95": [
+                0.562486,
+                0.691155
+              ],
+              "days": 213,
+              "days_scored": 213,
+              "exact_correct": 0.771429,
+              "exact_correct_ci95": [
+                0.68238,
+                0.841317
+              ],
+              "exact_correct_count": 81,
+              "flag_precision": 0.896552,
+              "flags": 29,
+              "flags_on_split_truth": 26,
+              "haiku_missing_days": 0,
+              "proposals": 105,
+              "single_on_split_truth_rate": 0.085714,
+              "single_proposals_on_split_truth": 9,
+              "split_recall": 0.541667,
+              "split_truth_days_scored": 48
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "FAIL"
+          }
+        },
+        "R_text_or_sonnet": {
+          "all_holdout": {
+            "metrics": {
+              "abstains": 77,
+              "cache_misses": 0,
+              "coverage_A": 0.584127,
+              "coverage_A_ci95": [
+                0.529003,
+                0.637224
+              ],
+              "coverage_B": 0.755556,
+              "coverage_B_ci95": [
+                0.705203,
+                0.79975
+              ],
+              "days": 315,
+              "days_scored": 315,
+              "exact_correct": 0.853261,
+              "exact_correct_ci95": [
+                0.79492,
+                0.897152
+              ],
+              "exact_correct_count": 157,
+              "flag_precision": 0.703704,
+              "flags": 54,
+              "flags_on_split_truth": 38,
+              "haiku_missing_days": 0,
+              "proposals": 184,
+              "single_on_split_truth_rate": 0.059783,
+              "single_proposals_on_split_truth": 11,
+              "split_recall": 0.716981,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "PASS",
+            "verdict_B": "PASS"
+          },
+          "uncoded_at_T_k14": {
+            "metrics": {
+              "abstains": 65,
+              "cache_misses": 0,
+              "coverage_A": 0.492958,
+              "coverage_A_ci95": [
+                0.426538,
+                0.559627
+              ],
+              "coverage_B": 0.694836,
+              "coverage_B_ci95": [
+                0.629996,
+                0.752771
+              ],
+              "days": 213,
+              "days_scored": 213,
+              "exact_correct": 0.771429,
+              "exact_correct_ci95": [
+                0.68238,
+                0.841317
+              ],
+              "exact_correct_count": 81,
+              "flag_precision": 0.837209,
+              "flags": 43,
+              "flags_on_split_truth": 36,
+              "haiku_missing_days": 0,
+              "proposals": 105,
+              "single_on_split_truth_rate": 0.085714,
+              "single_proposals_on_split_truth": 9,
+              "split_recall": 0.75,
+              "split_truth_days_scored": 48
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "FAIL"
+          }
+        },
+        "U751_headline": {
+          "all_holdout": {
+            "metrics": {
+              "abstains": 84,
+              "cache_misses": 0,
+              "coverage_A": 0.647619,
+              "coverage_A_ci95": [
+                0.593374,
+                0.698307
+              ],
+              "coverage_B": 0.733333,
+              "coverage_B_ci95": [
+                0.6819,
+                0.779144
+              ],
+              "days": 315,
+              "days_scored": 315,
+              "exact_correct": 0.808824,
+              "exact_correct_ci95": [
+                0.749351,
+                0.85688
+              ],
+              "exact_correct_count": 165,
+              "flag_precision": 0.777778,
+              "flags": 27,
+              "flags_on_split_truth": 21,
+              "haiku_missing_days": 0,
+              "proposals": 204,
+              "single_on_split_truth_rate": 0.112745,
+              "single_proposals_on_split_truth": 23,
+              "split_recall": 0.396226,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "PASS",
+            "verdict_B": "PASS"
+          },
+          "uncoded_at_T_k14": {
+            "metrics": {
+              "abstains": 72,
+              "cache_misses": 0,
+              "coverage_A": 0.553991,
+              "coverage_A_ci95": [
+                0.486865,
+                0.619203
+              ],
+              "coverage_B": 0.661972,
+              "coverage_B_ci95": [
+                0.596075,
+                0.72213
+              ],
+              "days": 213,
+              "days_scored": 213,
+              "exact_correct": 0.694915,
+              "exact_correct_ci95": [
+                0.60678,
+                0.770759
+              ],
+              "exact_correct_count": 82,
+              "flag_precision": 0.826087,
+              "flags": 23,
+              "flags_on_split_truth": 19,
+              "haiku_missing_days": 0,
+              "proposals": 118,
+              "single_on_split_truth_rate": 0.177966,
+              "single_proposals_on_split_truth": 21,
+              "split_recall": 0.395833,
+              "split_truth_days_scored": 48
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "FAIL"
+          }
+        },
+        "headline": {
+          "all_holdout": {
+            "metrics": {
+              "abstains": 41,
+              "cache_misses": 0,
+              "coverage_A": 0.298413,
+              "coverage_A_ci95": [
+                0.250558,
+                0.351125
+              ],
+              "coverage_B": 0.869841,
+              "coverage_B_ci95": [
+                0.828183,
+                0.902587
+              ],
+              "days": 315,
+              "days_scored": 315,
+              "exact_correct": 0.904255,
+              "exact_correct_ci95": [
+                0.827957,
+                0.948809
+              ],
+              "exact_correct_count": 85,
+              "flag_precision": 0.288889,
+              "flags": 180,
+              "flags_on_split_truth": 52,
+              "haiku_missing_days": 0,
+              "proposals": 94,
+              "single_on_split_truth_rate": 0.0,
+              "single_proposals_on_split_truth": 0,
+              "split_recall": 0.981132,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "PASS"
+          },
+          "uncoded_at_T_k14": {
+            "metrics": {
+              "abstains": 36,
+              "cache_misses": 0,
+              "coverage_A": 0.215962,
+              "coverage_A_ci95": [
+                0.165994,
+                0.275995
+              ],
+              "coverage_B": 0.830986,
+              "coverage_B_ci95": [
+                0.774897,
+                0.875347
+              ],
+              "days": 213,
+              "days_scored": 213,
+              "exact_correct": 0.804348,
+              "exact_correct_ci95": [
+                0.668285,
+                0.893495
+              ],
+              "exact_correct_count": 37,
+              "flag_precision": 0.358779,
+              "flags": 131,
+              "flags_on_split_truth": 47,
+              "haiku_missing_days": 0,
+              "proposals": 46,
+              "single_on_split_truth_rate": 0.0,
+              "single_proposals_on_split_truth": 0,
+              "split_recall": 0.979167,
+              "split_truth_days_scored": 48
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "PASS"
+          }
+        }
+      },
+      "s_text_cv": {
+        "evidence_rule": "training_grids_exclude_every_line_of_the_held_out_fold",
+        "fits": [
+          {
+            "fold": 0,
+            "m_d": 1,
+            "tau_d": 0.25,
+            "training_confusion": {
+              "fn": 49,
+              "fp": 108,
+              "tn": 1202,
+              "tp": 38
+            },
+            "training_days": 1397,
+            "training_f1": 0.3261802575107296,
+            "training_precision": 0.2602739726027397,
+            "training_recall": 0.436782,
+            "training_split_days": 87
+          },
+          {
+            "fold": 1,
+            "m_d": 1,
+            "tau_d": 0.2,
+            "training_confusion": {
+              "fn": 63,
+              "fp": 102,
+              "tn": 1219,
+              "tp": 39
+            },
+            "training_days": 1423,
+            "training_f1": 0.32098765432098764,
+            "training_precision": 0.2765957446808511,
+            "training_recall": 0.382353,
+            "training_split_days": 102
+          },
+          {
+            "fold": 2,
+            "m_d": 2,
+            "tau_d": 0.25,
+            "training_confusion": {
+              "fn": 61,
+              "fp": 63,
+              "tn": 1228,
+              "tp": 31
+            },
+            "training_days": 1383,
+            "training_f1": 0.3333333333333333,
+            "training_precision": 0.32978723404255317,
+            "training_recall": 0.336957,
+            "training_split_days": 92
+          },
+          {
+            "fold": 3,
+            "m_d": 2,
+            "tau_d": 0.2,
+            "training_confusion": {
+              "fn": 47,
+              "fp": 77,
+              "tn": 1193,
+              "tp": 47
+            },
+            "training_days": 1364,
+            "training_f1": 0.43119266055045874,
+            "training_precision": 0.3790322580645161,
+            "training_recall": 0.5,
+            "training_split_days": 94
+          },
+          {
+            "fold": 4,
+            "m_d": 2,
+            "tau_d": 0.3,
+            "training_confusion": {
+              "fn": 55,
+              "fp": 69,
+              "tn": 1247,
+              "tp": 42
+            },
+            "training_days": 1413,
+            "training_f1": 0.40384615384615385,
+            "training_precision": 0.3783783783783784,
+            "training_recall": 0.43299,
+            "training_split_days": 97
+          }
+        ],
+        "folds": 5,
+        "holdout_days_per_fold": {
+          "0": 67,
+          "1": 54,
+          "2": 66,
+          "3": 69,
+          "4": 59
+        },
+        "labelled_days": 1745,
+        "labelled_split_days": 118,
+        "labelled_split_days_outside_holdout": 65
+      },
+      "sonnet_statuses": {
+        "abstain": 89,
+        "invalid_json": 1,
+        "ok": 225
+      },
+      "verdict_A": "FAIL",
+      "verdict_B": "PASS"
+    },
+    "k7": {
+      "arm_a_fit_u750": {
+        "calibration_coverage": 0.616842,
+        "calibration_days": 475,
+        "calibration_exact_correct": 0.808874,
+        "calibration_false_split_rate": 0.0,
+        "calibration_proposals": 293,
+        "m": 2,
+        "status": "qualified",
+        "tau": 0.6
+      },
+      "cache_hits": 297,
+      "cache_misses": 18,
+      "detectors": {
+        "S_haiku": {
+          "all_holdout": {
+            "confusion": {
+              "fn": 2,
+              "fp": 122,
+              "tn": 122,
+              "tp": 51
+            },
+            "days": 297,
+            "f1": 0.45132743362831856,
+            "flags": 173,
+            "flags_on_single_truth": 122,
+            "haiku_missing_days": 0,
+            "precision": 0.294798,
+            "recall": 0.962264,
+            "split_truth_days": 53,
+            "status": "scored"
+          },
+          "uncoded_at_T_k7": {
+            "confusion": {
+              "fn": 2,
+              "fp": 121,
+              "tn": 111,
+              "tp": 51
+            },
+            "days": 285,
+            "f1": 0.4533333333333333,
+            "flags": 172,
+            "flags_on_single_truth": 121,
+            "haiku_missing_days": 0,
+            "precision": 0.296512,
+            "recall": 0.962264,
+            "split_truth_days": 53,
+            "status": "scored"
+          }
+        },
+        "S_haiku_or_S_sonnet": {
+          "all_holdout": {
+            "confusion": {
+              "fn": 2,
+              "fp": 122,
+              "tn": 122,
+              "tp": 51
+            },
+            "days": 297,
+            "f1": 0.45132743362831856,
+            "flags": 173,
+            "flags_on_single_truth": 122,
+            "haiku_missing_days": 0,
+            "precision": 0.294798,
+            "recall": 0.962264,
+            "split_truth_days": 53,
+            "status": "scored"
+          },
+          "uncoded_at_T_k7": {
+            "confusion": {
+              "fn": 2,
+              "fp": 121,
+              "tn": 111,
+              "tp": 51
+            },
+            "days": 285,
+            "f1": 0.4533333333333333,
+            "flags": 172,
+            "flags_on_single_truth": 121,
+            "haiku_missing_days": 0,
+            "precision": 0.296512,
+            "recall": 0.962264,
+            "split_truth_days": 53,
+            "status": "scored"
+          }
+        },
+        "S_sonnet": {
+          "all_holdout": {
+            "confusion": {
+              "fn": 39,
+              "fp": 5,
+              "tn": 239,
+              "tp": 14
+            },
+            "days": 297,
+            "f1": 0.3888888888888889,
+            "flags": 19,
+            "flags_on_single_truth": 5,
+            "haiku_missing_days": 0,
+            "precision": 0.736842,
+            "recall": 0.264151,
+            "split_truth_days": 53,
+            "status": "scored"
+          },
+          "uncoded_at_T_k7": {
+            "confusion": {
+              "fn": 39,
+              "fp": 5,
+              "tn": 227,
+              "tp": 14
+            },
+            "days": 285,
+            "f1": 0.3888888888888889,
+            "flags": 19,
+            "flags_on_single_truth": 5,
+            "haiku_missing_days": 0,
+            "precision": 0.736842,
+            "recall": 0.264151,
+            "split_truth_days": 53,
+            "status": "scored"
+          }
+        },
+        "S_text": {
+          "all_holdout": {
+            "confusion": {
+              "fn": 21,
+              "fp": 20,
+              "tn": 224,
+              "tp": 32
+            },
+            "days": 297,
+            "f1": 0.6095238095238096,
+            "flags": 52,
+            "flags_on_single_truth": 20,
+            "haiku_missing_days": 0,
+            "precision": 0.615385,
+            "recall": 0.603774,
+            "split_truth_days": 53,
+            "status": "scored"
+          },
+          "uncoded_at_T_k7": {
+            "confusion": {
+              "fn": 21,
+              "fp": 20,
+              "tn": 212,
+              "tp": 32
+            },
+            "days": 285,
+            "f1": 0.6095238095238096,
+            "flags": 52,
+            "flags_on_single_truth": 20,
+            "haiku_missing_days": 0,
+            "precision": 0.615385,
+            "recall": 0.603774,
+            "split_truth_days": 53,
+            "status": "scored"
+          }
+        },
+        "S_text_or_S_haiku_or_S_sonnet": {
+          "all_holdout": {
+            "confusion": {
+              "fn": 1,
+              "fp": 123,
+              "tn": 121,
+              "tp": 52
+            },
+            "days": 297,
+            "f1": 0.45614035087719296,
+            "flags": 175,
+            "flags_on_single_truth": 123,
+            "haiku_missing_days": 0,
+            "precision": 0.297143,
+            "recall": 0.981132,
+            "split_truth_days": 53,
+            "status": "scored"
+          },
+          "uncoded_at_T_k7": {
+            "confusion": {
+              "fn": 1,
+              "fp": 122,
+              "tn": 110,
+              "tp": 52
+            },
+            "days": 285,
+            "f1": 0.4581497797356828,
+            "flags": 174,
+            "flags_on_single_truth": 122,
+            "haiku_missing_days": 0,
+            "precision": 0.298851,
+            "recall": 0.981132,
+            "split_truth_days": 53,
+            "status": "scored"
+          }
+        },
+        "S_text_or_S_sonnet": {
+          "all_holdout": {
+            "confusion": {
+              "fn": 16,
+              "fp": 22,
+              "tn": 222,
+              "tp": 37
+            },
+            "days": 297,
+            "f1": 0.6607142857142857,
+            "flags": 59,
+            "flags_on_single_truth": 22,
+            "haiku_missing_days": 0,
+            "precision": 0.627119,
+            "recall": 0.698113,
+            "split_truth_days": 53,
+            "status": "scored"
+          },
+          "uncoded_at_T_k7": {
+            "confusion": {
+              "fn": 16,
+              "fp": 22,
+              "tn": 210,
+              "tp": 37
+            },
+            "days": 285,
+            "f1": 0.6607142857142857,
+            "flags": 59,
+            "flags_on_single_truth": 22,
+            "haiku_missing_days": 0,
+            "precision": 0.627119,
+            "recall": 0.698113,
+            "split_truth_days": 53,
+            "status": "scored"
+          }
+        }
+      },
+      "holdout_days": 315,
+      "rules": {
+        "R_haiku": {
+          "all_holdout": {
+            "metrics": {
+              "abstains": 51,
+              "cache_misses": 18,
+              "coverage_A": 0.245791,
+              "coverage_A_ci95": [
+                0.200275,
+                0.297799
+              ],
+              "coverage_B": 0.828283,
+              "coverage_B_ci95": [
+                0.781268,
+                0.866914
+              ],
+              "days": 315,
+              "days_scored": 297,
+              "exact_correct": 0.876712,
+              "exact_correct_ci95": [
+                0.781995,
+                0.933763
+              ],
+              "exact_correct_count": 64,
+              "flag_precision": 0.294798,
+              "flags": 173,
+              "flags_on_split_truth": 51,
+              "haiku_missing_days": 0,
+              "proposals": 73,
+              "single_on_split_truth_rate": 0.013699,
+              "single_proposals_on_split_truth": 1,
+              "split_recall": 0.962264,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "PASS"
+          },
+          "uncoded_at_T_k7": {
+            "metrics": {
+              "abstains": 50,
+              "cache_misses": 18,
+              "coverage_A": 0.221053,
+              "coverage_A_ci95": [
+                0.176764,
+                0.272761
+              ],
+              "coverage_B": 0.824561,
+              "coverage_B_ci95": [
+                0.77617,
+                0.86432
+              ],
+              "days": 303,
+              "days_scored": 285,
+              "exact_correct": 0.857143,
+              "exact_correct_ci95": [
+                0.750252,
+                0.922981
+              ],
+              "exact_correct_count": 54,
+              "flag_precision": 0.296512,
+              "flags": 172,
+              "flags_on_split_truth": 51,
+              "haiku_missing_days": 0,
+              "proposals": 63,
+              "single_on_split_truth_rate": 0.015873,
+              "single_proposals_on_split_truth": 1,
+              "split_recall": 0.962264,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "PASS"
+          }
+        },
+        "R_haiku_or_sonnet": {
+          "all_holdout": {
+            "metrics": {
+              "abstains": 51,
+              "cache_misses": 18,
+              "coverage_A": 0.245791,
+              "coverage_A_ci95": [
+                0.200275,
+                0.297799
+              ],
+              "coverage_B": 0.828283,
+              "coverage_B_ci95": [
+                0.781268,
+                0.866914
+              ],
+              "days": 315,
+              "days_scored": 297,
+              "exact_correct": 0.876712,
+              "exact_correct_ci95": [
+                0.781995,
+                0.933763
+              ],
+              "exact_correct_count": 64,
+              "flag_precision": 0.294798,
+              "flags": 173,
+              "flags_on_split_truth": 51,
+              "haiku_missing_days": 0,
+              "proposals": 73,
+              "single_on_split_truth_rate": 0.013699,
+              "single_proposals_on_split_truth": 1,
+              "split_recall": 0.962264,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "PASS"
+          },
+          "uncoded_at_T_k7": {
+            "metrics": {
+              "abstains": 50,
+              "cache_misses": 18,
+              "coverage_A": 0.221053,
+              "coverage_A_ci95": [
+                0.176764,
+                0.272761
+              ],
+              "coverage_B": 0.824561,
+              "coverage_B_ci95": [
+                0.77617,
+                0.86432
+              ],
+              "days": 303,
+              "days_scored": 285,
+              "exact_correct": 0.857143,
+              "exact_correct_ci95": [
+                0.750252,
+                0.922981
+              ],
+              "exact_correct_count": 54,
+              "flag_precision": 0.296512,
+              "flags": 172,
+              "flags_on_split_truth": 51,
+              "haiku_missing_days": 0,
+              "proposals": 63,
+              "single_on_split_truth_rate": 0.015873,
+              "single_proposals_on_split_truth": 1,
+              "split_recall": 0.962264,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "PASS"
+          }
+        },
+        "R_sonnet": {
+          "all_holdout": {
+            "metrics": {
+              "abstains": 123,
+              "cache_misses": 18,
+              "coverage_A": 0.521886,
+              "coverage_A_ci95": [
+                0.465158,
+                0.578054
+              ],
+              "coverage_B": 0.585859,
+              "coverage_B_ci95": [
+                0.52909,
+                0.640435
+              ],
+              "days": 315,
+              "days_scored": 297,
+              "exact_correct": 0.716129,
+              "exact_correct_ci95": [
+                0.640589,
+                0.781215
+              ],
+              "exact_correct_count": 111,
+              "flag_precision": 0.736842,
+              "flags": 19,
+              "flags_on_split_truth": 14,
+              "haiku_missing_days": 0,
+              "proposals": 155,
+              "single_on_split_truth_rate": 0.154839,
+              "single_proposals_on_split_truth": 24,
+              "split_recall": 0.264151,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "FAIL"
+          },
+          "uncoded_at_T_k7": {
+            "metrics": {
+              "abstains": 121,
+              "cache_misses": 18,
+              "coverage_A": 0.508772,
+              "coverage_A_ci95": [
+                0.451001,
+                0.566309
+              ],
+              "coverage_B": 0.575439,
+              "coverage_B_ci95": [
+                0.517424,
+                0.631447
+              ],
+              "days": 303,
+              "days_scored": 285,
+              "exact_correct": 0.696552,
+              "exact_correct_ci95": [
+                0.617444,
+                0.765513
+              ],
+              "exact_correct_count": 101,
+              "flag_precision": 0.736842,
+              "flags": 19,
+              "flags_on_split_truth": 14,
+              "haiku_missing_days": 0,
+              "proposals": 145,
+              "single_on_split_truth_rate": 0.165517,
+              "single_proposals_on_split_truth": 24,
+              "split_recall": 0.264151,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "FAIL"
+          }
+        },
+        "R_text": {
+          "all_holdout": {
+            "metrics": {
+              "abstains": 119,
+              "cache_misses": 18,
+              "coverage_A": 0.424242,
+              "coverage_A_ci95": [
+                0.369353,
+                0.481067
+              ],
+              "coverage_B": 0.599327,
+              "coverage_B_ci95": [
+                0.542669,
+                0.653448
+              ],
+              "days": 315,
+              "days_scored": 297,
+              "exact_correct": 0.785714,
+              "exact_correct_ci95": [
+                0.706177,
+                0.848345
+              ],
+              "exact_correct_count": 99,
+              "flag_precision": 0.615385,
+              "flags": 52,
+              "flags_on_split_truth": 32,
+              "haiku_missing_days": 0,
+              "proposals": 126,
+              "single_on_split_truth_rate": 0.055556,
+              "single_proposals_on_split_truth": 7,
+              "split_recall": 0.603774,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "FAIL"
+          },
+          "uncoded_at_T_k7": {
+            "metrics": {
+              "abstains": 117,
+              "cache_misses": 18,
+              "coverage_A": 0.407018,
+              "coverage_A_ci95": [
+                0.351584,
+                0.464925
+              ],
+              "coverage_B": 0.589474,
+              "coverage_B_ci95": [
+                0.531539,
+                0.645028
+              ],
+              "days": 303,
+              "days_scored": 285,
+              "exact_correct": 0.767241,
+              "exact_correct_ci95": [
+                0.682531,
+                0.834819
+              ],
+              "exact_correct_count": 89,
+              "flag_precision": 0.615385,
+              "flags": 52,
+              "flags_on_split_truth": 32,
+              "haiku_missing_days": 0,
+              "proposals": 116,
+              "single_on_split_truth_rate": 0.060345,
+              "single_proposals_on_split_truth": 7,
+              "split_recall": 0.603774,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "FAIL"
+          }
+        },
+        "R_text_or_sonnet": {
+          "all_holdout": {
+            "metrics": {
+              "abstains": 112,
+              "cache_misses": 18,
+              "coverage_A": 0.424242,
+              "coverage_A_ci95": [
+                0.369353,
+                0.481067
+              ],
+              "coverage_B": 0.622896,
+              "coverage_B_ci95": [
+                0.566536,
+                0.676117
+              ],
+              "days": 315,
+              "days_scored": 297,
+              "exact_correct": 0.785714,
+              "exact_correct_ci95": [
+                0.706177,
+                0.848345
+              ],
+              "exact_correct_count": 99,
+              "flag_precision": 0.627119,
+              "flags": 59,
+              "flags_on_split_truth": 37,
+              "haiku_missing_days": 0,
+              "proposals": 126,
+              "single_on_split_truth_rate": 0.055556,
+              "single_proposals_on_split_truth": 7,
+              "split_recall": 0.698113,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "FAIL"
+          },
+          "uncoded_at_T_k7": {
+            "metrics": {
+              "abstains": 110,
+              "cache_misses": 18,
+              "coverage_A": 0.407018,
+              "coverage_A_ci95": [
+                0.351584,
+                0.464925
+              ],
+              "coverage_B": 0.614035,
+              "coverage_B_ci95": [
+                0.556355,
+                0.668682
+              ],
+              "days": 303,
+              "days_scored": 285,
+              "exact_correct": 0.767241,
+              "exact_correct_ci95": [
+                0.682531,
+                0.834819
+              ],
+              "exact_correct_count": 89,
+              "flag_precision": 0.627119,
+              "flags": 59,
+              "flags_on_split_truth": 37,
+              "haiku_missing_days": 0,
+              "proposals": 116,
+              "single_on_split_truth_rate": 0.060345,
+              "single_proposals_on_split_truth": 7,
+              "split_recall": 0.698113,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "FAIL"
+          }
+        },
+        "U751_headline": {
+          "all_holdout": {
+            "metrics": {
+              "abstains": 118,
+              "cache_misses": 18,
+              "coverage_A": 0.518519,
+              "coverage_A_ci95": [
+                0.461819,
+                0.574745
+              ],
+              "coverage_B": 0.602694,
+              "coverage_B_ci95": [
+                0.54607,
+                0.656694
+              ],
+              "days": 315,
+              "days_scored": 297,
+              "exact_correct": 0.720779,
+              "exact_correct_ci95": [
+                0.645212,
+                0.785599
+              ],
+              "exact_correct_count": 111,
+              "flag_precision": 0.72,
+              "flags": 25,
+              "flags_on_split_truth": 18,
+              "haiku_missing_days": 0,
+              "proposals": 154,
+              "single_on_split_truth_rate": 0.149351,
+              "single_proposals_on_split_truth": 23,
+              "split_recall": 0.339623,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "FAIL"
+          },
+          "uncoded_at_T_k7": {
+            "metrics": {
+              "abstains": 116,
+              "cache_misses": 18,
+              "coverage_A": 0.505263,
+              "coverage_A_ci95": [
+                0.447533,
+                0.562853
+              ],
+              "coverage_B": 0.592982,
+              "coverage_B_ci95": [
+                0.535075,
+                0.648416
+              ],
+              "days": 303,
+              "days_scored": 285,
+              "exact_correct": 0.701389,
+              "exact_correct_ci95": [
+                0.622199,
+                0.770113
+              ],
+              "exact_correct_count": 101,
+              "flag_precision": 0.72,
+              "flags": 25,
+              "flags_on_split_truth": 18,
+              "haiku_missing_days": 0,
+              "proposals": 144,
+              "single_on_split_truth_rate": 0.159722,
+              "single_proposals_on_split_truth": 23,
+              "split_recall": 0.339623,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "FAIL"
+          }
+        },
+        "headline": {
+          "all_holdout": {
+            "metrics": {
+              "abstains": 51,
+              "cache_misses": 18,
+              "coverage_A": 0.239057,
+              "coverage_A_ci95": [
+                0.194078,
+                0.290701
+              ],
+              "coverage_B": 0.828283,
+              "coverage_B_ci95": [
+                0.781268,
+                0.866914
+              ],
+              "days": 315,
+              "days_scored": 297,
+              "exact_correct": 0.887324,
+              "exact_correct_ci95": [
+                0.793097,
+                0.941788
+              ],
+              "exact_correct_count": 63,
+              "flag_precision": 0.297143,
+              "flags": 175,
+              "flags_on_split_truth": 52,
+              "haiku_missing_days": 0,
+              "proposals": 71,
+              "single_on_split_truth_rate": 0.0,
+              "single_proposals_on_split_truth": 0,
+              "split_recall": 0.981132,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "PASS"
+          },
+          "uncoded_at_T_k7": {
+            "metrics": {
+              "abstains": 50,
+              "cache_misses": 18,
+              "coverage_A": 0.214035,
+              "coverage_A_ci95": [
+                0.170385,
+                0.265292
+              ],
+              "coverage_B": 0.824561,
+              "coverage_B_ci95": [
+                0.77617,
+                0.86432
+              ],
+              "days": 303,
+              "days_scored": 285,
+              "exact_correct": 0.868852,
+              "exact_correct_ci95": [
+                0.761979,
+                0.93202
+              ],
+              "exact_correct_count": 53,
+              "flag_precision": 0.298851,
+              "flags": 174,
+              "flags_on_split_truth": 52,
+              "haiku_missing_days": 0,
+              "proposals": 61,
+              "single_on_split_truth_rate": 0.0,
+              "single_proposals_on_split_truth": 0,
+              "split_recall": 0.981132,
+              "split_truth_days_scored": 53
+            },
+            "status": "scored",
+            "verdict_A": "FAIL",
+            "verdict_B": "PASS"
+          }
+        }
+      },
+      "s_text_cv": {
+        "evidence_rule": "training_grids_exclude_every_line_of_the_held_out_fold",
+        "fits": [
+          {
+            "fold": 0,
+            "m_d": 3,
+            "tau_d": 0.2,
+            "training_confusion": {
+              "fn": 55,
+              "fp": 45,
+              "tn": 1265,
+              "tp": 32
+            },
+            "training_days": 1397,
+            "training_f1": 0.3902439024390244,
+            "training_precision": 0.4155844155844156,
+            "training_recall": 0.367816,
+            "training_split_days": 87
+          },
+          {
+            "fold": 1,
+            "m_d": 2,
+            "tau_d": 0.25,
+            "training_confusion": {
+              "fn": 67,
+              "fp": 74,
+              "tn": 1247,
+              "tp": 35
+            },
+            "training_days": 1423,
+            "training_f1": 0.33175355450236965,
+            "training_precision": 0.3211009174311927,
+            "training_recall": 0.343137,
+            "training_split_days": 102
+          },
+          {
+            "fold": 2,
+            "m_d": 2,
+            "tau_d": 0.25,
+            "training_confusion": {
+              "fn": 58,
+              "fp": 66,
+              "tn": 1225,
+              "tp": 34
+            },
+            "training_days": 1383,
+            "training_f1": 0.3541666666666667,
+            "training_precision": 0.34,
+            "training_recall": 0.369565,
+            "training_split_days": 92
+          },
+          {
+            "fold": 3,
+            "m_d": 2,
+            "tau_d": 0.25,
+            "training_confusion": {
+              "fn": 51,
+              "fp": 63,
+              "tn": 1207,
+              "tp": 43
+            },
+            "training_days": 1364,
+            "training_f1": 0.43,
+            "training_precision": 0.4056603773584906,
+            "training_recall": 0.457447,
+            "training_split_days": 94
+          },
+          {
+            "fold": 4,
+            "m_d": 2,
+            "tau_d": 0.25,
+            "training_confusion": {
+              "fn": 47,
+              "fp": 60,
+              "tn": 1256,
+              "tp": 50
+            },
+            "training_days": 1413,
+            "training_f1": 0.4830917874396135,
+            "training_precision": 0.45454545454545453,
+            "training_recall": 0.515464,
+            "training_split_days": 97
+          }
+        ],
+        "folds": 5,
+        "holdout_days_per_fold": {
+          "0": 67,
+          "1": 54,
+          "2": 66,
+          "3": 69,
+          "4": 59
+        },
+        "labelled_days": 1745,
+        "labelled_split_days": 118,
+        "labelled_split_days_outside_holdout": 65
+      },
+      "sonnet_statuses": {
+        "abstain": 123,
+        "cache_miss": 18,
+        "ok": 174
+      },
+      "verdict_A": "FAIL",
+      "verdict_B": "PASS"
+    }
+  },
+  "git_sha": "8b4b976195d0c9d7a39cf9b559e86981b33db033",
+  "grids": {
+    "m_d": [
+      1,
+      2,
+      3
+    ],
+    "tau_d": [
+      0.2,
+      0.25,
+      0.3,
+      0.35,
+      0.4,
+      0.45,
+      0.5,
+      0.55,
+      0.6,
+      0.65,
+      0.7,
+      0.75,
+      0.8,
+      0.85,
+      0.9
+    ]
+  },
+  "headline_k": 7,
+  "headline_rule": "headline",
+  "model_version": "u775-multitask-detector-v1",
+  "named_case": {
+    "crew_days": [
+      {
+        "by_k": {
+          "k14": {
+            "cache": "hit",
+            "fold": 2,
+            "outcomes": {
+              "R_haiku": {
+                "action": "abstain"
+              },
+              "R_haiku_or_sonnet": {
+                "action": "abstain"
+              },
+              "R_sonnet": {
+                "action": "abstain"
+              },
+              "R_text": {
+                "action": "abstain"
+              },
+              "R_text_or_sonnet": {
+                "action": "abstain"
+              },
+              "U751_headline": {
+                "action": "abstain"
+              },
+              "headline": {
+                "action": "abstain"
+              }
+            },
+            "s_sonnet": false,
+            "s_text": false,
+            "s_text_fit": {
+              "m_d": 2,
+              "tau_d": 0.25
+            },
+            "sonnet_proposal": {
+              "kind": "abstain"
+            },
+            "sonnet_status": "abstain",
+            "uncoded_at_T": true
+          },
+          "k7": {
+            "cache": "hit",
+            "fold": 2,
+            "outcomes": {
+              "R_haiku": {
+                "action": "abstain"
+              },
+              "R_haiku_or_sonnet": {
+                "action": "abstain"
+              },
+              "R_sonnet": {
+                "action": "abstain"
+              },
+              "R_text": {
+                "action": "abstain"
+              },
+              "R_text_or_sonnet": {
+                "action": "abstain"
+              },
+              "U751_headline": {
+                "action": "abstain"
+              },
+              "headline": {
+                "action": "abstain"
+              }
+            },
+            "s_sonnet": false,
+            "s_text": false,
+            "s_text_fit": {
+              "m_d": 2,
+              "tau_d": 0.25
+            },
+            "sonnet_proposal": {
+              "kind": "abstain"
+            },
+            "sonnet_status": "abstain",
+            "uncoded_at_T": true
+          }
+        },
+        "contract_labor_id": 1425,
+        "line_date": "2026-09-29",
+        "project_id": 13,
+        "s_haiku": {
+          "multi_task": false,
+          "status": "ok"
+        },
+        "truth": [
+          {
+            "code": "35.00",
+            "hours": 4.0,
+            "scc_id": 267
+          },
+          {
+            "code": "44.00",
+            "hours": 2.0,
+            "scc_id": 315
+          },
+          {
+            "code": "51.00",
+            "hours": 2.0,
+            "scc_id": 369
+          }
+        ],
+        "truth_is_split": true
+      },
+      {
+        "by_k": {
+          "k14": {
+            "cache": "hit",
+            "fold": 0,
+            "outcomes": {
+              "R_haiku": {
+                "action": "may_need_splitting"
+              },
+              "R_haiku_or_sonnet": {
+                "action": "may_need_splitting"
+              },
+              "R_sonnet": {
+                "action": "propose",
+                "lines": [
+                  {
+                    "code": "35.00",
+                    "hours": 8.0,
+                    "scc_id": 267
+                  }
+                ]
+              },
+              "R_text": {
+                "action": "may_need_splitting"
+              },
+              "R_text_or_sonnet": {
+                "action": "may_need_splitting"
+              },
+              "U751_headline": {
+                "action": "propose",
+                "lines": [
+                  {
+                    "code": "35.00",
+                    "hours": 8.0,
+                    "scc_id": 267
+                  }
+                ]
+              },
+              "headline": {
+                "action": "may_need_splitting"
+              }
+            },
+            "s_sonnet": false,
+            "s_text": true,
+            "s_text_fit": {
+              "m_d": 1,
+              "tau_d": 0.25
+            },
+            "sonnet_proposal": {
+              "flags": [],
+              "kind": "single",
+              "lines": [
+                {
+                  "code": "35.00",
+                  "hours": 8.0,
+                  "scc_id": 267
+                }
+              ]
+            },
+            "sonnet_status": "ok",
+            "uncoded_at_T": true
+          },
+          "k7": {
+            "cache": "hit",
+            "fold": 0,
+            "outcomes": {
+              "R_haiku": {
+                "action": "may_need_splitting"
+              },
+              "R_haiku_or_sonnet": {
+                "action": "may_need_splitting"
+              },
+              "R_sonnet": {
+                "action": "propose",
+                "lines": [
+                  {
+                    "code": "35.00",
+                    "hours": 8.0,
+                    "scc_id": 267
+                  }
+                ]
+              },
+              "R_text": {
+                "action": "may_need_splitting"
+              },
+              "R_text_or_sonnet": {
+                "action": "may_need_splitting"
+              },
+              "U751_headline": {
+                "action": "propose",
+                "lines": [
+                  {
+                    "code": "35.00",
+                    "hours": 8.0,
+                    "scc_id": 267
+                  }
+                ]
+              },
+              "headline": {
+                "action": "may_need_splitting"
+              }
+            },
+            "s_sonnet": false,
+            "s_text": true,
+            "s_text_fit": {
+              "m_d": 3,
+              "tau_d": 0.2
+            },
+            "sonnet_proposal": {
+              "flags": [],
+              "kind": "single",
+              "lines": [
+                {
+                  "code": "35.00",
+                  "hours": 8.0,
+                  "scc_id": 267
+                }
+              ]
+            },
+            "sonnet_status": "ok",
+            "uncoded_at_T": true
+          }
+        },
+        "contract_labor_id": 1426,
+        "line_date": "2026-09-29",
+        "project_id": 13,
+        "s_haiku": {
+          "multi_task": true,
+          "status": "ok"
+        },
+        "truth": [
+          {
+            "code": "35.00",
+            "hours": 4.0,
+            "scc_id": 267
+          },
+          {
+            "code": "44.00",
+            "hours": 2.0,
+            "scc_id": 315
+          },
+          {
+            "code": "51.00",
+            "hours": 2.0,
+            "scc_id": 369
+          }
+        ],
+        "truth_is_split": true
+      },
+      {
+        "by_k": {
+          "k14": {
+            "cache": "hit",
+            "fold": 4,
+            "outcomes": {
+              "R_haiku": {
+                "action": "may_need_splitting"
+              },
+              "R_haiku_or_sonnet": {
+                "action": "may_need_splitting"
+              },
+              "R_sonnet": {
+                "action": "propose",
+                "lines": [
+                  {
+                    "code": "35.00",
+                    "hours": 8.0,
+                    "scc_id": 267
+                  }
+                ]
+              },
+              "R_text": {
+                "action": "may_need_splitting"
+              },
+              "R_text_or_sonnet": {
+                "action": "may_need_splitting"
+              },
+              "U751_headline": {
+                "action": "propose",
+                "lines": [
+                  {
+                    "code": "35.00",
+                    "hours": 8.0,
+                    "scc_id": 267
+                  }
+                ]
+              },
+              "headline": {
+                "action": "may_need_splitting"
+              }
+            },
+            "s_sonnet": false,
+            "s_text": true,
+            "s_text_fit": {
+              "m_d": 2,
+              "tau_d": 0.3
+            },
+            "sonnet_proposal": {
+              "flags": [],
+              "kind": "single",
+              "lines": [
+                {
+                  "code": "35.00",
+                  "hours": 8.0,
+                  "scc_id": 267
+                }
+              ]
+            },
+            "sonnet_status": "ok",
+            "uncoded_at_T": true
+          },
+          "k7": {
+            "cache": "hit",
+            "fold": 4,
+            "outcomes": {
+              "R_haiku": {
+                "action": "may_need_splitting"
+              },
+              "R_haiku_or_sonnet": {
+                "action": "may_need_splitting"
+              },
+              "R_sonnet": {
+                "action": "propose",
+                "lines": [
+                  {
+                    "code": "35.00",
+                    "hours": 8.0,
+                    "scc_id": 267
+                  }
+                ]
+              },
+              "R_text": {
+                "action": "may_need_splitting"
+              },
+              "R_text_or_sonnet": {
+                "action": "may_need_splitting"
+              },
+              "U751_headline": {
+                "action": "propose",
+                "lines": [
+                  {
+                    "code": "35.00",
+                    "hours": 8.0,
+                    "scc_id": 267
+                  }
+                ]
+              },
+              "headline": {
+                "action": "may_need_splitting"
+              }
+            },
+            "s_sonnet": false,
+            "s_text": true,
+            "s_text_fit": {
+              "m_d": 2,
+              "tau_d": 0.25
+            },
+            "sonnet_proposal": {
+              "flags": [],
+              "kind": "single",
+              "lines": [
+                {
+                  "code": "35.00",
+                  "hours": 8.0,
+                  "scc_id": 267
+                }
+              ]
+            },
+            "sonnet_status": "ok",
+            "uncoded_at_T": true
+          }
+        },
+        "contract_labor_id": 1431,
+        "line_date": "2026-09-29",
+        "project_id": 13,
+        "s_haiku": {
+          "multi_task": true,
+          "status": "ok"
+        },
+        "truth": [
+          {
+            "code": "35.00",
+            "hours": 4.0,
+            "scc_id": 267
+          },
+          {
+            "code": "44.00",
+            "hours": 2.0,
+            "scc_id": 315
+          },
+          {
+            "code": "51.00",
+            "hours": 2.0,
+            "scc_id": 369
+          }
+        ],
+        "truth_is_split": true
+      },
+      {
+        "by_k": {
+          "k14": {
+            "cache": "hit",
+            "fold": 2,
+            "outcomes": {
+              "R_haiku": {
+                "action": "may_need_splitting"
+              },
+              "R_haiku_or_sonnet": {
+                "action": "may_need_splitting"
+              },
+              "R_sonnet": {
+                "action": "propose",
+                "lines": [
+                  {
+                    "code": "35.00",
+                    "hours": 8.0,
+                    "scc_id": 267
+                  }
+                ]
+              },
+              "R_text": {
+                "action": "may_need_splitting"
+              },
+              "R_text_or_sonnet": {
+                "action": "may_need_splitting"
+              },
+              "U751_headline": {
+                "action": "propose",
+                "lines": [
+                  {
+                    "code": "35.00",
+                    "hours": 8.0,
+                    "scc_id": 267
+                  }
+                ]
+              },
+              "headline": {
+                "action": "may_need_splitting"
+              }
+            },
+            "s_sonnet": false,
+            "s_text": true,
+            "s_text_fit": {
+              "m_d": 2,
+              "tau_d": 0.25
+            },
+            "sonnet_proposal": {
+              "flags": [],
+              "kind": "single",
+              "lines": [
+                {
+                  "code": "35.00",
+                  "hours": 8.0,
+                  "scc_id": 267
+                }
+              ]
+            },
+            "sonnet_status": "ok",
+            "uncoded_at_T": true
+          },
+          "k7": {
+            "cache": "hit",
+            "fold": 2,
+            "outcomes": {
+              "R_haiku": {
+                "action": "may_need_splitting"
+              },
+              "R_haiku_or_sonnet": {
+                "action": "may_need_splitting"
+              },
+              "R_sonnet": {
+                "action": "propose",
+                "lines": [
+                  {
+                    "code": "35.00",
+                    "hours": 8.0,
+                    "scc_id": 267
+                  }
+                ]
+              },
+              "R_text": {
+                "action": "may_need_splitting"
+              },
+              "R_text_or_sonnet": {
+                "action": "may_need_splitting"
+              },
+              "U751_headline": {
+                "action": "propose",
+                "lines": [
+                  {
+                    "code": "35.00",
+                    "hours": 8.0,
+                    "scc_id": 267
+                  }
+                ]
+              },
+              "headline": {
+                "action": "may_need_splitting"
+              }
+            },
+            "s_sonnet": false,
+            "s_text": true,
+            "s_text_fit": {
+              "m_d": 2,
+              "tau_d": 0.25
+            },
+            "sonnet_proposal": {
+              "flags": [],
+              "kind": "single",
+              "lines": [
+                {
+                  "code": "35.00",
+                  "hours": 8.0,
+                  "scc_id": 267
+                }
+              ]
+            },
+            "sonnet_status": "ok",
+            "uncoded_at_T": true
+          }
+        },
+        "contract_labor_id": 1439,
+        "line_date": "2026-09-29",
+        "project_id": 13,
+        "s_haiku": {
+          "multi_task": true,
+          "status": "ok"
+        },
+        "truth": [
+          {
+            "code": "35.00",
+            "hours": 4.0,
+            "scc_id": 267
+          },
+          {
+            "code": "44.00",
+            "hours": 2.0,
+            "scc_id": 315
+          },
+          {
+            "code": "51.00",
+            "hours": 2.0,
+            "scc_id": 369
+          }
+        ],
+        "truth_is_split": true
+      }
+    ],
+    "line_date": "2026-09-29",
+    "project_abbreviation": "HP2"
+  },
+  "population": {
+    "calibration_days": 475,
+    "crew_days_timelog": 1745,
+    "holdout_days": 315,
+    "holdout_split_days": 53,
+    "holdout_uncoded_at_T_k14_days": 213,
+    "holdout_uncoded_at_T_k7_days": 303
+  },
+  "s_haiku": {
+    "budget_usd": 2.0,
+    "cache_hits": 46,
+    "calls": 269,
+    "days_with_answer": 315,
+    "estimate_usd_uncached": 0.128116,
+    "holdout_days": 315,
+    "isolated_spend_total_usd": 0.011398,
+    "model": "claude-haiku-5-5",
+    "not_run": 0,
+    "spend_ledger": "isolated",
+    "status": "run",
+    "statuses": {
+      "ok": 315
+    },
+    "transport_errors": 0,
+    "truncated": 0
+  },
+  "sonnet_model": "claude-sonnet-5-5",
+  "windows": {
+    "calibration": [
+      "2026-06-01",
+      "2026-08-15"
+    ],
+    "holdout": [
+      "2026-08-16",
+      "2026-10-15"
+    ]
+  }
+}

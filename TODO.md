@@ -111,6 +111,13 @@ The builder preserved these quirks deliberately, and the U-757b goldens pin them
 - [ ] Expense recipients resolve via `ReviewRepository().resolve_review_recipients_by_expense_id` + `_bucket`, bills via `ReviewRecipientService().resolve_for_bill` - two repos over the same sproc family with different error handling; unify (behaviour change - own unit).
 - [ ] (pre-existing) `tests/test_ls01c_review_attribution_and_next_status.py` ~L380-397: the AST guard-order check picks the LAST `If` mentioning to/cc that returns, so deleting the BCC-only guard could still pass via the early all-empty guard. Match only an `If` whose test has no `bcc_with_email`. (The U-754 `bcc_only` golden now covers it behaviourally.)
 
+## U-775 follow-ups - multi-task day detector (booked 2026-11-06; verdict A FAIL)
+
+- **[product, decide]** No measured rule reaches >= 80 % exact with >= 50 % coverage (A). Best non-LLM: text OR Sonnet 76.7 % / 40.7 % (K=7). Haiku's yes/no has 96 % recall but 30 % precision (flags 61 % of days), so Verdict B's PASS is hollow. Options: stop the proposal-email line here; or ask Haiku a sharper question (name the codes, not "more than one category") before revisiting in December.
+- **[refactor, U-750] Parameterise `run_arm_b` with a prompt builder + parser** so U-775's ~60-line copy of the budget/error control flow goes away (budget-safety drift risk). (Pass 2 #9.)
+- **[refactor, U-751] Keep the calibration analyses on `Population`** so U-775 stops re-analysing calibration days per K and its `_setup` copy goes away. (Pass 2 #2.)
+- **[refactor, U-751] `verdict(covered=...)`** so U-775's `verdict_b` duplicate goes away. (Pass 2 #10.)
+
 ## U-751 follow-ups - single-code labor proposal rescore (booked 2026-11-06; verdict FAIL)
 
 - **[product, decide]** The bar sits behind split DETECTION: perfect flagging would put the same proposals at 83.5 % exact (K=7). Next lever is a better multi-task detector on the notes (flag recall is 34-40 %), not a better code picker. Revisit with the December split work.

@@ -51,6 +51,30 @@ code `00.02` is refused BEFORE any write exactly as Bill's (U-632) — the parke
 No SQL change. Tests: tests/test_u551b_expense_transactional_review_decision.py (28 + the no-retry pin), test_u551b_holding_code.py (5), test_u541_bill_transactional_review_decision.py (+ reject-stale, duplicate-under-lock, replay-after-split, message/schema pins, the no-retry pin). Full suite 9982 passed, 1 skipped, 0 failed (8 min 18 s). Codex out of credits → Opus F2 round 1 CHANGES-REQUESTED (P2: a retried read inside the decision transaction could run outside the locks) → round 2 PASS; Pass 3 PASS (P2 QBO divergence booked U-551b-f1; P3s booked f2/f3). DEPLOYED 2026-11-03 01:38Z as image `75eb1350` (ACR run caek) — the iOS decide arm
 (U-572b) 404s in prod until the API ships (Chris's go).
 
+- [ ] **U-551b-f1 — BUILT, NOT LANDED: parked at the round cap 2026-11-06 on branch `unit/u-551b-f1` (pushed; worktree `.worktrees/u-551b-f1` kept).**
+  The unit (2 bites + 4 fix rounds; 3 columns + 3 sproc params on `dbo.CodingSuggestion`, SQL-first): the drain persists what it wrote
+  (`WrittenSyncToken`/`WrittenLinesJson`); completion persists the approved per-line targets (`RepointTargetsJson`) bound to the written token;
+  confirm + drain refuse targets not in the record; every confirmation/mark write is seq+status guarded; a repoint call fences the live
+  SyncToken up front; the drain parks on the recode kill switch. Final verify on the branch: 30/30 mutants killed; the unit's 5 test files +
+  7 adjacent green (233 at round 4b; the 5 + 7 files green at round 5); full suite 10864/10864, 0 failed, 1 environmental skip. Final review (Codex xhigh ×2, twin, Pass 3): Pass 3 land-able (no human-coding overwrite
+  found); Codex + twin CHANGES-REQUESTED on FIVE P2s, all about the REVISION MODEL — the hands-off EM stopped at the cap rather than run a
+  6th round. Remaining, in order of weight:
+  1. **STRUCTURAL — needs a design decision (Chris):** a drain that READ revision n can write it to QBO after revision n+1 was confirmed
+     (its mark is then refused and n+1's drain fences out → QBO holds the superseded approval, suggestion `changed_in_qbo`). No local guard
+     covers an external write. Options: (a) accept fail-closed re-review as the outcome and document it; (b) re-read the suggestion
+     immediately before the connector call and abort on a moved seq (narrows, does not close); (c) hold a per-suggestion applock from
+     claim to mark (closes it; the drain already serialises rows). → a design doc (see memory `feedback_external_write_revision_needs_design_doc`).
+  2. The probe must pass the revision it READ (`confirmation_seq`) and confirm must guard on THAT, not on its own later read (an older
+     completion pausing before confirm's read can still replace a newer approval). One-line class fix + a pre-read-pause pin.
+  3. The repoint no-op path (`[]` targets / all lines unchanged) marks `written` WITHOUT a live-token fence: a connector `verify_untouched`
+     (GET + token compare) before the no-op mark, else `changed_in_qbo`.
+  4. Gate-off must precede EVERY terminal mark in `_handle_recode_purchase_line` (today the early returns — `[]`, absent targets,
+     unresolved line, not-ours — mark before the gate check).
+  5. A FAILED recompute for a pending repoint must NOT recover the persisted approval (skip + warn), and an unresolved mapping must not read
+     as "no divergence".
+  Plus P3 pins Codex named: empty-revision confirm with no coding args; the holding-skip test must include a surviving diverged line; the
+  `OR 1=1` SQL pin on `RecordCodingSuggestionConfirmation`'s own test. Prod census (read-only) 2026-11-06: 91 purchases the drain has written;
+  4 of their staged lines carry no placeholder name (why the repoint's coding comes from LOCAL lines). `[U-551b follow-up — parked]`
 - [ ] **U-551b-f1 (P2 — Pass 3; a prerequisite of U-572b going live)** a reviewer's recode can permanently diverge from QBO: `enqueue_coding_recode_on_submit`
   confirms the submit-time coding (when not a holding code) and drains within ~30 s; an approve through this route that changes the SCC only updates the local
   line; `_enqueue_coding_recode_on_complete` then skips (`no_uncoded_staged_lines`), so QBO keeps the submitter's coding while the app shows the reviewer's. Same

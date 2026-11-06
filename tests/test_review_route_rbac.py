@@ -16,6 +16,7 @@ import pytest
 from fastapi.params import Depends as DependsParam
 
 from entities.review.api.router import router as review_router
+from entities.task.api.router import router as task_router
 from entities.time_entry.api.router import router as time_entry_router
 from shared.rbac_constants import Modules
 
@@ -50,6 +51,9 @@ _EXPECTED_BY_ROUTE: list[tuple[object, str, str, str, str]] = [
     # TimeEntry submit — router comment calls this "the same actor-gate" as the
     # contract-labor family above. Approve/reject stay on can_approve (untouched).
     (time_entry_router, "POST", "/api/v1/time-entries/{public_id}/submit", Modules.TIME_TRACKING, "can_submit"),
+    # Task inbox: route-level gate only.
+    (task_router, "GET", "/api/v1/get/tasks/inbox", Modules.TASKS, "can_read"),
+    (task_router, "GET", "/api/v1/get/tasks/inbox/counts", Modules.TASKS, "can_read"),
 ]
 
 

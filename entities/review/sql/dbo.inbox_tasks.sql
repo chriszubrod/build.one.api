@@ -54,6 +54,7 @@ CREATE OR ALTER PROCEDURE dbo.ReadInboxTasks
     @IsSystemAdmin    BIT              = 0,
     @Scope            NVARCHAR(32)     = N'mine',     -- 'mine' | 'all' | 'mine_submitted'
     @EntityType       NVARCHAR(32)     = NULL,        -- NULL=all; 'Bill'|'Expense'|'BillCredit'|'Invoice'
+    @AllowedEntityTypes NVARCHAR(200)   = NULL,        -- NULL=all; comma list of the entity types the caller may read (U-551b-f6)
     @StatusPublicId   UNIQUEIDENTIFIER = NULL,
     @Page             INT              = 0,
     @PageSize         INT              = 50
@@ -220,6 +221,7 @@ BEGIN
         INNER JOIN dbo.[Bill]   B ON B.[Id]      = P.[BillId]
         LEFT  JOIN dbo.[Vendor] V ON V.[Id]      = B.[VendorId]
         WHERE (@EntityType IS NULL OR @EntityType = N'Bill')
+          AND (@AllowedEntityTypes IS NULL OR N',' + @AllowedEntityTypes + N',' LIKE N'%,Bill,%')
           -- U-454: the parent must still be OPEN. A finished document's review
           -- is moot -- its money has already reached QBO/SharePoint/Excel/Box --
           -- and leaving those tasks in the queue made the inbox majority noise:
@@ -279,6 +281,7 @@ BEGIN
         INNER JOIN dbo.[Expense] E ON E.[Id] = P.[ExpenseId]
         LEFT  JOIN dbo.[Vendor]  V ON V.[Id] = E.[VendorId]
         WHERE (@EntityType IS NULL OR @EntityType = N'Expense')
+          AND (@AllowedEntityTypes IS NULL OR N',' + @AllowedEntityTypes + N',' LIKE N'%,Expense,%')
           -- U-454: the parent must still be OPEN. A finished document's review
           -- is moot -- its money has already reached QBO/SharePoint/Excel/Box --
           -- and leaving those tasks in the queue made the inbox majority noise:
@@ -338,6 +341,7 @@ BEGIN
         INNER JOIN dbo.[BillCredit] BC ON BC.[Id] = P.[BillCreditId]
         LEFT  JOIN dbo.[Vendor]     V  ON V.[Id]  = BC.[VendorId]
         WHERE (@EntityType IS NULL OR @EntityType = N'BillCredit')
+          AND (@AllowedEntityTypes IS NULL OR N',' + @AllowedEntityTypes + N',' LIKE N'%,BillCredit,%')
           -- U-454: the parent must still be OPEN. A finished document's review
           -- is moot -- its money has already reached QBO/SharePoint/Excel/Box --
           -- and leaving those tasks in the queue made the inbox majority noise:
@@ -397,6 +401,7 @@ BEGIN
         INNER JOIN dbo.[Project]  Pr ON Pr.[Id] = I.[ProjectId]
         LEFT  JOIN dbo.[Customer] C  ON C.[Id]  = Pr.[CustomerId]
         WHERE (@EntityType IS NULL OR @EntityType = N'Invoice')
+          AND (@AllowedEntityTypes IS NULL OR N',' + @AllowedEntityTypes + N',' LIKE N'%,Invoice,%')
           -- U-454: the parent must still be OPEN. A finished document's review
           -- is moot -- its money has already reached QBO/SharePoint/Excel/Box --
           -- and leaving those tasks in the queue made the inbox majority noise:

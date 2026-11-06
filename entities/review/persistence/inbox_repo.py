@@ -32,15 +32,21 @@ class ReviewInboxRepository:
         is_system_admin: bool,
         scope: str,
         entity_type: Optional[str],
+        allowed_entity_types: list[str],
         status_public_id: Optional[str],
         page: int,
         page_size: int,
     ) -> list[pyodbc.Row]:
+        # Empty = nothing granted; the router short-circuits, so never send NULL/"" here.
+        # ('' already fails closed in SQL -- N',,' matches no arm -- so this guards the contract, not the fence.)
+        if not allowed_entity_types:
+            raise ValueError("allowed_entity_types must be non-empty")
         params = {
             "CurrentUserId":  int(current_user_id),
             "IsSystemAdmin":  1 if is_system_admin else 0,
             "Scope":          scope,
             "EntityType":     entity_type,
+            "AllowedEntityTypes":    ",".join(allowed_entity_types),
             "StatusPublicId": status_public_id,
             "Page":           int(page),
             "PageSize":       int(page_size),

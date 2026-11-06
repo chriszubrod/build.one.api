@@ -64,10 +64,15 @@ class TaskFeed(Protocol):
         is_system_admin: bool,
         scope: str,
         entity_type: Optional[str],
+        allowed_entity_types: list[str],
         status_public_id: Optional[str],
         page: int,
         page_size: int,
-    ) -> list[TaskRow]: ...
+    ) -> list[TaskRow]:
+        """`allowed_entity_types` = the caller's readable types (never empty); a feed
+        must return no row whose `entity_type` is outside it, and must apply it
+        before paging."""
+        ...
 
     def read_counts(
         self,

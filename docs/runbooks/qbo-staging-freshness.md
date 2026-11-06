@@ -103,11 +103,12 @@ billable flip (U-778b) and the invoice push (U-778d). Rules:
 **Backfill** (lines staged before U-778a have no link; new pulls fill new and changed lines):
 
 ```bash
-./.venv/bin/python scripts/backfill_u778a_charge_links.py --entity bill                 # dry-run (default)
-./.venv/bin/python scripts/backfill_u778a_charge_links.py --entity bill --apply
+PYTHONPATH=. ./.venv/bin/python scripts/backfill_u778a_charge_links.py --entity bill          # dry-run (default)
+PYTHONPATH=. ./.venv/bin/python scripts/backfill_u778a_charge_links.py --entity bill --apply
 ```
 
-Run per entity (`bill`, `purchase`, `vendor_credit`). Dry-run writes no links (the QBO transport still meters its
+Run from the repo root with `PYTHONPATH=.` (the script has no `sys.path` bootstrap). Run per entity (`bill`,
+`purchase`, `vendor_credit`). Dry-run writes no links (the QBO transport still meters its
 reads). It re-fetches headers 100 per QBO call; any client or DB error aborts the whole run and prints `resume_from` —
 re-run with `--entity <that entity> --resume-from <id>`. The writer is fill-only: it never overwrites a link a fresher
 pull already wrote. Counters: `written`, `not_written` (already linked, or the row vanished), `no_link_live`,

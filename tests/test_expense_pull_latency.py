@@ -861,7 +861,7 @@ def test_late_attach_pass_isolates_a_failing_identity_read_per_purchase():
         lambda qbo_id, realm: (_ for _ in ()).throw(RuntimeError("deadlock")) if qbo_id == "p-bad" else good
     )
     with patch("scripts.sync_qbo_purchase.sync_purchase_attachments_to_expense_line_items", return_value=1) as link:
-        linked = _link_attachables_for_unchanged_purchases(
+        linked, _newly = _link_attachables_for_unchanged_purchases(
             realm_id=REALM_ID, attachable_service=attachable_service,
             expense_service=expense_service, changed_qbo_ids=set(),
         )

@@ -13,6 +13,22 @@ snapshot for all expenses on that project) plus
 methods then enqueue the `insert_excel_row` / `append_excel_row` /
 `upload_sharepoint_file` rows that actually write to Graph.
 
+**Since U-777 (2026-11-06)** the same handler also runs
+`ExpenseService._upload_to_general_receipts_folder` (the `520 - Current
+Receipts/yyyy/mm` copy) for each expense whose status is exactly `completed`,
+in the row of the expense's **lowest** project only (lines with no project are
+ignored for that choice; an expense with no project on any line gets no row and
+no receipts copy — booked). Drafts are skipped: their completion runs the step.
+A receipts failure — `errors`, an exception, or `success: false` with an empty
+`errors` list (no date, 520 not found, yyyy/mm get-or-create failed) — is a
+retryable `receipts:failed expense_public_id=…` error on the row; the reason is
+in the `ms.outbox.expense_pull_fanout.receipts_failed` log's `result_message`.
+A holding-code expense logs `receipts_deferred_holding` and is not an error.
+The tick also fans out every **completed** expense whose UNCHANGED purchase had
+attachables in this tick's snapshot (late-attached receipts), merged into the
+same per-project rows, including on an empty tick; it is re-read after linking
+so a concurrent completion is seen. Box is not run for those.
+
 Why: the inline shape (folder resolution, workbook session, used-range read,
 blob probes — all Graph HTTP) stretched a tick past the next 15-minute timer,
 which the admin dispatcher answers with a silent `lock_busy` skip (now a
@@ -135,3 +151,6 @@ the margin before it first lands would miss that receipt — booked (stage `Crea
   `sharepoint_uploads` counts for the project.
 - Column Z of the tracker DETAILS tab carries each line's public_id.
 - The module folder holds `EXP - … .pdf` for the expense.
+- For a completed expense: the lowest-project row's log line carries
+  `receipts_uploads` / `receipts_skipped`, and `520 - Current Receipts/<yyyy>/<mm>`
+  holds the same `EXP - … ` file.

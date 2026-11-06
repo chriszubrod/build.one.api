@@ -218,15 +218,17 @@ def _link_attachables_for_unchanged_purchases(
     attachable_service: QboAttachableService,
     expense_service: ExpenseService,
     changed_qbo_ids: set,
-) -> int:
+) -> tuple[int, list]:
     """
     Sync + link attachables whose parent Purchase did NOT change this tick.
 
     QBO does not bump a Purchase's LastUpdatedTime when a receipt is attached,
     so a Ramp receipt matched after the purchase's own pull never re-enters the
     main loop. Runs on EVERY incremental tick, including one with no changed
-    purchases. Returns the number of ExpenseLineItemAttachment links created.
-    Purchases with no local Expense (never projected, or skipped) are left
+    purchases. Returns `(links_created, newly_linked)` where `newly_linked` is the list of
+    `(expense, expense_id)` of every purchase touched in the attachable snapshot
+    (U-777: the caller fans the completed ones out to SharePoint), each carrying
+    the status read AFTER linking. Purchases with no local Expense (never projected, or skipped) are left
     alone — their own projection, when it comes, looks back to their own
     transaction date (`_attachable_window_for_create`), which covers any
     receipt matched in the meantime.
@@ -240,13 +242,14 @@ def _link_attachables_for_unchanged_purchases(
             "Could not link late-attached receipts: %s",
             type(orphan_e).__name__,
         )
-        return 0
+        return 0, []
     pending = sorted(touched - set(changed_qbo_ids))
     if not pending:
-        return 0
+        return 0, []
     logger.info(f"Late-attached receipts: {len(pending)} purchase(s) with new attachables but no header change")
 
     linked_total = 0
+    newly_linked: list = []
     for qbo_id in pending:
         # Per-purchase isolation: the watermark commits whatever happens here, so
         # one failing identity read must not take the rest of the pass with it.
@@ -263,11 +266,119 @@ def _link_attachables_for_unchanged_purchases(
             continue
         if expense is None:
             continue
-        linked_total += _sync_and_link_purchase_attachables(
+        expense_id = _expense_pk(expense)
+        linked = _sync_and_link_purchase_attachables(
             attachable_service=attachable_service, realm_id=realm_id,
-            purchase_qbo_id=qbo_id, expense_id=_expense_pk(expense),
+            purchase_qbo_id=qbo_id, expense_id=expense_id,
         )
-    return linked_total
+        linked_total += linked
+        # U-777: eligibility does NOT depend on `linked > 0` - a link committed on a
+        # tick that then aborted is already there on the replay (count 0), and its
+        # fan-out must still happen (downstream is idempotent). Re-read AFTER the
+        # link so a concurrent completion is seen with its fresh status.
+        reread = None
+        try:
+            reread = expense_service.read_by_qbo_identity(qbo_id, realm_id)
+        except (QboBudgetExceededError, QboWriteRefusedError):
+            raise
+        except Exception as reread_e:
+            logger.warning(
+                "qbo.purchase.late_attach_reread_failed",
+                extra={"error_type": type(reread_e).__name__},
+            )
+        else:
+            if reread is None:
+                logger.warning(
+                    "qbo.purchase.late_attach_reread_failed",
+                    extra={"error_type": "NotFound"},
+                )
+        newly_linked.append((reread or expense, expense_id))
+    return linked_total, newly_linked
+
+
+def _enqueue_ms_fanout(
+    *,
+    fanout_expenses: list,
+    expense_line_item_service,
+    lines_by_expense_id: dict,
+) -> tuple[dict, dict]:
+    """
+    Enqueue the MS fan-out (Excel DETAILS rows + SharePoint module folder + the
+    520 receipts copy, all run at drain) for `fanout_expenses`
+    ((expense, expense_id) pairs, deduped by expense id here): one
+    `expense_pull_fanout` row per project. Returns `(counts, project_expense_map)`;
+    the map ({project_id: [(expense, [lines for that project])]}) feeds the Box
+    block. Shared by the normal path and the empty-tick late-attach path (U-777).
+    """
+    counts = {"enqueued": 0, "refused": 0, "failed": 0}
+    project_expense_map = {}  # project_id -> [(expense, [line_items_for_this_project])]
+    if not fanout_expenses:
+        return counts, project_expense_map
+
+    seen_expense_ids = set()
+    for expense, expense_id in fanout_expenses:
+        if expense_id in seen_expense_ids:
+            continue
+        seen_expense_ids.add(expense_id)
+        try:
+            eli_list = lines_by_expense_id.get(expense_id)
+            if eli_list is None:
+                eli_list = expense_line_item_service.read_by_expense_id(expense_id=expense_id)
+            by_project = {}
+            for eli in eli_list:
+                if eli.project_id:
+                    by_project.setdefault(eli.project_id, []).append(eli)
+            for proj_id, proj_items in by_project.items():
+                project_expense_map.setdefault(proj_id, []).append((expense, proj_items))
+        except Exception as e:
+            logger.warning(
+                "Could not read line items for Expense %s for Excel sync: %s",
+                expense_id,
+                type(e).__name__,
+            )
+
+    if project_expense_map:
+        logger.info(f"MS fan-out: {len(project_expense_map)} project(s) across {len(seen_expense_ids)} expense(s) — enqueueing")
+    from entities.project.business.service import ProjectService
+    from integrations.ms.outbox.business.service import MsOutboxService
+    ms_outbox = MsOutboxService()
+    project_service = ProjectService()
+    for proj_id, expense_line_pairs in project_expense_map.items():
+        try:
+            project = project_service.read_by_id(proj_id)
+            if not project:
+                logger.warning(
+                    "Could not enqueue MS fan-out: project %s not found",
+                    proj_id,
+                )
+                counts["failed"] += 1
+                continue
+            expense_public_ids = [
+                str(expense.public_id) for expense, _ in expense_line_pairs
+            ]
+            # ONE row per project per tick, deliberately unchunked: every row
+            # computes Excel insert indices from its own used-range snapshot,
+            # and a second row for the same project created now would drain
+            # before the first row's insert children apply, landing its rows
+            # in the wrong SubCostCode section. Chunk only once a row defers
+            # while undrained inserts exist for its workbook (TODO, U-621 api).
+            queued = ms_outbox.enqueue_expense_pull_fanout(
+                project_public_id=str(project.public_id),
+                project_id=proj_id,
+                expense_public_ids=expense_public_ids,
+            )
+            if queued is None:
+                counts["refused"] += 1
+            else:
+                counts["enqueued"] += 1
+        except Exception as fan_e:
+            logger.warning(
+                "Could not enqueue MS fan-out for project %s: %s",
+                proj_id,
+                type(fan_e).__name__,
+            )
+            counts["failed"] += 1
+    return counts, project_expense_map
 
 
 def sync_qbo_to_local(
@@ -318,8 +429,10 @@ def sync_qbo_to_local(
     expense_service = ExpenseService()
     expense_line_item_service = ExpenseLineItemService()
     late_linked = 0
+    late_linked_expenses: list = []
+    lines_by_expense_id = {}  # expense_id -> line rows already read after projection (saves a re-read)
     if last_sync_time:
-        late_linked = _link_attachables_for_unchanged_purchases(
+        late_linked, late_linked_expenses = _link_attachables_for_unchanged_purchases(
             realm_id=realm_id,
             attachable_service=attachable_service,
             expense_service=expense_service,
@@ -328,14 +441,24 @@ def sync_qbo_to_local(
 
     if not purchases:
         logger.info(f"No Purchase updates found since {last_sync_time or 'beginning'}")
+        # U-777: a late-attached receipt on a completed expense still has to reach
+        # SharePoint, so the empty tick fans those out through the same enqueue.
+        empty_counts, _ = _enqueue_ms_fanout(
+            fanout_expenses=[
+                (e, eid) for e, eid in late_linked_expenses
+                if getattr(e, "status", None) == "completed"
+            ],
+            expense_line_item_service=expense_line_item_service,
+            lines_by_expense_id=lines_by_expense_id,
+        )
         return {
             "purchases_synced": 0,
             "expenses_module_synced": 0,
             "expenses_completed": 0,
             "attachments_linked": late_linked,
-            "ms_fanout_enqueued": 0,
-            "ms_fanout_refused": 0,
-            "ms_fanout_failed": 0,
+            "ms_fanout_enqueued": empty_counts["enqueued"],
+            "ms_fanout_refused": empty_counts["refused"],
+            "ms_fanout_failed": empty_counts["failed"],
             "box_excel_batches": 0,
             "skipped_count": 0,
             "skipped_purchase_ids": [],
@@ -355,7 +478,6 @@ def sync_qbo_to_local(
     ms_fanout_failed = 0     # project lookup / enqueue exception — no row written
     box_excel_batches = 0
     synced_expenses = []     # (expense, expense_id) — collected for the per-project fan-out
-    lines_by_expense_id = {}  # expense_id -> line rows already read after projection (saves a re-read)
     # A1: the per-run attachable snapshot is bounded to the pull's own watermark —
     # see `QboAttachableService.__init__`.
 
@@ -447,79 +569,38 @@ def sync_qbo_to_local(
     # (folder resolution, workbook session, used-range read, blob probes — all
     # MS Graph HTTP that used to sit inside the pull and stretch it past the
     # next timer). Box doc-push and Box Excel were already enqueue-only.
-    if synced_expenses:
-        # Build project_id -> [(expense, [line_items]), ...] mapping
-        project_expense_map = {}  # project_id -> [(expense, [line_items_for_this_project])]
-        for expense, expense_id in synced_expenses:
-            try:
-                eli_list = lines_by_expense_id.get(expense_id)
-                if eli_list is None:
-                    eli_list = expense_line_item_service.read_by_expense_id(expense_id=expense_id)
-                by_project = {}
-                for eli in eli_list:
-                    if eli.project_id:
-                        by_project.setdefault(eli.project_id, []).append(eli)
-                for proj_id, proj_items in by_project.items():
-                    project_expense_map.setdefault(proj_id, []).append((expense, proj_items))
-            except Exception as e:
-                logger.warning(
-                    "Could not read line items for Expense %s for Excel sync: %s",
-                    expense_id,
-                    type(e).__name__,
-                )
-
-        if project_expense_map:
-            logger.info(f"MS fan-out: {len(project_expense_map)} project(s) across {len(synced_expenses)} expense(s) — enqueueing")
-        from entities.project.business.service import ProjectService
-        from integrations.ms.outbox.business.service import MsOutboxService
-        ms_outbox = MsOutboxService()
-        project_service = ProjectService()
-        for proj_id, expense_line_pairs in project_expense_map.items():
-            try:
-                project = project_service.read_by_id(proj_id)
-                if not project:
-                    logger.warning(
-                        "Could not enqueue MS fan-out: project %s not found",
-                        proj_id,
-                    )
-                    ms_fanout_failed += 1
-                    continue
-                expense_public_ids = [
-                    str(expense.public_id) for expense, _ in expense_line_pairs
-                ]
-                # ONE row per project per tick, deliberately unchunked: every row
-                # computes Excel insert indices from its own used-range snapshot,
-                # and a second row for the same project created now would drain
-                # before the first row's insert children apply, landing its rows
-                # in the wrong SubCostCode section. Chunk only once a row defers
-                # while undrained inserts exist for its workbook (TODO, U-621 api).
-                queued = ms_outbox.enqueue_expense_pull_fanout(
-                    project_public_id=str(project.public_id),
-                    project_id=proj_id,
-                    expense_public_ids=expense_public_ids,
-                )
-                if queued is None:
-                    ms_fanout_refused += 1
-                else:
-                    ms_fanout_enqueued += 1
-            except Exception as fan_e:
-                logger.warning(
-                    "Could not enqueue MS fan-out for project %s: %s",
-                    proj_id,
-                    type(fan_e).__name__,
-                )
-                ms_fanout_failed += 1
+    fanout_expenses = list(synced_expenses) + [
+        (e, eid) for e, eid in late_linked_expenses
+        if getattr(e, "status", None) == "completed"
+    ]
+    if fanout_expenses:
+        fanout_counts, project_expense_map = _enqueue_ms_fanout(
+            fanout_expenses=fanout_expenses,
+            expense_line_item_service=expense_line_item_service,
+            lines_by_expense_id=lines_by_expense_id,
+        )
+        ms_fanout_enqueued += fanout_counts["enqueued"]
+        ms_fanout_refused += fanout_counts["refused"]
+        ms_fanout_failed += fanout_counts["failed"]
 
         # --- Box: doc-push (PDFs -> project's "14 - Invoices") + BATCHED Box Excel ---
         # Best-effort, ALLOW_BOX_WRITES-gated. Box Excel is batched per project (one
         # download/edit/upload per workbook for all the project's pulled expenses).
+        # U-777: Box covers only the expenses CHANGED this tick, never the
+        # late-linked ones that were merged into the MS fan-out map above.
+        synced_expense_ids = {eid for _, eid in synced_expenses}
+        box_project_map = {}
+        for proj_id, pairs in project_expense_map.items():
+            changed_pairs = [(e, items) for e, items in pairs if _expense_pk(e) in synced_expense_ids]
+            if changed_pairs:
+                box_project_map[proj_id] = changed_pairs
         from shared.env_flags import env_flag_enabled
-        if env_flag_enabled("ALLOW_BOX_WRITES"):
+        if box_project_map and env_flag_enabled("ALLOW_BOX_WRITES"):
             from integrations.box.outbox.business.service import BoxOutboxService
             from integrations.box.excel.business.mapping_service import BoxProjectWorkbookService
             _box_outbox = BoxOutboxService()
             _box_workbook = BoxProjectWorkbookService()
-            for proj_id, expense_line_pairs in project_expense_map.items():
+            for proj_id, expense_line_pairs in box_project_map.items():
                 for expense, proj_items in expense_line_pairs:
                     try:
                         expense_service._enqueue_box_uploads(expense, proj_items, doc_kind="attachment")

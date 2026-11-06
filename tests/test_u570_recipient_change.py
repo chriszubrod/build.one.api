@@ -127,7 +127,12 @@ def sweep_mocks(stable_encryption_key):
             "integrations.ramp.user.external.client.RampUserExternalClient",
         ),
     ]
-    started = [p.start() for p in patches]
+    # Stop the PATCHERS, not the mocks start() returns (a mock's .stop() is a no-op,
+    # which leaked all five patches - MsOutboxService included - into later tests; U-777).
+    started = []
+    for p in patches:
+        p.start()
+        started.append(p)
     try:
         yield SimpleNamespace(
             digest_repo=digest_repo,
@@ -135,7 +140,7 @@ def sweep_mocks(stable_encryption_key):
             ms_outbox_svc=ms_outbox_svc,
         )
     finally:
-        for p in started:
+        for p in reversed(started):
             p.stop()
 
 

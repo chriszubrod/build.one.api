@@ -574,6 +574,7 @@ class MsOutboxWorker:
 
         expense_line_pairs: list = []
         sharepoint_jobs: list = []
+        receipts_jobs: list = []  # (expense, ALL lines) — U-777 general-receipts copy
 
         for expense_public_id in expense_public_ids:
             try:
@@ -641,6 +642,14 @@ class MsOutboxWorker:
 
             expense_line_pairs.append((expense, project_items))
             sharepoint_jobs.append((expense, project_items, len(line_items)))
+            # U-777: the 520 - Current Receipts copy is per expense, not per project.
+            # Only the row of the LOWEST project on the expense runs it, so a
+            # multi-project expense is copied from exactly one of its rows. Only a
+            # completed expense: a draft's completion runs this step itself.
+            if getattr(expense, "status", None) == "completed":
+                line_project_ids = [li.project_id for li in line_items if li.project_id is not None]
+                if line_project_ids and project_id == min(line_project_ids):
+                    receipts_jobs.append((expense, line_items))
 
         if not expense_line_pairs:
             return
@@ -689,6 +698,51 @@ class MsOutboxWorker:
             sp_synced += int(sp_result.get("synced_count") or 0)
             sp_skipped += int(sp_result.get("skipped_count") or 0)
 
+        receipts_uploaded = 0
+        receipts_skipped = 0
+
+        # A dict entry (not None): _label_fanout_error only appends the expense id for dicts.
+        receipts_failed_entry = {"step": "receipts", "error": "failed"}
+
+        def _receipts_log(level, event: str, expense_pid: str, **extra: Any) -> None:
+            name = f"ms.outbox.expense_pull_fanout.{event}"
+            level(name, extra={
+                "event_name": name,
+                "entity_public_id": entity_public_id,
+                "expense_public_id": expense_pid,
+                "project_id": project_id,
+                **extra,
+            })
+
+        for expense, all_line_items in receipts_jobs:
+            expense_pid = str(expense.public_id)
+            try:
+                rc_result = expense_service._upload_to_general_receipts_folder(
+                    expense=expense, line_items=all_line_items,
+                )
+            except Exception:
+                # One expense's receipts failure must not stop the others.
+                _receipts_log(logger.warning, "receipts_exception", expense_pid)
+                labeled_errors.append(("receipts", receipts_failed_entry, expense_pid))
+                continue
+            if rc_result.get("deferred_holding"):
+                _receipts_log(logger.info, "receipts_deferred_holding", expense_pid)
+                continue
+            rc_errors = rc_result.get("errors") or []
+            if not rc_errors and rc_result.get("success") is False:
+                # Failure branches with an empty errors list (no date, drive or
+                # folder not found): the message is the only signal. Retry, so a
+                # persistent one dead-letters into a visible ReconciliationIssue.
+                _receipts_log(
+                    logger.warning, "receipts_failed", expense_pid,
+                    result_message=rc_result.get("message"),
+                )
+                rc_errors = [receipts_failed_entry]
+            for entry in rc_errors:
+                labeled_errors.append(("receipts", entry, expense_pid))
+            receipts_uploaded += int(rc_result.get("synced_count") or 0)
+            receipts_skipped += int(rc_result.get("skipped_count") or 0)
+
         logger.info(
             "ms.outbox.expense_pull_fanout.completed",
             extra={
@@ -699,6 +753,8 @@ class MsOutboxWorker:
                 "excel_rows": excel_result.get("synced_count", 0),
                 "sharepoint_uploads": sp_synced,
                 "sharepoint_skipped": sp_skipped,
+                "receipts_uploads": receipts_uploaded,
+                "receipts_skipped": receipts_skipped,
                 "error_count": len(labeled_errors),
             },
         )

@@ -627,3 +627,10 @@ def test_an_agent_account_sending_billable_decided_is_not_stamped(
     assert passed.is_billable is True          # the value still applies
     assert passed.billable_decided_at is None  # but no authoritative stamp
     assert passed.billable_decided_by_user_id is None
+
+
+@pytest.fixture(autouse=True)
+def _recode_gate_open():
+    """U-551b-f1 R5: the drain rechecks the recode kill switch; these tests exercise the open path."""
+    with patch("integrations.intuit.qbo.base.client.recode_write_gate_reason", return_value=None):
+        yield

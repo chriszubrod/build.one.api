@@ -1,4 +1,5 @@
 # Python Standard Library Imports
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -6,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, Optional
 
 # Local Imports
+from entities.coding_suggestion.business.model import REPOINT_CONFIRMATION_SOURCE
 from integrations.intuit.qbo.base.correlation import (
     ensure_correlation_id,
     idempotency_key_context,
@@ -19,8 +21,10 @@ from integrations.intuit.qbo.base.budget import (
 )
 from integrations.intuit.qbo.base.client import writes_allowed
 from integrations.intuit.qbo.base.errors import (
+    CodingSuggestionBusyError,
     QboBudgetExceededError,
     QboError,
+    QboRecodeWritesDisabledError,
     QboSyncTokenMismatchError,
     QboWriteRefusedError,
     is_retryable_error,
@@ -48,6 +52,11 @@ MAX_ATTEMPTS = 5
 # per-row dead-letters.
 WRITE_REFUSED_PARK_PREFIX = "Parked: QBO writes disabled"
 WRITE_REFUSED_PARK_INTERVAL = timedelta(minutes=15)
+
+# U-551b-f1: a suggestion held by a concurrent confirm is an EXPECTED, short-lived event (not a gate
+# flip): park for a minute, at WARNING, never dead-letter.
+SUGGESTION_BUSY_PARK_PREFIX = "Parked: coding suggestion busy"
+SUGGESTION_BUSY_PARK_INTERVAL = timedelta(minutes=1)
 
 # The drain lock name is stable across processes: only one drain loop
 # (API process or standalone worker) holds this at a time. Prevents two
@@ -104,6 +113,17 @@ def reclaim_after_seconds() -> int:
         return value if value > 0 else DEFAULT_RECLAIM_AFTER_SECONDS
     except ValueError:
         return DEFAULT_RECLAIM_AFTER_SECONDS
+
+
+def _merge_written_lines(previous: list, new: list) -> list:
+    """Merge a recode result's lines into the previous written record by ``qbo_line_id``.
+
+    New entries win; previous entries keep their position; unseen ids are appended.
+    """
+    merged: Dict[str, dict] = {}
+    for entry in list(previous or []) + list(new or []):
+        merged[str(entry.get("qbo_line_id"))] = entry
+    return list(merged.values())
 
 
 class QboOutboxWorker:
@@ -365,6 +385,28 @@ class QboOutboxWorker:
                 row_version=row.row_version,
                 next_retry_at=reset_at,
                 last_error=f"Parked: monthly QBO API budget exhausted ({error})",
+            )
+            return
+
+        if isinstance(error, CodingSuggestionBusyError):
+            # Checked BEFORE the generic write-refused branch (it is a subclass): contention with a
+            # confirm clears in seconds, so it parks for a minute rather than 15.
+            next_retry_at = datetime.now(timezone.utc) + SUGGESTION_BUSY_PARK_INTERVAL
+            logger.warning(
+                "qbo.outbox.row.parked_suggestion_busy",
+                extra={
+                    "event_name": "qbo.outbox.row.parked_suggestion_busy",
+                    "correlation_id": row.correlation_id,
+                    "outbox_public_id": row.public_id,
+                    "attempt": attempts_so_far,
+                    "next_retry_at": next_retry_at.isoformat(),
+                },
+            )
+            self.repo.mark_failed(
+                id=row.id,
+                row_version=row.row_version,
+                next_retry_at=next_retry_at,
+                last_error=f"{SUGGESTION_BUSY_PARK_PREFIX} ({error})",
             )
             return
 
@@ -999,6 +1041,8 @@ class QboOutboxWorker:
         self, row: QboOutbox, item
     ) -> tuple[Optional[list[dict]], Optional[str]]:
         realm_id = row.realm_id or item.realm_id or ""
+        if getattr(item, "confirmation_source", None) == REPOINT_CONFIRMATION_SOURCE:
+            return self._resolve_repoint_targets(row, item, realm_id)
         uncategorized = self._read_uncategorized_staging_line_ids(
             qbo_purchase_qbo_id=str(item.qbo_purchase_qbo_id or ""),
             realm_id=realm_id,
@@ -1051,23 +1095,133 @@ class QboOutboxWorker:
                 return None, self._MULTI_LINE_UNMAPPED_ERROR
 
             resolved.append(
-                {
-                    "target_qbo_line_id": qbo_line_id,
-                    "sub_cost_code_id": int(sub_cost_code_id),
-                    "project_id": int(project_id),
-                    "description": getattr(local_line, "description", None),
-                    "quantity": local_line.quantity,
-                    "rate": local_line.rate,
-                    "amount": local_line.amount,
-                    "is_billable": self._recode_is_billable(item, local_line, project_id=int(project_id)),
-                }
+                self._recode_target_from_local_line(
+                    item,
+                    qbo_line_id,
+                    local_line,
+                    sub_cost_code_id=sub_cost_code_id,
+                    project_id=project_id,
+                    description=getattr(local_line, "description", None),
+                )
             )
 
         if missing_eli > 0:
             return None, self._MULTI_LINE_UNMAPPED_ERROR
         return resolved, None
 
+    def _recode_target_from_local_line(
+        self, item, qbo_line_id: str, local_line, *, sub_cost_code_id, project_id, description
+    ) -> dict:
+        """One recode line spec: the coding comes from the caller, the economics from ``local_line``."""
+        project_id = int(project_id) if project_id else None
+        return {
+            "target_qbo_line_id": qbo_line_id,
+            "sub_cost_code_id": int(sub_cost_code_id),
+            "project_id": project_id,
+            "description": description,
+            "quantity": local_line.quantity,
+            "rate": local_line.rate,
+            "amount": local_line.amount,
+            "is_billable": self._recode_is_billable(item, local_line, project_id=project_id),
+        }
+
+    def _resolve_repoint_targets(
+        self, row: QboOutbox, item, realm_id: str
+    ) -> tuple[Optional[list[dict]], Optional[str]]:
+        """U-551b-f1: repoint exactly the lines completion approved (never the staging query).
+
+        Coding (sub cost code, project, description, repoint-from item) comes from the PERSISTED
+        ``item.repoint_targets`` - a purchase pull between approval and drain may have rewritten the
+        local line, and the approved coding must still be what gets written. Only the economics
+        (quantity, rate, amount, billable) are read from the local line at drain.
+        """
+        from integrations.intuit.qbo.base.cost_code_resolver import resolve_qbo_item_ref
+        from shared.lifecycle.completion_gate import HoldingCodeRefused
+
+        persisted = getattr(item, "repoint_targets", None)
+        if persisted is None:
+            return None, "repoint_without_targets"  # absent / malformed record: fail closed
+        if not persisted:
+            return [], None  # explicit empty revision (recoded back to the written item): nothing to write
+        # R4-B(3): every persisted target must still be OURS in the record read NOW (membership +
+        # prior item); a stale approval must never reach the connector.
+        written_by_line = {
+            str(e.get("qbo_line_id")): e for e in (getattr(item, "written_lines", None) or [])
+        }
+        for entry in persisted:
+            written = written_by_line.get(str(entry.get("qbo_line_id") or ""))
+            if written is None or written.get("item_ref_value") != entry.get("repoint_from_item_ref_value"):
+                return None, "repoint_target_not_ours"
+        targets: list[dict] = []
+        for entry in persisted:
+            qbo_line_id = str(entry.get("qbo_line_id") or "")
+            try:
+                local_line, _reason = self._resolve_recode_line_economics(
+                    row, item, target_qbo_line_id=qbo_line_id
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not resolve repoint line %s for coding suggestion %s: %s",
+                    qbo_line_id, row.entity_public_id, exc,
+                )
+                local_line = None
+            if local_line is None:
+                return None, "repoint_line_unresolved"
+            sub_cost_code_id = entry.get("sub_cost_code_id")
+            try:
+                target_ref = resolve_qbo_item_ref(sub_cost_code_id, realm_id=realm_id)
+            except HoldingCodeRefused:
+                return None, "repoint_line_holding"
+            if target_ref is None:
+                return None, "repoint_line_unmapped"
+            if target_ref.value == entry.get("repoint_from_item_ref_value"):
+                continue  # the approved target IS the item we wrote: nothing to change
+            targets.append(
+                dict(
+                    self._recode_target_from_local_line(
+                        item,
+                        qbo_line_id,
+                        local_line,
+                        sub_cost_code_id=sub_cost_code_id,
+                        project_id=entry.get("project_id"),
+                        description=entry.get("description"),
+                    ),
+                    repoint_from_item_ref_value=entry.get("repoint_from_item_ref_value"),
+                )
+            )
+        return targets, None
+
     def _handle_recode_purchase_line(self, row: QboOutbox) -> None:
+        """Drain one suggestion's QBO recode (U-551b-f1 revision model).
+
+        Order: entity type -> recode write gate -> per-suggestion application lock -> read -> status ->
+        resolve -> connector -> terminal mark. The gate precedes EVERY mark (kill switch = touch
+        nothing); the lock (shared with ``CodingSuggestionService.confirm``) spans read -> mark so no new
+        revision is recorded while the external write is in flight.
+        """
+        from entities.coding_suggestion.business.service import (
+            DRAIN_SUGGESTION_LOCK_TIMEOUT_MS,
+            coding_suggestion_lock,
+        )
+        from integrations.intuit.qbo.base.client import recode_write_gate_reason
+
+        if row.entity_type not in ("CodingSuggestion", "ExpenseCodingItem"):
+            return
+
+        # R3-B / I3: the drain honors the recode kill switch (confirm() only checks it at enqueue time)
+        # BEFORE any read or mark. A QboWriteRefusedError PARKS the row (never dead-letters); the
+        # suggestion is left unmarked and nothing is sent to QBO.
+        gate_reason = recode_write_gate_reason()
+        if gate_reason is not None:
+            raise QboRecodeWritesDisabledError(gate_reason)
+
+        with coding_suggestion_lock(row.entity_public_id, timeout_ms=DRAIN_SUGGESTION_LOCK_TIMEOUT_MS) as acquired:
+            if not acquired:
+                logger.warning("coding_suggestion.lock_busy public_id=%s holder=drain", row.entity_public_id)
+                raise CodingSuggestionBusyError(row.entity_public_id)
+            self._drain_recode_purchase_line_locked(row)
+
+    def _drain_recode_purchase_line_locked(self, row: QboOutbox) -> None:
         from entities.coding_suggestion.business.service import CodingSuggestionService
         from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
         from integrations.intuit.qbo.purchase.connector.expense.business.errors import (
@@ -1087,9 +1241,6 @@ class QboOutboxWorker:
         # mark_enqueued did not — skipping it here would silently drop the write.
         # Terminal states (written / changed_in_qbo / error) are idempotent skips.
         if item.status not in ("enqueued", "confirmed"):
-            return
-
-        if row.entity_type not in ("CodingSuggestion", "ExpenseCodingItem"):
             return
 
         confirmation_seq = getattr(item, "confirmation_seq", None)
@@ -1116,8 +1267,23 @@ class QboOutboxWorker:
             )
             return
 
+        is_repoint = getattr(item, "confirmation_source", None) == REPOINT_CONFIRMATION_SOURCE
         if not line_targets:
-            _terminal_mark("error", svc.mark_error, write_error="no_target_lines")
+            if is_repoint:
+                # Nothing differs from what we wrote, but "written" asserts QBO is as our record says
+                # (I4): fence on the live token first. A QboError from the GET propagates (retry/backoff).
+                untouched = PurchaseExpenseConnector().verify_purchase_untouched(
+                    realm_id=row.realm_id,
+                    qbo_purchase_qbo_id=item.qbo_purchase_qbo_id,
+                    expected_sync_token=item.written_sync_token,
+                )
+                if untouched:
+                    # The record is untouched (no written_lines_json): idempotent no-op.
+                    _terminal_mark("written", svc.mark_written, sync_token=item.written_sync_token)
+                else:
+                    _terminal_mark("changed_in_qbo", svc.mark_changed_in_qbo)
+            else:
+                _terminal_mark("error", svc.mark_error, write_error="no_target_lines")
             return
 
         try:
@@ -1143,10 +1309,29 @@ class QboOutboxWorker:
 
         status = result.get("status")
         if status in ("written", "already_recoded"):
+            # TOKEN CONTINUITY (R3-A): the previous record is valid only when a repoint confirmation
+            # established it (its expected token IS our written token and the up-front fence proved
+            # nobody touched the purchase). A first write fenced against STAGING's token, so a human
+            # may have recoded recorded lines since: its record REPLACES the old one, never merges.
+            previous = getattr(item, "written_lines", None) or []
+            fresh_write = status == "written"
+            if is_repoint:
+                if fresh_write:
+                    new_lines = list(result.get("written_lines") or []) + list(result.get("verified_lines") or [])
+                else:
+                    new_lines = list(result.get("verified_lines") or [])
+                merged = _merge_written_lines(previous, new_lines) if new_lines else None
+            elif fresh_write:
+                merged = list(result.get("written_lines") or []) or None
+            else:
+                merged = None  # first-write already_recoded: preserve both the record and the token
             _terminal_mark(
                 "written",
                 svc.mark_written,
-                sync_token=result.get("sync_token"),
+                # already_recoded: keep the token OUR write produced (a human header edit since
+                # must stay visible to the next repoint's fence).
+                sync_token=result.get("sync_token") if fresh_write else None,
+                written_lines_json=json.dumps(merged) if merged is not None else None,
             )
         elif status == "line_not_found":
             _terminal_mark("changed_in_qbo", svc.mark_changed_in_qbo)

@@ -18,6 +18,13 @@ PUBLIC_ID = "11111111-1111-1111-1111-111111111111"
 REALM_ID = "realm-test"
 
 
+@pytest.fixture(autouse=True)
+def _recode_gate_open():
+    """U-551b-f1 R3-B: the drain rechecks the recode kill switch; these tests exercise the open path."""
+    with patch("integrations.intuit.qbo.base.client.recode_write_gate_reason", return_value=None):
+        yield
+
+
 def _make_item(*, status="enqueued", sync_token_at_suggest="5"):
     return SimpleNamespace(
         public_id=PUBLIC_ID,
@@ -125,7 +132,7 @@ def test_handle_recode_written_calls_mark_written(mock_svc_cls, mock_connector_c
 
     connector.recode_purchase_lines.assert_called_once()
     svc.mark_written.assert_called_once_with(
-        PUBLIC_ID, sync_token="6", expected_confirmation_seq=None
+        PUBLIC_ID, sync_token="6", expected_confirmation_seq=None, written_lines_json=None
     )
 
 
@@ -148,7 +155,7 @@ def test_handle_recode_processes_confirmed_state_crash_window(mock_svc_cls, mock
 
     connector.recode_purchase_lines.assert_called_once()
     svc.mark_written.assert_called_once_with(
-        PUBLIC_ID, sync_token="6", expected_confirmation_seq=None
+        PUBLIC_ID, sync_token="6", expected_confirmation_seq=None, written_lines_json=None
     )
 
 

@@ -221,6 +221,15 @@ def confirm_expense_coding_item_router(
             )
         claimed_here = True
 
+    def _release_if_claimed(message: str) -> None:
+        """Give back a claim taken by THIS request (a refusal must not lock the user out)."""
+        if not claimed_here:
+            return
+        try:
+            service.release(public_id=public_id, user_id=user_id)
+        except Exception:
+            logger.exception(message, public_id)
+
     try:
         result = service.confirm(
             public_id=public_id,
@@ -233,14 +242,7 @@ def confirm_expense_coding_item_router(
     except QboOutboxDeadLetterExistsError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
     except HoldingCodeRefused:
-        if claimed_here:
-            try:
-                service.release(public_id=public_id, user_id=user_id)
-            except Exception:
-                logger.exception(
-                    "Failed to release claim on coding suggestion %s after refusal.",
-                    public_id,
-                )
+        _release_if_claimed("Failed to release claim on coding suggestion %s after refusal.")
         raise
     except Exception as error:
         logger.exception("Failed to confirm coding suggestion %s.", public_id)
@@ -252,15 +254,16 @@ def confirm_expense_coding_item_router(
     if result_status == "multi_line_unsupported":
         # A second uncategorized line appeared after the pre-check (concurrent QBO pull).
         # Give back a claim taken by THIS request so the refusal locks nobody out.
-        if claimed_here:
-            try:
-                service.release(public_id=public_id, user_id=user_id)
-            except Exception:
-                logger.exception("Failed to release claim on coding suggestion %s after refusal.", public_id)
+        _release_if_claimed("Failed to release claim on coding suggestion %s after refusal.")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=result.get("reason", "multi_line_purchase_confirm_unsupported"),
         )
+    if result_status == "busy":
+        # U-551b-f1: a drain holds the suggestion's lock (a QBO write is in flight). Nothing was
+        # written; give back a claim taken by THIS request so the retry is not locked out.
+        _release_if_claimed("Failed to release claim on coding suggestion %s after refusal.")
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="coding_suggestion_busy")
     if result_status in ("invalid", "mapping_missing", "writes_disabled"):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

@@ -878,6 +878,26 @@ class PurchaseExpenseConnector:
             expected_sync_token=expected_sync_token,
         )
 
+    @staticmethod
+    def _live_token_matches(raw: dict, expected: str) -> bool:
+        """The ONE compare of a live raw Purchase's SyncToken against our record's token."""
+        return str(raw.get("SyncToken")) == str(expected)
+
+    def verify_purchase_untouched(
+        self, *, realm_id: str, qbo_purchase_qbo_id: str, expected_sync_token: str
+    ) -> bool:
+        """U-551b-f1 M4: True iff the live Purchase still carries ``expected_sync_token``.
+
+        One ``get_purchase_raw``; the same string compare as the repoint's up-front fence. Used by the
+        drain's empty-revision no-op so ``written`` is only asserted while QBO is as our record says.
+        A QBO error from the GET propagates (the worker's normal retry/backoff).
+        """
+        from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
+
+        with QboPurchaseClient(realm_id=realm_id) as client:
+            raw = client.get_purchase_raw(qbo_purchase_qbo_id)
+        return self._live_token_matches(raw, expected_sync_token)
+
     def recode_purchase_lines(
         self,
         *,
@@ -906,7 +926,18 @@ class PurchaseExpenseConnector:
             raw_lines = raw.get("Line") or []
             live_sync_token = str(raw.get("SyncToken"))
 
+            # U-551b-f1: a repoint acts on lines OUR drain wrote, so the purchase must be exactly as
+            # our write left it for EVERY outcome (incl. "already carries the target"): fence up front.
+            is_repoint_call = any(spec.get("repoint_from_item_ref_value") is not None for spec in lines)
+            if is_repoint_call and not self._live_token_matches(raw, expected_sync_token):
+                raise PurchaseChangedInQboError(
+                    qbo_purchase_qbo_id=qbo_purchase_qbo_id,
+                    expected_sync_token=str(expected_sync_token),
+                    actual_sync_token=live_sync_token,
+                )
+
             pending_specs: list[tuple[dict, dict, object]] = []
+            verified_lines: list[dict] = []
             for spec in lines:
                 target_qbo_line_id = str(spec["target_qbo_line_id"])
                 sub_cost_code_id = spec["sub_cost_code_id"]
@@ -917,32 +948,44 @@ class PurchaseExpenseConnector:
                 if target is None:
                     return {"status": "line_not_found", "sync_token": live_sync_token}
 
-                if not self._raw_line_is_categorize_placeholder(target):
-                    existing_ref = self._get_qbo_item_ref(sub_cost_code_id, realm_id)
-                    if (
-                        target.get("DetailType") == "ItemBasedExpenseLineDetail"
-                        and existing_ref is not None
-                        and (target.get("ItemBasedExpenseLineDetail") or {})
-                        .get("ItemRef", {})
-                        .get("value")
-                        == existing_ref.value
-                    ):
-                        continue
-                    # Off the placeholder and not carrying our Item: changed in QBO.
-                    raise PurchaseChangedInQboError(
-                        qbo_purchase_qbo_id=qbo_purchase_qbo_id,
-                        expected_sync_token=str(expected_sync_token),
-                        actual_sync_token=live_sync_token,
-                    )
-
                 item_ref = self._get_qbo_item_ref(sub_cost_code_id, realm_id)
+                if not self._raw_line_is_categorize_placeholder(target):
+                    is_item_based = target.get("DetailType") == "ItemBasedExpenseLineDetail"
+                    live_item_value = (
+                        (target.get("ItemBasedExpenseLineDetail") or {}).get("ItemRef", {}).get("value")
+                    )
+                    # (a) already carries the target item: ours, unchanged.
+                    if is_item_based and item_ref is not None and live_item_value == item_ref.value:
+                        verified_lines.append(
+                            {
+                                "qbo_line_id": target_qbo_line_id,
+                                "item_ref_value": item_ref.value,
+                                "sub_cost_code_id": sub_cost_code_id,
+                            }
+                        )
+                        continue
+                    # (b) U-551b-f1: a line THIS drain wrote (item recorded by the caller) may be
+                    # repointed - the sync-token fence proves nobody touched the purchase since;
+                    # (c) anything else off the placeholder is changed in QBO (U-486).
+                    repoint_from = spec.get("repoint_from_item_ref_value")
+                    if not (is_item_based and repoint_from is not None and live_item_value == repoint_from):
+                        raise PurchaseChangedInQboError(
+                            qbo_purchase_qbo_id=qbo_purchase_qbo_id,
+                            expected_sync_token=str(expected_sync_token),
+                            actual_sync_token=live_sync_token,
+                        )
+
                 if item_ref is None:
                     raise PurchaseRecodeMappingError(sub_cost_code_id=sub_cost_code_id)
 
                 pending_specs.append((spec, target, item_ref))
 
             if not pending_specs:
-                return {"status": "already_recoded", "sync_token": live_sync_token}
+                result: dict = {"status": "already_recoded", "sync_token": live_sync_token}
+                if is_repoint_call:
+                    # Token matched ours: the live lines provably carry the local coding.
+                    result["verified_lines"] = verified_lines
+                return result
 
             # Still on the placeholder: any drift from our snapshot token means the
             # Purchase changed in QBO since queueing -> fail closed.
@@ -981,11 +1024,23 @@ class PurchaseExpenseConnector:
                     actual_sync_token="unknown",
                 ) from exc
 
-        return {
+        written_result: dict = {
             "status": "written",
             "sync_token": str(updated.get("SyncToken")),
             "qbo_purchase_qbo_id": qbo_purchase_qbo_id,
+            "written_lines": [
+                {
+                    "qbo_line_id": str(target.get("Id")),
+                    "item_ref_value": item_ref.value,
+                    "sub_cost_code_id": spec["sub_cost_code_id"],
+                }
+                for spec, target, item_ref in pending_specs
+            ],
         }
+        if is_repoint_call:
+            # R3-A: lines the repoint found already carrying the local coding under a matching token.
+            written_result["verified_lines"] = verified_lines
+        return written_result
 
     def _apply_recode_mutation_to_raw_line(
         self,
@@ -1001,7 +1056,8 @@ class PurchaseExpenseConnector:
         realm_id: str,
     ) -> None:
         customer_ref = self._get_qbo_customer_ref(project_id) if project_id else None
-        old = target.get("AccountBasedExpenseLineDetail") or {}
+        # Off the placeholder: AccountBased; on a repoint (U-551b-f1): the prior ItemBased detail.
+        old = target.get("AccountBasedExpenseLineDetail") or target.get("ItemBasedExpenseLineDetail") or {}
         item_detail: dict = {
             "ItemRef": {"value": item_ref.value, "name": item_ref.name},
         }

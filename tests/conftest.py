@@ -105,6 +105,18 @@ def _reset_claude_budget_isolation_after_test():
     claude_budget.configure_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def _grant_coding_suggestion_lock():
+    """U-551b-f1 M1: `CodingSuggestionService.confirm` and the QBO recode drain hold the per-suggestion
+    application lock, which would open a real DB connection (`sp_getapplock`). Grant it by default; a
+    contention test patches the SAME target with `mock_qbo_app_lock_denied`."""
+    with patch(
+        "entities.coding_suggestion.business.service.qbo_app_lock",
+        mock_qbo_app_lock_granted,
+    ):
+        yield
+
+
 @pytest.fixture
 def grant_qbo_app_lock():
     """U-304: patches identity_fastpath.py's `qbo_app_lock` import to always

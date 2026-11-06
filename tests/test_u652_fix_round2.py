@@ -256,11 +256,12 @@ def test_worker_stale_qbo_purchase_id_still_resolves_uncategorized_lines():
     assert seen["args"] == (REALM_ID, PURCHASE_QBO_ID)
 
 
+@patch("integrations.intuit.qbo.base.client.recode_write_gate_reason", return_value=None)  # U-551b-f1 M3: the gate precedes every mark
 @patch(
     "integrations.intuit.qbo.purchase.connector.expense.business.service.PurchaseExpenseConnector"
 )
 @patch("entities.coding_suggestion.business.service.CodingSuggestionService")
-def test_worker_zero_targets_marks_error_no_qbo_not_written(mock_svc_cls, mock_connector_cls):
+def test_worker_zero_targets_marks_error_no_qbo_not_written(mock_svc_cls, mock_connector_cls, _gate):
     svc = MagicMock()
     mock_svc_cls.return_value = svc
     svc.read_by_public_id.return_value = _make_item()

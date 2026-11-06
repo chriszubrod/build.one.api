@@ -262,3 +262,10 @@ def test_worker_never_passes_expected_row_version_on_any_path():
             if mock.called:
                 for c in mock.call_args_list:
                     assert "expected_row_version" not in c.kwargs
+
+
+@pytest.fixture(autouse=True)
+def _recode_gate_open():
+    """U-551b-f1 R5: the drain rechecks the recode kill switch; these tests exercise the open path."""
+    with patch("integrations.intuit.qbo.base.client.recode_write_gate_reason", return_value=None):
+        yield

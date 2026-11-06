@@ -400,3 +400,10 @@ def test_sync_token_fail_closed_still_fires():
             )
 
     mock_client.update_purchase_raw.assert_not_called()
+
+
+@pytest.fixture(autouse=True)
+def _recode_gate_open():
+    """U-551b-f1 R5: the drain rechecks the recode kill switch; these tests exercise the open path."""
+    with patch("integrations.intuit.qbo.base.client.recode_write_gate_reason", return_value=None):
+        yield

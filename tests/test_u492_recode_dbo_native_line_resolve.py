@@ -500,3 +500,10 @@ def test_s19_record_mapping_issue_import_stays_lazy_in_handler():
         QboOutboxWorker._resolve_recode_line_economics
     )
     assert "record_mapping_issue" not in helper_source
+
+
+@pytest.fixture(autouse=True)
+def _recode_gate_open():
+    """U-551b-f1 R5: the drain rechecks the recode kill switch; these tests exercise the open path."""
+    with patch("integrations.intuit.qbo.base.client.recode_write_gate_reason", return_value=None):
+        yield

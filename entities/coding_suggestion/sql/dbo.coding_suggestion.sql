@@ -44,7 +44,7 @@ CREATE TABLE [dbo].[CodingSuggestion]
     [ConfirmedAt] DATETIME2(3) NULL,
     [ConfirmedMixedCodes] BIT NULL,
     [PrefillState] NVARCHAR(12) NULL,
-    [ConfirmationSource] NVARCHAR(20) NULL,   -- 'review_submit' | 'confirm_endpoint' (U-652): only review_submit may write per-line coding
+    [ConfirmationSource] NVARCHAR(20) NULL,   -- 'review_submit' | 'confirm_endpoint' (U-652) | 'complete_repoint' (U-551b-f1): review_submit writes per-line coding; complete_repoint repoints OUR written lines
     [ConfirmationSeq] INT NOT NULL DEFAULT 0, -- U-652c: bumped on each confirmation; terminal marks guard on it
     [Status] NVARCHAR(30) NOT NULL DEFAULT 'pending',
     [FlagReason] NVARCHAR(1024) NULL,
@@ -57,6 +57,9 @@ CREATE TABLE [dbo].[CodingSuggestion]
     [SyncTokenAtSuggest] NVARCHAR(50) NULL,
     [WrittenAt] DATETIME2(3) NULL,
     [WriteError] NVARCHAR(1024) NULL,
+    [WrittenSyncToken] NVARCHAR(50) NULL,     -- U-551b-f1: QBO SyncToken returned by OUR last successful recode write
+    [WrittenLinesJson] NVARCHAR(MAX) NULL,    -- U-551b-f1: [{qbo_line_id,item_ref_value,sub_cost_code_id}] the write coded
+    [RepointTargetsJson] NVARCHAR(MAX) NULL,  -- U-551b-f1: the coding COMPLETION approved for a repoint (set per confirmation)
     CONSTRAINT [CK_CodingSuggestion_Target] CHECK (
         (
             [TargetKind] = N'bill'
@@ -92,6 +95,18 @@ GO
 
 IF COL_LENGTH('dbo.CodingSuggestion', 'ConfirmationSeq') IS NULL
     ALTER TABLE dbo.[CodingSuggestion] ADD [ConfirmationSeq] INT NOT NULL CONSTRAINT DF_CodingSuggestion_ConfirmationSeq DEFAULT 0;
+GO
+
+IF COL_LENGTH('dbo.CodingSuggestion', 'WrittenSyncToken') IS NULL
+    ALTER TABLE dbo.[CodingSuggestion] ADD [WrittenSyncToken] NVARCHAR(50) NULL;
+GO
+
+IF COL_LENGTH('dbo.CodingSuggestion', 'WrittenLinesJson') IS NULL
+    ALTER TABLE dbo.[CodingSuggestion] ADD [WrittenLinesJson] NVARCHAR(MAX) NULL;
+GO
+
+IF COL_LENGTH('dbo.CodingSuggestion', 'RepointTargetsJson') IS NULL
+    ALTER TABLE dbo.[CodingSuggestion] ADD [RepointTargetsJson] NVARCHAR(MAX) NULL;
 GO
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_CodingSuggestion_PublicId' AND object_id = OBJECT_ID('dbo.CodingSuggestion'))
@@ -276,6 +291,9 @@ BEGIN
         cs.[FlaggedAt],
         cs.[WrittenAt],
         cs.[WriteError],
+        cs.[WrittenSyncToken],
+        cs.[WrittenLinesJson],
+        cs.[RepointTargetsJson],
         cs.[ClaimedByUserId],
         cs.[ClaimedAt],
         cs.[CompanyId],
@@ -626,7 +644,9 @@ CREATE OR ALTER PROCEDURE RecordCodingSuggestionConfirmation
     @Status NVARCHAR(30) = NULL,
     @ConfirmedMixedCodes BIT = NULL,
     @PrefillState NVARCHAR(12) = NULL,
-    @ConfirmationSource NVARCHAR(20) = NULL
+    @ConfirmationSource NVARCHAR(20) = NULL,
+    @RepointTargetsJson NVARCHAR(MAX) = NULL,
+    @ExpectedConfirmationSeq INT = NULL  -- U-551b-f1 R4b: when given, the UPDATE lands only on the revision the caller read
 )
 AS
 BEGIN
@@ -647,6 +667,9 @@ BEGIN
         [ConfirmedMixedCodes] = CASE WHEN @ConfirmedMixedCodes IS NOT NULL THEN @ConfirmedMixedCodes ELSE cs.[ConfirmedMixedCodes] END,
         [PrefillState] = CASE WHEN @PrefillState IS NOT NULL THEN @PrefillState ELSE cs.[PrefillState] END,
         [ConfirmationSource] = @ConfirmationSource,
+        -- U-551b-f1: UNCONDITIONAL (deliberately NOT the CASE-preserve pattern): every confirmation
+        -- redefines its repoint targets, so a first write (NULL) clears a previous repoint's targets.
+        [RepointTargetsJson] = @RepointTargetsJson,
         [ConfirmationSeq] = cs.[ConfirmationSeq] + 1,
         [ConfirmedAt] = @Now,
         [SyncTokenAtSuggest] = CASE WHEN @ExpectedSyncToken IS NOT NULL THEN @ExpectedSyncToken ELSE cs.[SyncTokenAtSuggest] END,
@@ -654,7 +677,14 @@ BEGIN
         [ModifiedDatetime] = @Now,
         @UpdatedId = cs.[Id]
     FROM dbo.[CodingSuggestion] cs
-    WHERE cs.[PublicId] = @PublicId;
+    WHERE cs.[PublicId] = @PublicId
+      AND (
+          @ExpectedConfirmationSeq IS NULL
+          OR (
+              cs.[ConfirmationSeq] = @ExpectedConfirmationSeq
+              AND cs.[Status] IN (N'written', N'confirmed', N'enqueued')
+          )
+      );
 
     SELECT
         cs.[Id],
@@ -690,6 +720,7 @@ BEGIN
         cs.[PrefillState],
         cs.[ConfirmationSource],
         cs.[ConfirmationSeq],
+        cs.[RepointTargetsJson],
         cs.[FlagReason],
         cs.[FlaggedAt],
         cs.[WrittenAt],
@@ -710,7 +741,8 @@ GO
 
 CREATE OR ALTER PROCEDURE MarkCodingSuggestionEnqueued
 (
-    @PublicId UNIQUEIDENTIFIER
+    @PublicId UNIQUEIDENTIFIER,
+    @ExpectedConfirmationSeq INT = NULL
 )
 AS
 BEGIN
@@ -727,7 +759,14 @@ BEGIN
         [ModifiedDatetime] = @Now,
         @UpdatedId = cs.[Id]
     FROM dbo.[CodingSuggestion] cs
-    WHERE cs.[PublicId] = @PublicId;
+    WHERE cs.[PublicId] = @PublicId
+      AND (
+          @ExpectedConfirmationSeq IS NULL
+          OR (
+              cs.[ConfirmationSeq] = @ExpectedConfirmationSeq
+              AND cs.[Status] IN (N'confirmed', N'enqueued')
+          )
+      );
 
     SELECT
         cs.[Id],
@@ -785,7 +824,8 @@ CREATE OR ALTER PROCEDURE MarkCodingSuggestionWritten
 (
     @PublicId UNIQUEIDENTIFIER,
     @SyncToken NVARCHAR(50) = NULL,
-    @ExpectedConfirmationSeq INT = NULL
+    @ExpectedConfirmationSeq INT = NULL,
+    @WrittenLinesJson NVARCHAR(MAX) = NULL
 )
 AS
 BEGIN
@@ -801,6 +841,8 @@ BEGIN
         [Status] = N'written',
         [WrittenAt] = @Now,
         [WriteError] = NULL,
+        [WrittenSyncToken] = CASE WHEN @SyncToken IS NOT NULL THEN @SyncToken ELSE cs.[WrittenSyncToken] END,
+        [WrittenLinesJson] = CASE WHEN @WrittenLinesJson IS NOT NULL THEN @WrittenLinesJson ELSE cs.[WrittenLinesJson] END,
         [ModifiedDatetime] = @Now,
         @UpdatedId = cs.[Id]
     FROM dbo.[CodingSuggestion] cs
@@ -851,6 +893,8 @@ BEGIN
         cs.[FlaggedAt],
         cs.[WrittenAt],
         cs.[WriteError],
+        cs.[WrittenSyncToken],
+        cs.[WrittenLinesJson],
         cs.[ClaimedByUserId],
         cs.[ClaimedAt],
         cs.[CompanyId],
@@ -1052,7 +1096,8 @@ BEGIN
         cs.[SuggestedSubCostCodeId],
         cs.[ConfirmedProjectId],
         cs.[ConfirmedSubCostCodeId],
-        cs.[FlagReason]
+        cs.[FlagReason],
+        cs.[ConfirmationSource]
     FROM dbo.[CodingSuggestion] cs
     INNER JOIN dbo.[Expense] e
         ON (

@@ -10,6 +10,10 @@ Invariants
 External writes
   MS sharepoint_upload / excel insert|append on complete (ALLOW_MS_WRITES).
   Box push_blob / update_box_excel on complete (ALLOW_BOX_WRITES).
+  QBO recode_purchase_line on submit/complete (ALLOW_QBO_WRITES + ALLOW_EXPENSE_RECODE_WRITES); a completion whose local coding diverged from what the drain wrote enqueues a repoint of OUR lines only,
+  bound to the revision (ConfirmationSeq) its probe read; confirm and the drain both run under the per-suggestion
+  application lock (qbo_coding_suggestion:<id>), so a held lock reports skip_reason=busy and a failed or
+  unresolvable recompute reports a skip (never a write).
 Sprocs
   CountExpenses
   CreateExpense
@@ -135,6 +139,14 @@ def _build_qbo_expense_url(*, qbo_id: str, realm_id: str, payment_type: str) -> 
         f"https://app.qbo.intuit.com/app/{segment}?txnId={qbo_id}&realmId={realm_id}"
     )
 
+
+
+class RepointUnresolvable(Exception):
+    """A repoint probe cannot compute its targets (U-551b-f1 M5); ``reason`` becomes the completion's skip_reason."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
 
 
 def _uncoded_backfill_status_source_ref(item: dict) -> Optional[str]:
@@ -727,6 +739,7 @@ class ExpenseService:
             "terminal_status",
             "already_enqueued",
             "written",
+            "repoint_pending",
         }
     )
 
@@ -757,6 +770,18 @@ class ExpenseService:
             return logging.INFO
         return logging.WARNING
 
+    def _recode_skipped_result(self, *, expense_id: int, skip_reason: str, message: str) -> dict:
+        """Log a skipped recode enqueue and return the skip envelope (success, nothing enqueued)."""
+        self._log_recode_enqueue_skipped(expense_id=expense_id, skip_reason=skip_reason)
+        return {
+            "success": True,
+            "message": message,
+            "enqueued": 0,
+            "skipped": True,
+            "skip_reason": skip_reason,
+            "errors": [],
+        }
+
     def _log_recode_enqueue_skipped(self, *, expense_id: int, skip_reason: str) -> None:
         level = self._recode_enqueue_skip_log_level(skip_reason)
         logger.log(
@@ -769,6 +794,7 @@ class ExpenseService:
     def enqueue_coding_recode_on_submit(self, *, expense_id: int, user_id: int) -> dict:
         """Enqueue one QBO recode per Expense CodingSuggestion (U-486 C2 / U-652)."""
         from entities.expense.api.router import EXPENSE_CODING_TERMINAL_STATUSES
+        from entities.coding_suggestion.business.model import REPOINT_CONFIRMATION_SOURCE
         from entities.coding_suggestion.business.service import CodingSuggestionService
         from entities.coding_suggestion.persistence.repo import CodingSuggestionRepository
 
@@ -860,6 +886,15 @@ class ExpenseService:
                 summary["items"].append(item_result)
                 continue
 
+            if status in ("confirmed", "enqueued") and item.get("confirmation_source") == REPOINT_CONFIRMATION_SOURCE:
+                # A repoint is pending/in flight: never re-confirm it as a FIRST write (that would
+                # replace the source and snapshot staging's token).
+                summary["skipped"] += 1
+                item_result["outcome"] = "skipped"
+                item_result["reason"] = "repoint_pending"
+                summary["items"].append(item_result)
+                continue
+
             if status == "enqueued":
                 summary["skipped"] += 1
                 item_result["outcome"] = "skipped"
@@ -923,24 +958,276 @@ class ExpenseService:
 
         return summary
 
-    def _enqueue_coding_recode_on_complete(self, *, expense_id: int, qbo_linked: bool = True) -> dict:
+    @staticmethod
+    def _repoint_line_sort_key(qbo_line_id: str, local, *_unused) -> tuple:
+        """Largest abs(amount) first; tie -> lowest qbo_line_id (numeric as int, else string)."""
+        try:
+            amount = abs(Decimal(str(getattr(local, "amount", None) or 0)))
+        except Exception:
+            amount = Decimal(0)
+        id_key = (0, int(qbo_line_id), "") if qbo_line_id.isdigit() else (1, 0, qbo_line_id)
+        return (-amount, id_key)
+
+    def _repoint_on_complete(self, *, expense_id: int, expense=None) -> Optional[dict]:
+        """U-551b-f1: completion's repoint step -> the completion result envelope, or None (nothing to
+        repoint: fall through to the first-write path). Failure-isolated (a failed probe is None).
+
+        Candidates: ``written``, or ``confirmed``/``enqueued`` with the repoint source (a stranded or
+        in-flight repoint). For EACH candidate the probe and its confirm run under ONE hold of the
+        suggestion's application lock (design M1 holder 2b): a lock that cannot be had is
+        ``skip_reason=busy`` (no line read, no confirm), and the revision the probe binds cannot move
+        before ``confirm(..., lock_held=True)`` records the approval.
+        """
+        try:
+            from entities.coding_suggestion.business.service import (
+                CONFIRM_SUGGESTION_LOCK_TIMEOUT_MS,
+                coding_suggestion_lock,
+            )
+            from entities.coding_suggestion.persistence.repo import CodingSuggestionRepository
+
+            repo = CodingSuggestionRepository()
+            states = repo.read_state_by_expense_ids([expense_id]).get(expense_id) or []
+            candidates = [
+                st
+                for st in states
+                if st.get("public_id") and st.get("status") in ("written", "confirmed", "enqueued")
+            ]
+            if not candidates:
+                return None
+            if expense is None:
+                expense = self.read_by_id(expense_id)
+            for st in candidates:
+                with coding_suggestion_lock(
+                    st["public_id"], timeout_ms=CONFIRM_SUGGESTION_LOCK_TIMEOUT_MS
+                ) as acquired:
+                    if not acquired:
+                        return self._recode_skipped_result(
+                            expense_id=expense_id, skip_reason="busy", message="Repoint not enqueued"
+                        )
+                    divergence = self._repoint_revision_for_candidate(
+                        expense_id=expense_id, public_id=st["public_id"], expense=expense, repo=repo
+                    )
+                    if divergence is None:
+                        continue
+                    if divergence.get("skip_reason"):
+                        # I5: the probe could not compute the repoint - report the skip, never fall
+                        # through to the first-write path and never recover a persisted approval.
+                        return self._recode_skipped_result(
+                            expense_id=expense_id,
+                            skip_reason=divergence["skip_reason"],
+                            message="Repoint not enqueued",
+                        )
+                    return self._enqueue_repoint_on_complete(
+                        expense_id=expense_id, divergence=divergence, lock_held=True
+                    )
+            return None
+        except Exception as exc:
+            logger.warning(
+                "expense.complete.repoint_probe_failed expense_id=%s error=%s",
+                expense_id,
+                type(exc).__name__,
+            )
+            return None
+
+    def _repoint_revision_for_candidate(
+        self, *, expense_id: int, public_id: str, expense, repo
+    ) -> Optional[dict]:
+        """One candidate's repoint revision -> {"public_id", "lines", "dominant", "confirmed_mixed_codes",
+        "targets", "targets_token", "revision_seq"[, "pending"]}; a skip -> {"public_id", "skip_reason"};
+        None when the candidate is not a repoint candidate or nothing diverges (written).
+
+        CALLER HOLDS the suggestion lock. Both halves of the snapshot are read here in a fixed order:
+        the suggestion record FIRST (``revision_seq`` is bound from it), the local line items AFTER, so
+        the targets are never computed from lines older than the revision they are labelled with.
+
+        Both candidate kinds are RECOMPUTED against the written record (a later completion is a NEW
+        revision); a pending candidate whose local lines were pulled back reports an EMPTY revision
+        (``pending``, ``targets == []``). For a ``written`` candidate the document-level coding
+        (``dominant``) comes from the DIVERGED local lines (largest abs amount), ``targets`` carries each
+        diverged line's approved coding, and ``confirmed_mixed_codes`` spans the local coding of ALL
+        written lines (a non-diverged sibling with another code counts), never the placeholder-only
+        staging query.
+
+        A recompute that raises (``repoint_recompute_failed``) or cannot resolve its inputs
+        (``RepointUnresolvable``: ``repoint_line_unmapped`` / ``repoint_line_missing_local`` /
+        ``repoint_line_uncoded``) returns the skip dict: "could not compute" is never "nothing
+        diverges" (I5), and the persisted approval is never recovered.
+        """
+        from entities.coding_suggestion.business.model import REPOINT_CONFIRMATION_SOURCE
+        from integrations.intuit.qbo.base.cost_code_resolver import resolve_qbo_item_ref
+
+        full = repo.read_by_public_id(public_id)
+        if full is None:
+            return None
+        pending = (
+            full.status in ("confirmed", "enqueued")
+            and getattr(full, "confirmation_source", None) == REPOINT_CONFIRMATION_SOURCE
+        )
+        if full.status != "written" and not pending:
+            return None
+        revision_seq = getattr(full, "confirmation_seq", None)  # bound BEFORE the lines are read
+        line_items = self.expense_line_item_service.read_by_expense_id(expense_id=expense_id)
+        local_by_qbo_id = {str(li.qbo_id): li for li in line_items if getattr(li, "qbo_id", None)}
+        realm_id = getattr(expense, "realm_id", None)
+        try:
+            found = self._compute_repoint_divergence(
+                public_id, full, local_by_qbo_id, realm_id, resolve_qbo_item_ref
+            )
+        except Exception as exc:
+            skip_reason = exc.reason if isinstance(exc, RepointUnresolvable) else "repoint_recompute_failed"
+            logger.warning(
+                "expense.complete.repoint_recompute_failed expense_id=%s reason=%s error=%s",
+                expense_id,
+                skip_reason,
+                type(exc).__name__,
+            )
+            return {"public_id": public_id, "skip_reason": skip_reason}
+        if pending:
+            if found:
+                return dict(found, pending=True, revision_seq=revision_seq)
+            # recomputed, nothing diverges any more: an EMPTY revision carrying the snapshot token
+            return {
+                "public_id": public_id,
+                "pending": True,
+                "lines": [],
+                "targets": [],
+                "targets_token": full.written_sync_token,
+                "confirmed_mixed_codes": False,
+                "revision_seq": revision_seq,
+            }
+        if found:
+            return dict(found, revision_seq=revision_seq)
+        return None
+
+    def _compute_repoint_divergence(
+        self, public_id: str, full, local_by_qbo_id: dict, realm_id, resolve_qbo_item_ref
+    ) -> Optional[dict]:
+        """Targets for the written lines whose local coding maps to another item, computed against
+        ``full``'s written record; ``targets_token`` is the snapshot (written_sync_token) they belong to.
+        Raises ``RepointUnresolvable`` when an input is missing - a written line with no local counterpart
+        (``repoint_line_missing_local``), a local line with no sub cost code (``repoint_line_uncoded``), or
+        a sub cost code that resolves to no QBO item (``repoint_line_unmapped``): "cannot judge" is a
+        skip, never an empty revision."""
+        diverged: list[tuple[str, Any, Any]] = []
+        codings: set[tuple] = set()
+        scc_svc = SubCostCodeService()
+        refs: dict[int, Any] = {}
+        for entry in full.written_lines:
+            qbo_line_id = str(entry.get("qbo_line_id") or "")
+            local = local_by_qbo_id.get(qbo_line_id)
+            if local is None:
+                raise RepointUnresolvable("repoint_line_missing_local")
+            sub_cost_code_id = getattr(local, "sub_cost_code_id", None)
+            if not sub_cost_code_id:
+                raise RepointUnresolvable("repoint_line_uncoded")
+            codings.add((getattr(local, "project_id", None), sub_cost_code_id))
+            if sub_cost_code_id not in refs:
+                try:
+                    refs[sub_cost_code_id] = resolve_qbo_item_ref(
+                        sub_cost_code_id, realm_id=realm_id, sub_cost_code_service=scc_svc
+                    )
+                except HoldingCodeRefused:
+                    # r6b Codex P2: the upstream holding check ran before completion's uploads; the
+                    # purchase pull can put a holding code on a completed parent's line after it. A
+                    # silent skip could collapse a pending approval into an empty revision: fail closed.
+                    raise RepointUnresolvable("repoint_line_holding")
+            ref = refs[sub_cost_code_id]
+            if ref is None:
+                # I5: a written line whose local coding maps to no item cannot be judged "unchanged".
+                raise RepointUnresolvable("repoint_line_unmapped")
+            if ref.value != entry.get("item_ref_value"):
+                diverged.append((qbo_line_id, local, entry.get("item_ref_value")))
+        if not diverged:
+            return None
+        diverged.sort(key=lambda pair: self._repoint_line_sort_key(*pair))
+        lead = diverged[0][1]
+        return {
+            "public_id": public_id,
+            "lines": [qbo_line_id for qbo_line_id, _, _ in diverged],
+            "targets_token": full.written_sync_token,
+            "targets": [
+                {
+                    "qbo_line_id": qbo_line_id,
+                    "sub_cost_code_id": int(local.sub_cost_code_id),
+                    "project_id": getattr(local, "project_id", None),
+                    "description": getattr(local, "description", None),
+                    "repoint_from_item_ref_value": written_item,
+                }
+                for qbo_line_id, local, written_item in diverged
+            ],
+            "dominant": {
+                "project_id": getattr(lead, "project_id", None),
+                "sub_cost_code_id": lead.sub_cost_code_id,
+                "description": getattr(lead, "description", None),
+            },
+            "confirmed_mixed_codes": len(codings) > 1,
+        }
+
+    def _enqueue_repoint_on_complete(self, *, expense_id: int, divergence: dict, lock_held: bool = False) -> dict:
+        """Confirm a repoint for a diverged suggestion with the LOCAL coding; failure-isolated.
+
+        ``lock_held=True``: the caller holds the suggestion lock across its probe (see
+        ``_repoint_on_complete``) and confirm must not take it again."""
+        from entities.coding_suggestion.business.service import CodingSuggestionService
+
+        actor_user_id = current_user_id.get() or _SYSTEM_ACTOR_USER_ID
+        dominant = divergence.get("dominant") or {}
+        try:
+            # The targets travel with the snapshot token they came from, and the approval is bound to
+            # the revision the probe read (``revision_seq``): confirm refuses it if the item moved on.
+            result = CodingSuggestionService().confirm(
+                public_id=divergence["public_id"],
+                project_id=dominant.get("project_id"),
+                sub_cost_code_id=dominant.get("sub_cost_code_id"),
+                description=dominant.get("description"),
+                was_overridden=True,
+                user_id=actor_user_id,
+                confirmed_mixed_codes=bool(divergence.get("confirmed_mixed_codes")),
+                allow_multi_line=True,
+                repoint=True,
+                repoint_targets=divergence.get("targets"),
+                repoint_targets_token=divergence.get("targets_token"),
+                expected_confirmation_seq=divergence["revision_seq"],
+                lock_held=lock_held,
+            )
+        except Exception as exc:
+            return self._recode_skipped_result(
+                expense_id=expense_id,
+                skip_reason=type(exc).__name__,
+                message="Recode enqueue failed (failure-isolated)",
+            )
+        status = result.get("status")
+        if status == "enqueued":
+            return {
+                "success": True,
+                "message": "Purchase line repoint enqueued",
+                "enqueued": 1,
+                "repoint": True,
+                "lines": divergence.get("lines") or [],
+                "errors": [],
+            }
+        return self._recode_skipped_result(
+            expense_id=expense_id, skip_reason=str(status or "unknown"), message="Repoint not enqueued"
+        )
+
+    def _enqueue_coding_recode_on_complete(
+        self, *, expense_id: int, qbo_linked: bool = True, expense=None
+    ) -> dict:
         """Failure-isolated QBO recode enqueue at expense completion (U-740).
 
         `qbo_linked=False` (no QboId/RealmId on the expense) skips the staging probe.
         """
+        if qbo_linked:
+            # A purchase is either repointed or first-coded, never both in one completion.
+            repointed = self._repoint_on_complete(expense_id=expense_id, expense=expense)
+            if repointed is not None:
+                return repointed
         if not qbo_linked or not self._expense_has_genuine_uncoded_staged_lines(expense_id=expense_id):
-            self._log_recode_enqueue_skipped(
+            return self._recode_skipped_result(
                 expense_id=expense_id,
                 skip_reason="no_uncoded_staged_lines",
+                message="No uncoded QBO purchase lines to recode",
             )
-            return {
-                "success": True,
-                "message": "No uncoded QBO purchase lines to recode",
-                "enqueued": 0,
-                "skipped": True,
-                "skip_reason": "no_uncoded_staged_lines",
-                "errors": [],
-            }
 
         actor_user_id = current_user_id.get() or _SYSTEM_ACTOR_USER_ID
         try:
@@ -949,18 +1236,11 @@ class ExpenseService:
                 user_id=actor_user_id,
             )
         except Exception as exc:
-            self._log_recode_enqueue_skipped(
+            return self._recode_skipped_result(
                 expense_id=expense_id,
                 skip_reason=type(exc).__name__,
+                message="Recode enqueue failed (failure-isolated)",
             )
-            return {
-                "success": True,
-                "message": "Recode enqueue failed (failure-isolated)",
-                "enqueued": 0,
-                "skipped": True,
-                "skip_reason": type(exc).__name__,
-                "errors": [],
-            }
 
         enqueued = int(summary.get("enqueued") or 0)
         skip_reason = self._recode_enqueue_skip_reason(summary)
@@ -1422,6 +1702,7 @@ class ExpenseService:
         qbo_sync_result = self._enqueue_coding_recode_on_complete(
             expense_id=expense.id,
             qbo_linked=bool(getattr(expense, "qbo_id", None) and getattr(expense, "realm_id", None)),
+            expense=expense,
         )
 
         # Step 5: Box mirror — enqueue line-item attachments to each mapped

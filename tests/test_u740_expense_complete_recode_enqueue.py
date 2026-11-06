@@ -323,12 +323,18 @@ def test_enqueue_on_complete_real_path_confirm_uses_dominant_local_coding():
 
 def test_complete_recode_nothing_to_do_logs_info(caplog):
     svc = ExpenseService()
-    with caplog.at_level(logging.INFO), patch.object(
+    # A SUCCESSFUL, empty state read: a broken probe would log repoint_probe_failed instead.
+    with caplog.at_level(logging.INFO), patch(
+        "entities.coding_suggestion.persistence.repo.CodingSuggestionRepository.read_state_by_expense_ids",
+        return_value={},
+    ), patch.object(
         ExpenseService,
         "_expense_has_genuine_uncoded_staged_lines",
         return_value=False,
     ):
         svc._enqueue_coding_recode_on_complete(expense_id=901)
+
+    assert not any("repoint_probe_failed" in r.getMessage() for r in caplog.records)
 
     assert any(
         r.levelno == logging.INFO

@@ -13,6 +13,16 @@ from integrations.intuit.qbo.purchase.connector.expense.business.errors import (
     PurchaseChangedInQboError,
 )
 from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
+
+
+@pytest.fixture(autouse=True)
+def _recode_gate_open(request):
+    """U-551b-f1 R3-B: the drain rechecks the recode kill switch; the worker tests exercise the open path."""
+    if not request.node.name.startswith("test_worker"):
+        yield
+        return
+    with patch("integrations.intuit.qbo.base.client.recode_write_gate_reason", return_value=None):
+        yield
 @pytest.fixture(autouse=True)
 def _mock_expense_line_items_for_enqueue_holding_gate(monkeypatch):
     eli = MagicMock()
@@ -255,7 +265,7 @@ def test_worker_accepts_entity_type_coding_suggestion(mock_svc_cls, mock_connect
 
     connector.recode_purchase_lines.assert_called_once()
     svc.mark_written.assert_called_once_with(
-        PUBLIC_ID, sync_token="6", expected_confirmation_seq=None
+        PUBLIC_ID, sync_token="6", expected_confirmation_seq=None, written_lines_json=None
     )
 
 

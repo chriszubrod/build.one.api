@@ -74,6 +74,9 @@ class CodingSuggestionRepository:
                 prefill_state=getattr(row, "PrefillState", None),
                 confirmation_source=getattr(row, "ConfirmationSource", None),
                 confirmation_seq=getattr(row, "ConfirmationSeq", None),
+                written_sync_token=getattr(row, "WrittenSyncToken", None),
+                written_lines_json=getattr(row, "WrittenLinesJson", None),
+                repoint_targets_json=getattr(row, "RepointTargetsJson", None),
                 flag_reason=getattr(row, "FlagReason", None),
                 flagged_at=getattr(row, "FlaggedAt", None),
                 written_at=getattr(row, "WrittenAt", None),
@@ -293,6 +296,8 @@ class CodingSuggestionRepository:
         confirmed_mixed_codes: Optional[bool] = None,
         prefill_state: Optional[str] = None,
         confirmation_source: Optional[str] = None,
+        repoint_targets_json: Optional[str] = None,
+        expected_confirmation_seq: Optional[int] = None,
     ) -> Optional[CodingSuggestion]:
         try:
             with get_connection() as conn:
@@ -312,6 +317,8 @@ class CodingSuggestionRepository:
                         "ConfirmedMixedCodes": confirmed_mixed_codes,
                         "PrefillState": prefill_state,
                         "ConfirmationSource": confirmation_source,
+                        "RepointTargetsJson": repoint_targets_json,
+                        "ExpectedConfirmationSeq": expected_confirmation_seq,
                     },
                 )
                 return self._from_db(cursor.fetchone())
@@ -319,14 +326,16 @@ class CodingSuggestionRepository:
             logger.error(f"Error recording confirmation for coding suggestion {public_id}: {error}")
             raise map_database_error(error)
 
-    def mark_enqueued(self, public_id: str) -> Optional[CodingSuggestion]:
+    def mark_enqueued(
+        self, public_id: str, expected_confirmation_seq: Optional[int] = None
+    ) -> Optional[CodingSuggestion]:
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="MarkCodingSuggestionEnqueued",
-                    params={"PublicId": public_id},
+                    params={"PublicId": public_id, "ExpectedConfirmationSeq": expected_confirmation_seq},
                 )
                 return self._from_db(cursor.fetchone())
         except Exception as error:
@@ -338,6 +347,7 @@ class CodingSuggestionRepository:
         public_id: str,
         sync_token: Optional[str] = None,
         expected_confirmation_seq: Optional[int] = None,
+        written_lines_json: Optional[str] = None,
     ) -> Optional[CodingSuggestion]:
         try:
             with get_connection() as conn:
@@ -349,6 +359,7 @@ class CodingSuggestionRepository:
                         "PublicId": public_id,
                         "SyncToken": sync_token,
                         "ExpectedConfirmationSeq": expected_confirmation_seq,
+                        "WrittenLinesJson": written_lines_json,
                     },
                 )
                 return self._from_db(cursor.fetchone())
@@ -676,6 +687,7 @@ class CodingSuggestionRepository:
                                 row, "SuggestedSubCostCodeId", None
                             ),
                             "flag_reason": getattr(row, "FlagReason", None),
+                            "confirmation_source": getattr(row, "ConfirmationSource", None),
                         }
                     )
                 return out

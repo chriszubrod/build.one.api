@@ -198,6 +198,33 @@ class QboWriteRefusedError(QboClientError):
     """
 
 
+class QboRecodeWritesDisabledError(QboWriteRefusedError):
+    """
+    Raised by the outbox drain when a recode row is picked up while the recode
+    write gate (ALLOW_QBO_WRITES + ALLOW_EXPENSE_RECODE_WRITES) is off (U-551b-f1).
+
+    A local refusal, like its parent: the worker's write-refused branch PARKS the
+    row (fixed park interval, never dead-lettered) so it resumes when the switch
+    is flipped back on. The suggestion is NOT marked and no QBO call is made.
+    """
+
+    def __init__(self, reason: str):
+        super().__init__(f"recode writes disabled: {reason}", code="recode_writes_disabled")
+
+
+class CodingSuggestionBusyError(QboWriteRefusedError):
+    """
+    Raised by the outbox drain when it cannot take the per-suggestion application lock
+    (``qbo_coding_suggestion:<public id>``) within its timeout — a confirm holds it (U-551b-f1).
+
+    A local refusal, like its parent: the worker PARKS the row (never dead-letters) and the
+    suggestion is left unmarked, so the drain resumes once the confirm releases the lock.
+    """
+
+    def __init__(self, public_id: str):
+        super().__init__(f"coding suggestion {public_id} is busy (lock held)", code="coding_suggestion_busy")
+
+
 class QboBudgetExceededError(QboClientError):
     """
     Raised by the shared client's per-call budget breaker (U-211) when the

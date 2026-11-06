@@ -47,6 +47,7 @@ READ_STATE_SELECT_COLUMNS = [
     "cs.[ConfirmedProjectId]",
     "cs.[ConfirmedSubCostCodeId]",
     "cs.[FlagReason]",
+    "cs.[ConfirmationSource]",
 ]
 
 ENQUEUE_LINE_SELECT_COLUMNS = [
@@ -174,7 +175,8 @@ def _sqlite_fixture_conn() -> sqlite3.Connection:
             SuggestedSubCostCodeId INTEGER,
             ConfirmedProjectId INTEGER,
             ConfirmedSubCostCodeId INTEGER,
-            FlagReason TEXT
+            FlagReason TEXT,
+            ConfirmationSource TEXT
         );
         CREATE TABLE qbo.Purchase(
             Id INTEGER PRIMARY KEY,
@@ -220,7 +222,7 @@ def test_enqueue_recode_resolves_line_without_map_row():
         );
         INSERT INTO dbo.CodingSuggestion VALUES (
             1, 'ci-pub-1', 'expense', 'realm-1', 'PUR-A', 1, 301,
-            'pending', NULL, NULL, NULL, NULL, NULL, NULL
+            'pending', NULL, NULL, NULL, NULL, NULL, NULL, NULL
         );
         """
     )
@@ -256,7 +258,7 @@ def test_read_state_sproc_resolves_without_map_row():
         );
         INSERT INTO dbo.CodingSuggestion VALUES (
             1, 'ci-pub-1', 'expense', 'realm-1', 'PUR-A', 1, 301,
-            'pending', NULL, 10, 20, NULL, NULL, NULL
+            'pending', NULL, 10, 20, NULL, NULL, NULL, NULL
         );
         """
     )
@@ -285,7 +287,7 @@ def test_enqueue_recode_parent_scoped_not_cross_purchase():
           (302, 202, '1', 'Cost of construction : NEED TO CATEGORIZE', 20.0);
         INSERT INTO dbo.CodingSuggestion VALUES (
             1, 'ci-pub-a', 'expense', 'realm-1', 'PUR-A', 1, 301,
-            'pending', NULL, NULL, NULL, NULL, NULL, NULL
+            'pending', NULL, NULL, NULL, NULL, NULL, NULL, NULL
         );
         """
     )
@@ -330,7 +332,7 @@ def test_read_state_parent_scoped_not_cross_purchase():
           (302, 202, '1', 'Cost of construction : NEED TO CATEGORIZE', NULL);
         INSERT INTO dbo.CodingSuggestion VALUES (
             1, 'ci-pub-a', 'expense', 'realm-1', 'PUR-A', 1, 301,
-            'pending', NULL, 10, 20, NULL, NULL, NULL
+            'pending', NULL, 10, 20, NULL, NULL, NULL, NULL
         );
         """
     )

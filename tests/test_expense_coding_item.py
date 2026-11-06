@@ -309,7 +309,7 @@ def test_confirm_both_gates_on_enqueues(monkeypatch):
         entity_public_id="eci-1",
         realm_id="realm-1",
     )
-    mark_enqueued_spy.assert_called_once_with("eci-1")
+    mark_enqueued_spy.assert_called_once_with("eci-1", expected_confirmation_seq=None)
 
 
 def test_confirm_global_qbo_writes_off_rejects_without_recording(monkeypatch):

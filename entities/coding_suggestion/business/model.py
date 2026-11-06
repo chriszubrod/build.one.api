@@ -3,10 +3,16 @@ from dataclasses import asdict, dataclass
 from decimal import Decimal
 from typing import Optional
 import base64
+import json
 
 # Third-party Imports
 
 # Local Imports
+
+
+# U-551b-f1: ConfirmationSource discriminator for a completion repoint. MUST fit the column and
+# the sproc param (NVARCHAR(20)) - a longer value is truncated silently and never matches.
+REPOINT_CONFIRMATION_SOURCE = "complete_repoint"
 
 
 @dataclass
@@ -74,8 +80,64 @@ class CodingSuggestion:
     created_by_user_id: Optional[int]
     created_datetime: Optional[str]
     modified_datetime: Optional[str]
-    confirmation_source: Optional[str] = None  # 'review_submit' | 'confirm_endpoint' (U-652)
+    confirmation_source: Optional[str] = None  # 'review_submit' | 'confirm_endpoint' (U-652) | 'complete_repoint' (U-551b-f1)
     confirmation_seq: Optional[int] = None  # U-652c: bumped on each confirmation
+    written_sync_token: Optional[str] = None  # U-551b-f1: SyncToken our last recode write produced
+    written_lines_json: Optional[str] = None  # U-551b-f1: JSON of the lines that write coded
+    repoint_targets_json: Optional[str] = None  # U-551b-f1: JSON of the coding completion approved for a repoint
+
+    @property
+    def repoint_targets(self) -> Optional[list]:
+        """Parsed repoint_targets_json. ``None`` = absent or malformed (fail closed: any bad entry
+        invalidates the WHOLE record); ``[]`` = an explicit empty revision (nothing to repoint)."""
+        if not self.repoint_targets_json:
+            return None
+        try:
+            parsed = json.loads(self.repoint_targets_json)
+            if not isinstance(parsed, list):
+                return None
+            for entry in parsed:
+                if not isinstance(entry, dict):
+                    return None
+                for key in ("qbo_line_id", "repoint_from_item_ref_value"):
+                    value = entry.get(key)
+                    if not isinstance(value, str) or not value:
+                        return None
+                scc = entry.get("sub_cost_code_id")
+                if not isinstance(scc, int) or isinstance(scc, bool):
+                    return None
+                pid = entry.get("project_id")
+                if pid is not None and (not isinstance(pid, int) or isinstance(pid, bool)):
+                    return None
+                desc = entry.get("description")
+                if desc is not None and not isinstance(desc, str):
+                    return None
+            return parsed
+        except Exception:  # incl. RecursionError on hostile depth
+            return None
+
+    @property
+    def written_lines(self) -> list:
+        """Parsed written_lines_json. Validates the WHOLE record: any malformed entry -> [] (fail closed)."""
+        if not self.written_lines_json:
+            return []
+        try:
+            parsed = json.loads(self.written_lines_json)
+            if not isinstance(parsed, list):
+                return []
+            for entry in parsed:
+                if not isinstance(entry, dict):
+                    return []
+                for key in ("qbo_line_id", "item_ref_value"):
+                    value = entry.get(key)
+                    if not isinstance(value, str) or not value:
+                        return []
+                scc = entry.get("sub_cost_code_id")
+                if scc is not None and (not isinstance(scc, int) or isinstance(scc, bool)):
+                    return []
+            return parsed
+        except Exception:  # incl. RecursionError on hostile depth
+            return []
 
     @property
     def row_version_bytes(self) -> Optional[bytes]:

@@ -238,7 +238,8 @@ def test_worker_refuses_multi_line_unless_confirmed_by_review_submit(source):
     econ.assert_not_called()
 
 
-def test_worker_marks_scope_change_changed_in_qbo_without_writing():
+@patch(_GATE, return_value=None)  # U-551b-f1 M3: the gate precedes every mark
+def test_worker_marks_scope_change_changed_in_qbo_without_writing(_gate):
     item = _make_item()
     item.confirmation_source = "confirm_endpoint"
     item.confirmation_seq = 2
@@ -275,7 +276,8 @@ def test_confirm_records_its_confirmation_source(_ref, _gate, allow_multi_line, 
 # --- U-652c: stale ConfirmationSeq guard skips without reread/re-apply -----------------------
 
 
-def test_scope_change_guard_miss_does_not_reread_or_reapply():
+@patch(_GATE, return_value=None)  # U-551b-f1 M3: the gate precedes every mark
+def test_scope_change_guard_miss_does_not_reread_or_reapply(_gate):
     """A newer confirmation owns the row; the stale job logs and exits."""
     import logging
 

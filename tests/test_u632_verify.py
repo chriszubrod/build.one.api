@@ -402,3 +402,10 @@ def test_g2_expense_line_pull_keeps_local_scc_on_approved_parent():
     created = [c.kwargs for c in recon.create.call_args_list]
     assert [c["drift_type"] for c in created] == [DRIFT_HOLDING_CODE_ON_APPROVED]
     assert created[0]["entity_type"] == "Expense"
+
+
+@pytest.fixture(autouse=True)
+def _recode_gate_open():
+    """U-551b-f1 R5: the drain rechecks the recode kill switch; these tests exercise the open path."""
+    with patch("integrations.intuit.qbo.base.client.recode_write_gate_reason", return_value=None):
+        yield

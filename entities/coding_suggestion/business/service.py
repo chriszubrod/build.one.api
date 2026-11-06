@@ -1,5 +1,8 @@
 # Python Standard Library Imports
+import json
 import logging
+import uuid
+from contextlib import contextmanager
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -8,12 +11,14 @@ from typing import Any, Optional
 
 # Local Imports
 from entities.coding_suggestion.business.model import (
+    REPOINT_CONFIRMATION_SOURCE,
     CodingSuggestion,
     VendorDominantProjectForBills,
     VendorDominantSubCostCodeForBills,
 )
 from entities.coding_suggestion.persistence.repo import CodingSuggestionRepository
 from entities.sub_cost_code.business.holding_lines import assert_no_holding_on_lines
+from integrations.intuit.qbo.base.locking import qbo_app_lock
 from shared.access import (
     EntityNotAccessibleError,
     assert_can_access_bill,
@@ -22,6 +27,49 @@ from shared.access import (
 )
 
 logger = logging.getLogger(__name__)
+
+# U-551b-f1 M1: the per-suggestion application lock. A confirm records a new revision and the QBO
+# drain writes one; neither may run inside the other (an approval recorded mid-drain would be fenced
+# out after the external write). The drain waits briefly (a confirm is short); a confirm waits longer
+# (a drain spans a QBO GET + POST).
+DRAIN_SUGGESTION_LOCK_TIMEOUT_MS = 5_000
+CONFIRM_SUGGESTION_LOCK_TIMEOUT_MS = 10_000
+
+
+def _canonical_public_id(public_id) -> str:
+    """The identity SQL Server's ``UNIQUEIDENTIFIER`` conversion gives a string, as text.
+
+    Lowercase hyphenated uuid; braces / ``urn:uuid:`` / whitespace stripped. SQL Server converts a
+    string by its FIRST 36 characters (38 with braces) and ignores a trailing suffix, so
+    ``<guid>wrong`` reads the same row as ``<guid>`` — the lock must agree (r6b Codex P1). An id that
+    parses no other way (test ids) falls back to ``strip().lower()``.
+    """
+    text = str(public_id).strip()
+    prefix = text[:38] if text.startswith("{") else text[:36]
+    for candidate in (text, prefix):
+        try:
+            return str(uuid.UUID(candidate))
+        except (ValueError, AttributeError, TypeError):
+            continue
+    return text.lower()
+
+
+def coding_suggestion_lock_resource(public_id: str) -> str:
+    """The ONE place a suggestion public id becomes its ``qbo_app_lock`` resource name — keyed on the
+    CANONICAL identity (``_canonical_public_id``), so every spelling SQL maps to one row maps to one lock."""
+    return f"qbo_coding_suggestion:{_canonical_public_id(public_id)}"
+
+
+@contextmanager
+def coding_suggestion_lock(public_id: str, *, timeout_ms: int):
+    """Hold the suggestion's application lock; yields True when acquired, False on timeout.
+
+    Looks ``qbo_app_lock`` up in this module's globals at CALL time so one patch site covers both
+    holders (confirm and the outbox drain). Nothing inside the held region may take
+    ``qbo_coding_suggestion:*`` or ``qbo_outbox_drain`` again (self-deadlock).
+    """
+    with qbo_app_lock(coding_suggestion_lock_resource(public_id), timeout_ms=timeout_ms) as acquired:
+        yield acquired
 
 
 def _confidence_to_float(value: Optional[Decimal]) -> Optional[float]:
@@ -585,6 +633,8 @@ class CodingSuggestionService:
         confirmed_mixed_codes: Optional[bool] = None,
         prefill_state: Optional[str] = None,
         confirmation_source: Optional[str] = None,
+        repoint_targets_json: Optional[str] = None,
+        expected_confirmation_seq: Optional[int] = None,
     ) -> Optional[CodingSuggestion]:
         return self.repo.record_confirmation(
             public_id=public_id,
@@ -598,21 +648,49 @@ class CodingSuggestionService:
             confirmed_mixed_codes=confirmed_mixed_codes,
             prefill_state=prefill_state,
             confirmation_source=confirmation_source,
+            repoint_targets_json=repoint_targets_json,
+            expected_confirmation_seq=expected_confirmation_seq,
         )
 
-    def mark_enqueued(self, public_id: str) -> Optional[CodingSuggestion]:
-        return self.repo.mark_enqueued(public_id)
+    def mark_enqueued(
+        self, public_id: str, expected_confirmation_seq: Optional[int] = None
+    ) -> Optional[CodingSuggestion]:
+        return self.repo.mark_enqueued(public_id, expected_confirmation_seq=expected_confirmation_seq)
+
+    @staticmethod
+    def _repoint_target_key(target: dict) -> tuple:
+        return (
+            str(target.get("qbo_line_id")),
+            target.get("sub_cost_code_id"),
+            target.get("project_id"),
+            target.get("description"),
+            target.get("repoint_from_item_ref_value"),
+        )
+
+    @staticmethod
+    def _repoint_targets_stale(item: CodingSuggestion, targets: list, targets_token: Optional[str]) -> bool:
+        """R4-B: targets are valid only against the ownership snapshot they were computed from."""
+        if targets_token is None or targets_token != item.written_sync_token:
+            return True
+        written_by_line = {str(e.get("qbo_line_id")): e for e in item.written_lines}
+        for target in targets:
+            written = written_by_line.get(str(target.get("qbo_line_id")))
+            if written is None or written.get("item_ref_value") != target.get("repoint_from_item_ref_value"):
+                return True
+        return False
 
     def mark_written(
         self,
         public_id: str,
         sync_token: Optional[str] = None,
         expected_confirmation_seq: Optional[int] = None,
+        written_lines_json: Optional[str] = None,
     ) -> Optional[CodingSuggestion]:
         return self.repo.mark_written(
             public_id,
             sync_token=sync_token,
             expected_confirmation_seq=expected_confirmation_seq,
+            written_lines_json=written_lines_json,
         )
 
     def mark_changed_in_qbo(
@@ -671,13 +749,43 @@ class CodingSuggestionService:
         confirmed_mixed_codes: Optional[bool] = None,
         prefill_state: Optional[str] = None,
         allow_multi_line: bool = False,
+        repoint: bool = False,
+        repoint_targets: Optional[list] = None,
+        repoint_targets_token: Optional[str] = None,
+        expected_confirmation_seq: Optional[int] = None,
+        lock_held: bool = False,
     ) -> dict:
         """Confirm a suggestion and enqueue its QBO recode.
+
+        ``repoint`` (U-551b-f1, completion only) re-confirms a ``written`` suggestion so the
+        drain repoints OUR written lines whose item diverged from the local coding; it is
+        fenced on ``written_sync_token`` and refused without a written record. It also REQUIRES
+        ``repoint_targets`` (the coding completion approved, persisted so a later purchase pull cannot
+        erase it before the drain). Re-confirming a stranded ``confirmed`` repoint is a RECOVERY: it
+        never calls ``record_confirmation`` (no seq bump; the persisted targets are the pending work),
+        only re-enqueues. R4-B: ``repoint_targets`` are refused (``repoint_targets_stale``) unless
+        ``repoint_targets_token`` equals the current ``written_sync_token`` and every target is one of
+        our written lines carrying the item it was computed from. R4-C: for a ``confirmed``/``enqueued``
+        repoint, fresh targets EQUAL to the persisted ones are recovery / ``already_enqueued``;
+        DIFFERENT ones are a NEW revision (record_confirmation + enqueue). Fresh targets absent
+        (nothing diverges any more) keeps the old recovery of the persisted work.
 
         ``allow_multi_line`` is set ONLY by the review-submit path, where every
         uncategorized line carries its own ExpenseLineItem coding and the worker writes
         each line with it. The confirm endpoint leaves it False: one document-level code
         cannot express per-line coding, so a multi-line purchase is refused (U-652).
+
+        U-551b-f1 revision model: the whole confirm runs under the per-suggestion application lock
+        (``coding_suggestion_lock``; a drain holds it across its QBO write), so no revision is recorded
+        while a drain is in flight; a held lock returns ``{"status": "busy"}`` with zero writes.
+        ``expected_confirmation_seq`` is REQUIRED for ``repoint=True`` (``invalid`` without it): the
+        approval is bound to the revision the completion probe READ, and an item that has moved on
+        returns ``repoint_revision_lost`` before any write. Non-repoint callers pass nothing (unguarded).
+
+        ``lock_held=True`` is a CALLER CONTRACT (not verifiable here): the caller already holds
+        ``coding_suggestion_lock(public_id)`` and confirm must NOT acquire it again (self-deadlock). The
+        gate and revision-required checks still run. The only production caller is expense completion,
+        which holds the lock across its probe -> confirm so the revision it read cannot move in between.
         """
         from integrations.intuit.qbo.base.client import recode_write_gate_reason
 
@@ -687,11 +795,64 @@ class CodingSuggestionService:
         if gate_reason is not None:
             return {"status": "writes_disabled", "reason": gate_reason}
 
+        if repoint and expected_confirmation_seq is None:
+            return {"status": "invalid", "reason": "revision required"}
+
+        kwargs = dict(
+            public_id=public_id,
+            project_id=project_id,
+            sub_cost_code_id=sub_cost_code_id,
+            description=description,
+            was_overridden=was_overridden,
+            user_id=user_id,
+            confirmed_mixed_codes=confirmed_mixed_codes,
+            prefill_state=prefill_state,
+            allow_multi_line=allow_multi_line,
+            repoint=repoint,
+            repoint_targets=repoint_targets,
+            repoint_targets_token=repoint_targets_token,
+            expected_confirmation_seq=expected_confirmation_seq,
+        )
+        if lock_held:
+            return self._confirm_under_lock(**kwargs)
+        with coding_suggestion_lock(public_id, timeout_ms=CONFIRM_SUGGESTION_LOCK_TIMEOUT_MS) as acquired:
+            if not acquired:
+                logger.warning("coding_suggestion.lock_busy public_id=%s holder=confirm", public_id)
+                return {"status": "busy"}
+            return self._confirm_under_lock(**kwargs)
+
+    def _confirm_under_lock(
+        self,
+        *,
+        public_id: str,
+        project_id: int,
+        sub_cost_code_id: int,
+        description: Optional[str],
+        was_overridden: bool,
+        user_id: int,
+        confirmed_mixed_codes: Optional[bool],
+        prefill_state: Optional[str],
+        allow_multi_line: bool,
+        repoint: bool,
+        repoint_targets: Optional[list],
+        repoint_targets_token: Optional[str],
+        expected_confirmation_seq: Optional[int],
+    ) -> dict:
         item = self.read_by_public_id(public_id)
         if item is None:
             return {"status": "not_found"}
 
-        if not project_id or not sub_cost_code_id:
+        if repoint and getattr(item, "confirmation_seq", None) != expected_confirmation_seq:
+            # I1: the approval belongs to the revision the probe read; this item has moved on.
+            logger.warning("coding_suggestion.repoint_revision_lost public_id=%s", public_id)
+            return {"status": "repoint_revision_lost"}
+
+        pending_repoint = (
+            repoint
+            and item.status in ("confirmed", "enqueued")
+            and getattr(item, "confirmation_source", None) == REPOINT_CONFIRMATION_SOURCE
+        )  # recovery / in-flight: the persisted targets are the work, no coding args are needed
+        if (not project_id or not sub_cost_code_id) and not pending_repoint:
             return {
                 "status": "invalid",
                 "reason": "project and sub_cost_code required",
@@ -699,22 +860,69 @@ class CodingSuggestionService:
 
         from integrations.intuit.qbo.base.cost_code_resolver import resolve_qbo_item_ref
 
-        qbo_item_ref = resolve_qbo_item_ref(sub_cost_code_id, realm_id=item.realm_id)
-        if qbo_item_ref is None:
+        qbo_item_ref = None if pending_repoint else resolve_qbo_item_ref(sub_cost_code_id, realm_id=item.realm_id)
+        if qbo_item_ref is None and not pending_repoint:
             return {
                 "status": "mapping_missing",
                 "reason": "SubCostCode has no QBO Item mapping",
             }
 
-        uncategorized_count = self._count_uncategorized_purchase_lines(
-            realm_id=item.realm_id or "",
-            qbo_purchase_qbo_id=item.qbo_purchase_qbo_id or "",
-        )
-        if uncategorized_count > 1 and not allow_multi_line:
-            return {
-                "status": "multi_line_unsupported",
-                "reason": "multi_line_purchase_confirm_unsupported",
-            }
+        repoint_targets_json: Optional[str] = None
+        if repoint:
+            written = item.written_lines
+            # A repoint stranded between confirm and enqueue (status 'confirmed', our source) is
+            # recovered; one already enqueued is in flight. Anything else must be 'written'.
+            ours = getattr(item, "confirmation_source", None) == REPOINT_CONFIRMATION_SOURCE
+            replacing = False
+            if item.status in ("confirmed", "enqueued") and ours:
+                # ``None`` = the probe's recompute failed (recover the persisted work as-is); ``[]`` =
+                # recomputed and nothing diverges any more (an EMPTY revision, R4b-0).
+                if repoint_targets is not None:
+                    if self._repoint_targets_stale(item, repoint_targets, repoint_targets_token):
+                        return {"status": "repoint_targets_stale"}
+                    fresh = {self._repoint_target_key(t) for t in repoint_targets}
+                    persisted = {self._repoint_target_key(t) for t in (item.repoint_targets or [])}
+                    replacing = fresh != persisted
+                if replacing:
+                    if repoint_targets and (not project_id or not sub_cost_code_id):
+                        return {"status": "invalid", "reason": "project and sub_cost_code required"}
+                    logger.warning(
+                        "coding_suggestion.repoint.targets_replaced public_id=%s", public_id
+                    )
+                elif item.status == "enqueued":
+                    return {"status": "already_enqueued"}
+                else:
+                    from integrations.intuit.qbo.outbox.business.service import QboOutboxService
+
+                    QboOutboxService().enqueue(
+                        kind="recode_purchase_line",
+                        entity_type="CodingSuggestion",
+                        entity_public_id=public_id,
+                        realm_id=item.realm_id,
+                    )
+                    marked = self.mark_enqueued(public_id, expected_confirmation_seq=expected_confirmation_seq)
+                    if marked is None:
+                        return {"status": "already_terminal"}
+                    return {"status": "enqueued", "enqueued": True, "recovered": True}
+            elif item.status != "written":
+                return {"status": "not_written"}
+            if not item.written_sync_token or not written:
+                return {"status": "no_written_record"}
+            if not repoint_targets and not replacing:
+                return {"status": "no_repoint_targets"}
+            if not replacing and self._repoint_targets_stale(item, repoint_targets, repoint_targets_token):
+                return {"status": "repoint_targets_stale"}
+            repoint_targets_json = json.dumps(repoint_targets)
+        else:
+            uncategorized_count = self._count_uncategorized_purchase_lines(
+                realm_id=item.realm_id or "",
+                qbo_purchase_qbo_id=item.qbo_purchase_qbo_id or "",
+            )
+            if uncategorized_count > 1 and not allow_multi_line:
+                return {
+                    "status": "multi_line_unsupported",
+                    "reason": "multi_line_purchase_confirm_unsupported",
+                }
 
         expense_id = getattr(item, "expense_id", None) or self._resolve_expense_id_for_purchase(
             qbo_purchase_qbo_id=item.qbo_purchase_qbo_id or "",
@@ -729,23 +937,32 @@ class CodingSuggestionService:
             eli_svc = ExpenseLineItemService()
             elis = eli_svc.read_by_expense_id(expense_id=expense_id)
             recoded_line_ids: set[int] = set()
-            uncategorized_qbo_line_ids = self._uncategorized_staging_qbo_line_ids(
-                realm_id=item.realm_id or "",
-                qbo_purchase_qbo_id=item.qbo_purchase_qbo_id or "",
-            )
-            if uncategorized_count == 1 and len(uncategorized_qbo_line_ids) == 1:
-                local = eli_svc.read_by_qbo_identity(
-                    coerce_id(expense_id), uncategorized_qbo_line_ids[0]
+            if repoint:
+                written_qbo_line_ids = {str(e.get("qbo_line_id")) for e in written if e.get("qbo_line_id")}
+                recoded_line_ids = {
+                    int(li.id)
+                    for li in elis
+                    if getattr(li, "id", None) is not None
+                    and str(getattr(li, "qbo_id", None)) in written_qbo_line_ids
+                }
+            else:
+                uncategorized_qbo_line_ids = self._uncategorized_staging_qbo_line_ids(
+                    realm_id=item.realm_id or "",
+                    qbo_purchase_qbo_id=item.qbo_purchase_qbo_id or "",
                 )
-                if local is not None and local.id is not None:
-                    recoded_line_ids.add(int(local.id))
-            elif allow_multi_line and uncategorized_qbo_line_ids:
-                for qbo_line_id in uncategorized_qbo_line_ids:
+                if uncategorized_count == 1 and len(uncategorized_qbo_line_ids) == 1:
                     local = eli_svc.read_by_qbo_identity(
-                        coerce_id(expense_id), qbo_line_id
+                        coerce_id(expense_id), uncategorized_qbo_line_ids[0]
                     )
                     if local is not None and local.id is not None:
                         recoded_line_ids.add(int(local.id))
+                elif allow_multi_line and uncategorized_qbo_line_ids:
+                    for qbo_line_id in uncategorized_qbo_line_ids:
+                        local = eli_svc.read_by_qbo_identity(
+                            coerce_id(expense_id), qbo_line_id
+                        )
+                        if local is not None and local.id is not None:
+                            recoded_line_ids.add(int(local.id))
             other_lines = [
                 li
                 for li in elis
@@ -760,20 +977,23 @@ class CodingSuggestionService:
             )
 
         expected_sync_token = None
-        try:
-            from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
+        if repoint:
+            expected_sync_token = item.written_sync_token  # drain fences on OUR write's token
+        else:
+            try:
+                from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseRepository
 
-            qbo_purchase = QboPurchaseRepository().read_by_id(item.qbo_purchase_id)
-            if qbo_purchase and qbo_purchase.sync_token:
-                expected_sync_token = qbo_purchase.sync_token
-        except Exception as error:
-            logger.warning(
-                "Could not snapshot sync token for coding suggestion %s: %s",
-                public_id,
-                error,
-            )
+                qbo_purchase = QboPurchaseRepository().read_by_id(item.qbo_purchase_id)
+                if qbo_purchase and qbo_purchase.sync_token:
+                    expected_sync_token = qbo_purchase.sync_token
+            except Exception as error:
+                logger.warning(
+                    "Could not snapshot sync token for coding suggestion %s: %s",
+                    public_id,
+                    error,
+                )
 
-        self.record_confirmation(
+        recorded = self.record_confirmation(
             public_id=public_id,
             confirmed_project_id=project_id,
             confirmed_sub_cost_code_id=sub_cost_code_id,
@@ -785,8 +1005,22 @@ class CodingSuggestionService:
             confirmed_mixed_codes=confirmed_mixed_codes,
             prefill_state=prefill_state,
             # The worker writes per-line coding only for a review-submit confirmation.
-            confirmation_source="review_submit" if allow_multi_line else "confirm_endpoint",
+            # Repoint: record_confirmation has no status guard and bumps ConfirmationSeq, so the
+            # terminal marks of the PREVIOUS write (seq n) cannot land on this one (seq n+1).
+            confirmation_source=(
+                REPOINT_CONFIRMATION_SOURCE
+                if repoint
+                else "review_submit" if allow_multi_line else "confirm_endpoint"
+            ),
+            repoint_targets_json=repoint_targets_json,
+            # R4b-1 / I1: the repoint write lands only on the revision the CALLER's probe read (a lost race = no row).
+            expected_confirmation_seq=expected_confirmation_seq if repoint else None,
         )
+        if recorded is None:
+            if repoint:
+                logger.warning("coding_suggestion.repoint_revision_lost public_id=%s", public_id)
+                return {"status": "repoint_revision_lost"}
+            return {"status": "not_recorded"}
 
         from integrations.intuit.qbo.outbox.business.service import QboOutboxService
 
@@ -796,7 +1030,8 @@ class CodingSuggestionService:
             entity_public_id=public_id,
             realm_id=item.realm_id,
         )
-        self.mark_enqueued(public_id)
+        seq = getattr(recorded, "confirmation_seq", None)
+        self.mark_enqueued(public_id, expected_confirmation_seq=seq if isinstance(seq, int) else None)
         return {"status": "enqueued", "enqueued": True}
 
     def is_multi_line_purchase(self, item: CodingSuggestion) -> bool:

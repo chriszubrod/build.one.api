@@ -566,7 +566,7 @@ def test_upload_general_receipts_proceeds_without_holding_line():
     with patch(f"{_EXPENSE_MOD}.MsDriveService") as drive_cls, patch.object(
         service, "_navigate_to_folder", return_value="receipts-id"
     ), patch.object(
-        service, "_get_or_create_subfolder", return_value="month-id"
+        service, "_read_or_create_subfolder", return_value="month-id"
     ), patch(f"{_EXPENSE_MOD}.AzureBlobStorage", storage), patch(
         "integrations.ms.outbox.business.service.MsOutboxService"
     ) as ms_outbox_cls:

@@ -1987,28 +1987,32 @@ class ExpenseService:
 
         return current_item_id
 
-    def _get_or_create_subfolder(self, drive_id: str, drive_public_id: str, parent_item_id: str, folder_name: str) -> Optional[str]:
+    def _read_or_create_subfolder(self, drive_public_id: str, parent_item_id: str, folder_name: str) -> Optional[str]:
         """
-        Find a subfolder by name under parent_item_id. Create it if missing.
-        Returns the item_id of the subfolder, or None on failure.
+        Find a subfolder by name under parent_item_id, creating it if missing
+        (``MsDriveItemService.read_or_create_folder``). Returns the subfolder's
+        item_id, or None on failure (including when the name is held by a file).
+        Both paths return the formatted drive item, whose id key is ``item_id``
+        (U-768).
         """
-        children = list_drive_item_children(drive_id, parent_item_id)
-        if children.get("status_code") == 200:
-            for child in children.get("items", []):
-                if child.get("name") == folder_name and child.get("item_type") == "folder":
-                    return child["item_id"]
-
-        create_result = self.driveitem_service.create_folder(
+        result = self.driveitem_service.read_or_create_folder(
             drive_public_id=drive_public_id,
             parent_item_id=parent_item_id,
             folder_name=folder_name,
         )
-        if create_result.get("status_code") in [200, 201]:
-            logger.info(f"Created subfolder '{folder_name}'")
-            return create_result["item"]["id"]
-        else:
-            logger.error(f"Could not create subfolder '{folder_name}': {create_result.get('message')}")
-            return None
+        item = result.get("item")
+        # A 409 recovery returns whatever holds the name -- reject a FILE.
+        if (
+            result.get("status_code") in [200, 201]
+            and item
+            and item.get("item_type") == "folder"
+            and item.get("item_id")
+        ):
+            if result.get("status_code") == 201:
+                logger.info(f"Created subfolder '{folder_name}'")
+            return item["item_id"]
+        logger.error(f"Could not create subfolder '{folder_name}': {result.get('message')}")
+        return None
 
     def _upload_to_general_receipts_folder(self, expense, line_items: List) -> dict:
         """
@@ -2048,12 +2052,12 @@ class ExpenseService:
                 return {"success": False, "message": "Could not navigate to '520 - Current Receipts' folder", "synced_count": 0, "skipped_count": 0, "errors": []}
 
             # Get-or-create yyyy folder
-            year_item_id = self._get_or_create_subfolder(graph_drive_id, shared_docs_drive.public_id, receipts_folder_id, year_folder)
+            year_item_id = self._read_or_create_subfolder(shared_docs_drive.public_id, receipts_folder_id, year_folder)
             if not year_item_id:
                 return {"success": False, "message": f"Could not get/create year folder '{year_folder}'", "synced_count": 0, "skipped_count": 0, "errors": []}
 
             # Get-or-create mm folder
-            month_item_id = self._get_or_create_subfolder(graph_drive_id, shared_docs_drive.public_id, year_item_id, month_folder)
+            month_item_id = self._read_or_create_subfolder(shared_docs_drive.public_id, year_item_id, month_folder)
             if not month_item_id:
                 return {"success": False, "message": f"Could not get/create month folder '{month_folder}'", "synced_count": 0, "skipped_count": 0, "errors": []}
 

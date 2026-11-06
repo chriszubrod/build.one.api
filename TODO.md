@@ -93,6 +93,88 @@ No SQL change. Tests: tests/test_u551b_expense_transactional_review_decision.py 
 - [ ] **U-551b-f7 (P3, api, both twins): `_replay` checks the parent, not the caller.** `entities/review/business/reviewer_decision.py` ~:484-488 replays a known idempotency key for ANY reviewer holding it, returning the first reviewer's review payload. Unreachable from the device (keys are per-row UUIDs) but the key is not a secret. Fix: the replay also requires `review.user_id == caller` (else `idempotency_key_conflict`). `[U-551b follow-up]`
 - [ ] **U-774-f1 (P3, api — found by U-774's Pass 3): change-password revocation leaves the 15 s rotation grace open.** `revoke_all_for_auth_id` (`token_repo.py` ~:122) revokes only tokens not already revoked; a refresh token rotated away < 15 s before the password change still carries `replaced_by_token_jti`, so its grace (`service.py` ~:794-800) can mint a fresh pair that SURVIVES the password change. Attacker-only (a stolen pre-rotation token, 15 s window) — the client never re-presents an old token. Fix: a password change clears the grace too (revoke replaced-by chains, or stamp a `revoked_before` on the auth row that the grace check honours). `[U-774 follow-up]`
 
+## QBO invoice push WITH billable-expense links — PROVEN LIVE 2026-11-06 (one Chris-approved test, nothing left behind)
+
+**What was proven.** `POST /invoice?minorversion=75` created `LINKTEST-1` (QBO Invoice 78517, $48.75, customer 1383
+"0 - Temp Customer:BR - Brattlesboro") against un-invoiced ReimburseCharge 68056 (source Bill 68055 line 1, 50% markup),
+and QBO accepted every link. The payload was copied from QBO's own read-back of a UI-built invoice (SHT-26):
+- **One invoice line per RC line**, each a `SalesItemLineDetail` with a line-level
+  `LinkedTxn {TxnId: <RC id>, TxnType: "ReimburseCharge", TxnLineId: <RC line id>}`.
+  - Cost line: `ServiceDate`, `ItemRef`, `Qty`, `UnitPrice`, `ItemAccountRef`, `TaxCodeRef`, plus
+    `MarkupInfo {PercentBased, Percent, Value, MarkUpIncomeAccountRef}`.
+  - Markup line: no `ItemRef`, `ItemAccountRef` 162 "Markup", with its own `MarkupInfo`.
+- Header `LinkedTxn [{TxnId: <RC id>, TxnType: "ReimburseCharge"}]`.
+
+**What QBO did with it:**
+- RC 68056 → `HasBeenInvoiced: true` with `LinkedTxn` → Invoice 78517. Its SyncToken stayed 0 and its LUT bumped.
+- Bill 68055 line 1 → `HasBeenBilled`. The bill's SyncToken was unchanged; its displayed LUT bumped, then **reverted to
+  2026-08-19** after the delete.
+- In the QBO UI both lines show the link icon and click through to the bill, the same as an invoice built in QBO
+  (Chris, screenshot). This removes the two technical reasons behind the 2026-07-03 QBO-first decision: the push does
+  clear QBO's unbilled list, and it carries the two-line cost + markup shape. **The decision itself stands until Chris
+  reopens it.**
+- Deleting the invoice (Chris, in the UI) restored everything: **RC 68056 kept its id**, un-invoiced, `LinkedTxn` gone;
+  the bill line went back to `Billable`, still linked to 68056. An invoice create/delete does not recreate the RC (editing
+  the source document does).
+
+**What the real push needs, given the dormant code:**
+- [ ] The dormant `InvoiceInvoiceConnector.sync_to_qbo_invoice` cannot produce this payload. Rewrite its line builder;
+  patching it won't get there. Current defects:
+  - hardcodes `TxnLineId="1"` (~:1499);
+  - folds cost + markup into one amount (~:1368);
+  - fuzzy `(item_ref, amount)` RC lookup (~:1350);
+  - expects an RC → source back-pointer that QBO never returns (~:1334);
+  - never sets `ServiceDate` / `MarkupInfo` / `ItemAccountRef`.
+
+  Build from the SOURCE side instead: each Bill/Purchase/VendorCredit line's
+  `LinkedTxn {TxnType: "ReimburseCharge"}` names its RC deterministically (39/39 on HA-08). **Resolve the RC live
+  immediately before the push**, never from staging, because RC ids change when the source is edited. Decide this
+  together with § "Dormant Invoice push chain: delete or keep?" (~line 3600). Needs Gate 1.
+- [ ] `integrations/intuit/qbo/report/external/client.py:16` `ALLOWED_REPORTS` lists `"UnbilledCharges"`, which QBO
+  rejects (no such report). QBO's "Unbilled Charges" report equals live un-invoiced RC lines exactly; drop the name or
+  map it to the RC query.
+
+**Collateral from the test.** All of it was removed at 11:48 CST in one transaction that asserted every row count.
+- The 11:19 invoice pull created `qbo.Invoice` 1030 (+2 lines) and **`dbo.Invoice` 1136** (+2 `SourceType='Manual'`
+  ILIs, 2 provenance rows; no Review, attachment or outbox rows).
+- The 11:13 RC sync staged RC 68056 `HasBeenInvoiced=1`.
+- The 11:28 billable refresh flipped the staged bill line to `HasBeenBilled` and **healed dbo BLI 21384 `IsBilled` 0→1**.
+  After the QBO delete nothing reversed either. This is a live instance of the U-718 reverse-flip gap (§ U-718
+  deferred): the bill's LUT reverted, so neither the pull nor the refresh would ever revisit it.
+- [ ] **There is no app path that removes a QBO-origin dbo invoice.** `DeleteInvoiceCascadeById` refuses
+  `QboId IS NOT NULL`, and the staging-delete service only raises `qbo_deleted`. Real QBO-side deletes (the DRAFT
+  phantoms, HA-01 ×6) need one: a system-caller delete gated on a live 404 for that QBO id.
+- **Process lesson:** the scheduled auto-delete failed because the laptop's IP changed (cellular) and Azure SQL refused
+  it, and the QBO token is read from that DB. Any future QBO-write test needs an undo path that doesn't depend on the
+  DB, or a human standing by in the QBO UI.
+
+**Booked as U-778 (board row; design `build.one.team/engineering/designs/u778d-invoice-push.md`).** Deferred findings
+from U-778a's reviews and the U-778d design reviews — each needs an owner before it is forgotten:
+- [ ] **(U-778a A3, latent) `QboBillLineRepository.create`/`update_by_id` bind Decimal money and quantities as `float`**
+  (`integrations/intuit/qbo/bill/persistence/repo.py` ~:484/:602). Purchase and VendorCredit keep `Decimal`. Two-decimal
+  values round-trip today; fix with the house `Decimal` rule in its own small unit.
+- [ ] **(→ U-778b) `InvoiceService._reset_source_as_unbilled` passes `bill_credit_line_item=...` to a service that takes
+  field keywords + `row_version`** (`entities/invoice/business/service.py` ~:2041 vs
+  `entities/bill_credit_line_item/business/service.py` ~:122); the caller swallows the failure, so un-billing a credit
+  silently never happens.
+- [ ] **(→ U-778b) U-718 configures VendorCredit with `heal_dbo=None`** (`billable_refresh/business/service.py` ~:203):
+  `BillCreditLineItem.IsBilled` is never healed from QBO.
+- [ ] **(every invoice, pushed or not) invoice staging commits the header + SyncToken before its lines**
+  (`integrations/intuit/qbo/invoice/business/service.py` ~:228); a line-staging failure followed by a same-token retry
+  returns early and never repairs the partial stage. Needs a named unit; a release prerequisite for U-778d's "the pull
+  mirrors it".
+- [ ] **The existing bill updater rebuilds lines without their `Id`/`LinkedTxn`**
+  (`integrations/intuit/qbo/bill/connector/bill/business/service.py` ~:844) — a bill UPDATE push would drop QBO's charge
+  links. Dormant today (bill pushes are create-only in practice); check before any bill-update path is enabled.
+- [ ] **`tests_sqlserver/` harness duplication** — `_server_host` is copied in 31 files and `_batches` in 26; lift into
+  `tests_sqlserver/_harness.py` (Pass 2 note, U-778a). While there: the localhost guard reads only `SERVER=`; reject
+  `ADDRESS=`/`ADDR=` keys too, which the ODBC driver may honour over `Server` (U-778a Pass 3 P3-3, untested belief).
+- [ ] **Stale migration hazard:** `scripts/migrations/qbo_vendorcredit_upsert_inplace.sql:32` redefines
+  `UpdateQboVendorCreditLineById` without U-778a's `@ReimburseChargeQboId`/`@SetReimburseChargeQboId`. Re-applying it after
+  the base file would make every VendorCredit line update fail loudly. Convert to a pointer stub (single-source rule).
+- [ ] **(defense in depth) the U-778a narrow writers take only `@Id`** — safe today (the only caller feeds ids from the
+  realm-scoped read); adding `@RealmId` + a header join would make it a database guarantee (U-778a Pass 3 P3-2).
+
 ## U-757a follow-ups - shared SharePoint module-folder engine (booked 2026-11-05)
 
 - **[test-infra] Goldens to a JSON fixture with a regenerate switch (U-756 + U-757).** `tests/test_u757a_sharepoint_fanout_characterization.py` (~5.6k lines) and the U-756 Box file embed pprinted golden dicts inline and say "never edit by hand", but nothing regenerates them. The drift-fix units that change these exact messages would have to hand-edit them. Move them to `tests/fixtures/u75{6,7a}_*_goldens.json` (the `_ordered` output is already JSON-shaped) and add `UPDATE_GOLDENS=1`. Keep the scenario builders and the structural tests in Python. (Pass 2 #10.)

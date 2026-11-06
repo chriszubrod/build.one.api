@@ -113,7 +113,7 @@ The builder preserved these quirks deliberately, and the U-757b goldens pin them
 
 ## U-775 follow-ups - multi-task day detector (booked 2026-11-06; verdict A FAIL)
 
-- **[product, decide]** No measured rule reaches >= 80 % exact with >= 50 % coverage (A). Best non-LLM: text OR Sonnet 76.7 % / 40.7 % (K=7). Haiku's yes/no has 96 % recall but 30 % precision (flags 61 % of days), so Verdict B's PASS is hollow. Options: stop the proposal-email line here; or ask Haiku a sharper question (name the codes, not "more than one category") before revisiting in December.
+- **[product, DECIDED 2026-11-06 -> U-776]** No measured rule reaches >= 80 % exact with >= 50 % coverage (A); Haiku's yes/no has 96 % recall but 30 % precision. Chris chose ONE last try: U-776 (December) asks Haiku a code-naming question. A U-776 FAIL ends the proposal-email line (keep today's plain ask + the U-749 picker). Shipping a lower bar was rejected (a confirmed wrong suggestion = bad coding on the books).
 - **[refactor, U-750] Parameterise `run_arm_b` with a prompt builder + parser** so U-775's ~60-line copy of the budget/error control flow goes away (budget-safety drift risk). (Pass 2 #9.)
 - **[refactor, U-751] Keep the calibration analyses on `Population`** so U-775 stops re-analysing calibration days per K and its `_setup` copy goes away. (Pass 2 #2.)
 - **[refactor, U-751] `verdict(covered=...)`** so U-775's `verdict_b` duplicate goes away. (Pass 2 #10.)

@@ -61,12 +61,18 @@ No SQL change. Tests: tests/test_u551b_expense_transactional_review_decision.py 
   by the drain read→mark, by confirm read→mark_enqueued, by completion across probe→confirm). 8 builder dispatches (2 bites + 6 rounds), Codex xhigh
   ×14 calls, twin ×8, Pass 3 ×5 (final clean), Pass 2 ×2; 62/62 mutants killed; full suite 11118 passed, 0 failed, 1 environmental skip (baseline 10698 on the trunk base); prod census read-only.
   Follow-ups, each its own unit: **U-551b-f1-f1 (P2)** the purchase pull overwrites local line coding during review (wider than this unit) ·
-  **f2 (P3)** the dormant confirm endpoint / submit path record a NULL-seq revision with no status guard — can clear an enqueued repoint's targets
-  (approval dropped, never a superseded write) · **f3 (P3)** a repoint marked `error`, or a first write that crashed between POST and mark
+  **f2 ✅ SHIPPED `3afe5eb7` 2026-11-07 (with f7; NOT DEPLOYED, image only)** — a non-repoint confirm is status-guarded (written / resolved_externally /
+  repoint-owned / enqueued refused; a first-write `confirmed` recovers on equal coding, re-records fenced on the seq on a different one; any half of a
+  written record = already_written); every cockpit refusal releases the claim it took and the 200 path is only `enqueued`; the completion probe reports
+  its own failures, walks every candidate, and tells a malformed record from a legacy/empty one. 33/33 mutants; full suite 11240/11240. **New f9 (P3,
+  Pass 2 altitude):** the status policy is spelled in three places (confirm guard / submit-loop pre-filter / route) — one shared constant or predicate
+  in model.py would stop them drifting; the loop's own reason names (`terminal_status`, `repoint_pending`, `already_enqueued`) are pinned by tests.
+  **New f10 (P3, r2 twin/Codex):** a dead-letter raised by the enqueue AFTER record_confirmation leaves the row `confirmed` at seq+1 and every later
+  confirm 409s until the dead-letter is cleared (claim now released, row unchanged — pairs with f3/f5); the route's generic `except Exception` (DB error)
+  still keeps a claim this request took. · **f3 (P3)** a repoint marked `error`, or a first write that crashed between POST and mark
   (`already_recoded` → `written` with an empty record), has no in-app recovery · **f4 (P3)** QBO outbox dead-letters raise no ReconciliationIssue ·
-  **f5 (P3)** a stranded `confirmed` with no outbox row needs a sweeper · **f6** runbook · **f7 (P3, r6b twin)** a probe exception OUTSIDE the recompute
-  (e.g. `read_by_public_id` raising) is still `None` → first-write fallthrough reported as `no_uncoded_staged_lines`, and with two `written`
-  suggestions on one expense only the first diverged candidate is repointed per completion · **f8 (P3, Pass 3 notes)** a confirm's 10 s lock wait
+  **f5 (P3)** a stranded `confirmed` with no outbox row needs a sweeper · **f6** runbook · **f7 ✅ SHIPPED with f2 (`3afe5eb7`)** — probe failures are reported skips (`repoint_probe_failed`), every diverged suggestion
+  is repointed per completion · **f8 (P3, Pass 3 notes)** a confirm's 10 s lock wait
   holds a pooled connection + a threadpool thread; a repoint whose local amount ≠ qty×rate drops the old Qty/UnitPrice (amount untouched).
   `[U-551b follow-up — shipped]`
 - [x] **U-551b-f1 (P2 — Pass 3; a prerequisite of U-572b going live) — SHIPPED `9ee5bee6` 2026-11-06, DEPLOYED 2026-11-07 22:40Z (image f38f2a22), see the block above.** Original booking: a reviewer's recode can permanently diverge from QBO: `enqueue_coding_recode_on_submit`

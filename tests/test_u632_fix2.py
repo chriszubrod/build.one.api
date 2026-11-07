@@ -116,6 +116,7 @@ def test_g4_coding_confirm_ignores_holding_on_line_being_recoded():
     svc = CodingSuggestionService()
     svc.read_by_public_id = MagicMock(
         return_value=SimpleNamespace(
+            status="pending",  # U-551b-f2: the non-repoint confirm is status-guarded
             realm_id="r1",
             qbo_purchase_id=1,
             qbo_purchase_qbo_id="p1",
@@ -165,6 +166,7 @@ def test_g4_coding_confirm_allows_recode_when_only_target_is_holding():
     svc = CodingSuggestionService()
     svc.read_by_public_id = MagicMock(
         return_value=SimpleNamespace(
+            status="pending",  # U-551b-f2: the non-repoint confirm is status-guarded
             realm_id="r1",
             qbo_purchase_id=1,
             qbo_purchase_qbo_id="p1",

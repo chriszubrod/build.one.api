@@ -209,6 +209,7 @@ def test_coding_confirm_multi_line_refuses_when_any_expense_line_is_holding():
     svc = CodingSuggestionService()
     svc.read_by_public_id = MagicMock(
         return_value=SimpleNamespace(
+            status="pending",  # U-551b-f2: the non-repoint confirm is status-guarded
             realm_id="r1",
             qbo_purchase_id=1,
             qbo_purchase_qbo_id="p1",

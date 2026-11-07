@@ -214,6 +214,7 @@ def test_expense_coding_queue_row_mapper_keys():
 def _confirm_fake_item():
     # confirm() reads realm_id, qbo_purchase_qbo_id (multi-line guard), qbo_purchase_id (sync token).
     return SimpleNamespace(
+        status="suggested",  # U-551b-f2: a non-repoint confirm is status-guarded; this is a first confirm
         realm_id="realm-1",
         qbo_purchase_id=1,
         qbo_purchase_qbo_id="purchase-1",

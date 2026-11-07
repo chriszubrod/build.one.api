@@ -236,7 +236,7 @@ def test_coding_confirm_refuses_holding_with_zero_writes(monkeypatch):
     from entities.coding_suggestion.business.service import CodingSuggestionService
 
     svc = CodingSuggestionService()
-    svc.read_by_public_id = MagicMock(return_value=SimpleNamespace(realm_id="r1", qbo_purchase_id=1))
+    svc.read_by_public_id = MagicMock(return_value=SimpleNamespace(realm_id="r1", qbo_purchase_id=1, status="pending"))  # U-551b-f2: the non-repoint confirm is status-guarded
     record = MagicMock()
     svc.record_confirmation = record
     monkeypatch.setattr(

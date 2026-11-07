@@ -13,7 +13,8 @@ External writes
   QBO recode_purchase_line on submit/complete (ALLOW_QBO_WRITES + ALLOW_EXPENSE_RECODE_WRITES); a completion whose local coding diverged from what the drain wrote enqueues a repoint of OUR lines only,
   bound to the revision (ConfirmationSeq) its probe read; confirm and the drain both run under the per-suggestion
   application lock (qbo_coding_suggestion:<id>), so a held lock reports skip_reason=busy and a failed or
-  unresolvable recompute reports a skip (never a write).
+  unresolvable recompute reports a skip (never a write); a non-repoint confirm is status-guarded (a written,
+  resolved_externally, enqueued or repoint-pending suggestion is refused with zero writes).
 Sprocs
   CountExpenses
   CreateExpense
@@ -36,6 +37,7 @@ Sprocs
   UpdateExpenseById
 """
 # Python Standard Library Imports
+import json
 import logging
 import re
 from collections import defaultdict
@@ -770,9 +772,13 @@ class ExpenseService:
             return logging.INFO
         return logging.WARNING
 
-    def _recode_skipped_result(self, *, expense_id: int, skip_reason: str, message: str) -> dict:
-        """Log a skipped recode enqueue and return the skip envelope (success, nothing enqueued)."""
-        self._log_recode_enqueue_skipped(expense_id=expense_id, skip_reason=skip_reason)
+    def _recode_skipped_result(
+        self, *, expense_id: int, skip_reason: str, message: str, log: bool = True
+    ) -> dict:
+        """Log a skipped recode enqueue (once; ``log=False`` when the caller logs) and return the skip
+        envelope (success, nothing enqueued; ``skipped`` is the bool flag)."""
+        if log:
+            self._log_recode_enqueue_skipped(expense_id=expense_id, skip_reason=skip_reason)
         return {
             "success": True,
             "message": message,
@@ -943,6 +949,8 @@ class ExpenseService:
             if confirm_status == "enqueued":
                 summary["enqueued"] += 1
                 item_result["outcome"] = "enqueued"
+                if confirm_result.get("recovered"):
+                    item_result["recovered"] = True  # a ``confirmed`` first write re-enqueued (U-551b-f2)
             elif confirm_status == "writes_disabled":
                 summary["writes_disabled"] += 1
                 item_result["outcome"] = "writes_disabled"
@@ -970,7 +978,10 @@ class ExpenseService:
 
     def _repoint_on_complete(self, *, expense_id: int, expense=None) -> Optional[dict]:
         """U-551b-f1: completion's repoint step -> the completion result envelope, or None (nothing to
-        repoint: fall through to the first-write path). Failure-isolated (a failed probe is None).
+        repoint: fall through to the first-write path). Failure-isolated: a failed probe is a REPORTED skip
+        (``skip_reason=repoint_probe_failed``), never None. EVERY candidate is probed (F7b); the result result is
+        enqueued if any candidate enqueued, else the first skip; BOTH envelopes carry ``skipped`` as a bool and
+        the per-candidate list under ``skipped_candidates`` (each logged once, at the end).
 
         Candidates: ``written``, or ``confirmed``/``enqueued`` with the repoint source (a stranded or
         in-flight repoint). For EACH candidate the probe and its confirm run under ONE hold of the
@@ -996,38 +1007,99 @@ class ExpenseService:
                 return None
             if expense is None:
                 expense = self.read_by_id(expense_id)
-            for st in candidates:
-                with coding_suggestion_lock(
-                    st["public_id"], timeout_ms=CONFIRM_SUGGESTION_LOCK_TIMEOUT_MS
-                ) as acquired:
-                    if not acquired:
-                        return self._recode_skipped_result(
-                            expense_id=expense_id, skip_reason="busy", message="Repoint not enqueued"
+            enqueued = 0
+            lines: list = []
+            skipped: list[dict] = []
+            for st in candidates:  # F7(b): EVERY candidate, each under its own lock hold
+                public_id = st["public_id"]
+                try:
+                    with coding_suggestion_lock(
+                        public_id, timeout_ms=CONFIRM_SUGGESTION_LOCK_TIMEOUT_MS
+                    ) as acquired:
+                        if not acquired:
+                            skipped.append({"public_id": public_id, "skip_reason": "busy"})
+                            continue
+                        divergence = self._repoint_revision_for_candidate(
+                            expense_id=expense_id, public_id=public_id, expense=expense, repo=repo
                         )
-                    divergence = self._repoint_revision_for_candidate(
-                        expense_id=expense_id, public_id=st["public_id"], expense=expense, repo=repo
-                    )
-                    if divergence is None:
-                        continue
-                    if divergence.get("skip_reason"):
-                        # I5: the probe could not compute the repoint - report the skip, never fall
-                        # through to the first-write path and never recover a persisted approval.
-                        return self._recode_skipped_result(
-                            expense_id=expense_id,
-                            skip_reason=divergence["skip_reason"],
-                            message="Repoint not enqueued",
+                        if divergence is None:
+                            continue
+                        if divergence.get("skip_reason"):
+                            # I5: the probe could not compute the repoint - report the skip, never fall
+                            # through to the first-write path and never recover a persisted approval.
+                            skipped.append({"public_id": public_id, "skip_reason": divergence["skip_reason"]})
+                            continue
+                        result = self._enqueue_repoint_on_complete(
+                            expense_id=expense_id, divergence=divergence, lock_held=True, log_skips=False
                         )
-                    return self._enqueue_repoint_on_complete(
-                        expense_id=expense_id, divergence=divergence, lock_held=True
+                except Exception as exc:
+                    # One candidate's failure must not hide another candidate's enqueue.
+                    logger.warning(
+                        "expense.complete.repoint_probe_failed expense_id=%s error=%s",
+                        expense_id,
+                        type(exc).__name__,
                     )
+                    skipped.append({"public_id": public_id, "skip_reason": "repoint_probe_failed"})
+                    continue
+                if result.get("skip_reason"):
+                    skipped.append({"public_id": public_id, "skip_reason": result["skip_reason"]})
+                    continue
+                enqueued += 1
+                for line in result.get("lines") or []:
+                    if line not in lines:
+                        lines.append(line)
+            for skip in skipped:  # F7: each skipped candidate is logged exactly once, here
+                self._log_recode_enqueue_skipped(expense_id=expense_id, skip_reason=skip["skip_reason"])
+            if enqueued:
+                return {
+                    "success": True,
+                    "message": "Purchase line repoint enqueued",
+                    "enqueued": enqueued,
+                    "repoint": True,
+                    "lines": lines,
+                    "errors": [],
+                    "skipped": False,  # F6: a bool in BOTH envelopes; the per-candidate list is below
+                    "skipped_candidates": skipped,
+                }
+            if skipped:
+                out = self._recode_skipped_result(
+                    expense_id=expense_id,
+                    skip_reason=skipped[0]["skip_reason"],
+                    message="Repoint not enqueued",
+                    log=False,
+                )
+                out["skipped_candidates"] = skipped
+                return out
             return None
         except Exception as exc:
+            # F7(a): a probe failure is a REPORTED skip - never None (that falls through to the first-write
+            # path and reads as "nothing to do").
             logger.warning(
                 "expense.complete.repoint_probe_failed expense_id=%s error=%s",
                 expense_id,
                 type(exc).__name__,
             )
-            return None
+            out = self._recode_skipped_result(
+                expense_id=expense_id, skip_reason="repoint_probe_failed", message="Repoint not enqueued"
+            )
+            out["public_id"] = None
+            out["skipped_candidates"] = []  # r3: the same shape as every other envelope
+            return out
+
+    @staticmethod
+    def _written_record_is_malformed(full) -> bool:
+        """True when ``WrittenLinesJson`` is present but unparseable, not a list, or a non-empty list the
+        model rejected (``written_lines`` fails closed to []). NULL / a valid ``[]`` are NOT malformed."""
+        raw = getattr(full, "written_lines_json", None)
+        if not raw:
+            return False
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError, RecursionError):  # r3 Codex P3: a pathologically nested record is malformed
+            return True
+        if not isinstance(parsed, list):
+            return True
+        return bool(parsed) and full.written_lines == []
 
     def _repoint_revision_for_candidate(
         self, *, expense_id: int, public_id: str, expense, repo
@@ -1065,6 +1137,15 @@ class ExpenseService:
         )
         if full.status != "written" and not pending:
             return None
+        if self._written_record_is_malformed(full):
+            # F3: a written record that exists but does not parse / validate (``written_lines`` fails closed
+            # to []) is "cannot judge", never "nothing diverges" - that would fall through to the first-write
+            # path. A NULL record (a legacy ``written`` row) or a VALID empty ``[]`` has nothing to repoint
+            # and keeps the fallthrough (r3: Codex - an explicit empty record is not malformed).
+            logger.warning(
+                "expense.complete.repoint_written_record_malformed expense_id=%s public_id=%s", expense_id, public_id
+            )
+            return {"public_id": public_id, "skip_reason": "repoint_written_record_malformed"}
         revision_seq = getattr(full, "confirmation_seq", None)  # bound BEFORE the lines are read
         line_items = self.expense_line_item_service.read_by_expense_id(expense_id=expense_id)
         local_by_qbo_id = {str(li.qbo_id): li for li in line_items if getattr(li, "qbo_id", None)}
@@ -1163,8 +1244,11 @@ class ExpenseService:
             "confirmed_mixed_codes": len(codings) > 1,
         }
 
-    def _enqueue_repoint_on_complete(self, *, expense_id: int, divergence: dict, lock_held: bool = False) -> dict:
+    def _enqueue_repoint_on_complete(
+        self, *, expense_id: int, divergence: dict, lock_held: bool = False, log_skips: bool = True
+    ) -> dict:
         """Confirm a repoint for a diverged suggestion with the LOCAL coding; failure-isolated.
+        ``log_skips=False``: the caller logs the skip itself (``_repoint_on_complete``, once per candidate).
 
         ``lock_held=True``: the caller holds the suggestion lock across its probe (see
         ``_repoint_on_complete``) and confirm must not take it again."""
@@ -1195,6 +1279,7 @@ class ExpenseService:
                 expense_id=expense_id,
                 skip_reason=type(exc).__name__,
                 message="Recode enqueue failed (failure-isolated)",
+                log=log_skips,
             )
         status = result.get("status")
         if status == "enqueued":
@@ -1207,7 +1292,10 @@ class ExpenseService:
                 "errors": [],
             }
         return self._recode_skipped_result(
-            expense_id=expense_id, skip_reason=str(status or "unknown"), message="Repoint not enqueued"
+            expense_id=expense_id,
+            skip_reason=str(status or "unknown"),
+            message="Repoint not enqueued",
+            log=log_skips,
         )
 
     def _enqueue_coding_recode_on_complete(

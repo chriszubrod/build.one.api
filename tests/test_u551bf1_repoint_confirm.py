@@ -115,7 +115,7 @@ def test_repoint_holding_code_on_other_line_raises():
 
 
 def test_non_repoint_still_snapshots_staging_token():
-    svc = _svc(_item(status="suggested"))
+    svc = _svc(_item(status="suggested", token=None, lines=[]))
     svc._count_uncategorized_purchase_lines = MagicMock(return_value=1)
     svc._uncategorized_staging_qbo_line_ids = MagicMock(return_value=[])
     res, _, repo = _confirm(svc, repoint=False)
@@ -160,7 +160,7 @@ def test_repoint_stores_targets_json_and_first_write_clears_them():
     svc = _svc(_item())
     _confirm(svc)
     assert json.loads(svc.record_confirmation.call_args.kwargs["repoint_targets_json"]) == TARGETS
-    svc2 = _svc(_item(status="suggested"))
+    svc2 = _svc(_item(status="suggested", token=None, lines=[]))
     svc2._count_uncategorized_purchase_lines = MagicMock(return_value=1)
     svc2._uncategorized_staging_qbo_line_ids = MagicMock(return_value=[])
     _confirm(svc2, repoint=False)
@@ -514,7 +514,7 @@ def test_repoint_passes_the_callers_seq_and_first_write_does_not_guard():
     svc = _svc(item)
     _confirm(svc)
     assert svc.record_confirmation.call_args.kwargs["expected_confirmation_seq"] == 5
-    svc2 = _svc(_item(status="suggested"))
+    svc2 = _svc(_item(status="suggested", token=None, lines=[]))
     svc2._count_uncategorized_purchase_lines = MagicMock(return_value=1)
     svc2._uncategorized_staging_qbo_line_ids = MagicMock(return_value=[])
     _confirm(svc2, repoint=False)
@@ -554,7 +554,7 @@ def test_replacement_after_a_terminal_mark_is_refused(terminal, caplog):
 
 
 def test_unrecorded_first_write_stops_before_the_enqueue():
-    svc = _svc(_item(status="suggested"))
+    svc = _svc(_item(status="suggested", token=None, lines=[]))
     svc._count_uncategorized_purchase_lines = MagicMock(return_value=1)
     svc._uncategorized_staging_qbo_line_ids = MagicMock(return_value=[])
     svc.record_confirmation.return_value = None
@@ -646,7 +646,7 @@ def test_repoint_without_expected_confirmation_seq_is_invalid_and_touches_nothin
 
 
 def test_non_repoint_confirm_needs_no_seq_and_records_unguarded():
-    svc = _svc(_item(status="suggested"))
+    svc = _svc(_item(status="suggested", token=None, lines=[]))
     svc._count_uncategorized_purchase_lines = MagicMock(return_value=1)
     svc._uncategorized_staging_qbo_line_ids = MagicMock(return_value=[])
     res, _ = _run_confirm(svc, repoint=False, repoint_targets=None, repoint_targets_token=None)

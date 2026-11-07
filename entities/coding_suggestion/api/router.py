@@ -240,6 +240,7 @@ def confirm_expense_coding_item_router(
             user_id=user_id,
         )
     except QboOutboxDeadLetterExistsError as error:
+        _release_if_claimed("Failed to release claim on coding suggestion %s after refusal.")
         raise HTTPException(status_code=409, detail=str(error)) from error
     except HoldingCodeRefused:
         _release_if_claimed("Failed to release claim on coding suggestion %s after refusal.")
@@ -250,6 +251,7 @@ def confirm_expense_coding_item_router(
 
     result_status = result.get("status")
     if result_status == "not_found":
+        _release_if_claimed("Failed to release claim on coding suggestion %s after refusal.")
         raise_not_found("Expense coding item")
     if result_status == "multi_line_unsupported":
         # A second uncategorized line appeared after the pre-check (concurrent QBO pull).
@@ -265,9 +267,21 @@ def confirm_expense_coding_item_router(
         _release_if_claimed("Failed to release claim on coding suggestion %s after refusal.")
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="coding_suggestion_busy")
     if result_status in ("invalid", "mapping_missing", "writes_disabled"):
+        _release_if_claimed("Failed to release claim on coding suggestion %s after refusal.")
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=result.get("reason", "Invalid confirmation request."),
+        )
+
+    if result_status != "enqueued":
+        # U-551b-f2: the 200 path is ONLY an enqueued confirm (incl. a ``recovered`` one). Every other
+        # status is a refusal, never a silent 200: the status guard's already_written / resolved_externally /
+        # repoint_pending / already_enqueued / already_terminal (zero writes), not_recorded, and any
+        # unmapped future status. Give back a claim taken by THIS request.
+        _release_if_claimed("Failed to release claim on coding suggestion %s after refusal.")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=result_status or "confirm_refused",
         )
 
     item = service.read_by_public_id(public_id)
@@ -276,5 +290,6 @@ def confirm_expense_coding_item_router(
 
     payload = service.to_api_dict(item)
     payload["enqueued"] = result.get("enqueued", False)
+    payload["recovered"] = bool(result.get("recovered", False))
 
     return item_response(payload)

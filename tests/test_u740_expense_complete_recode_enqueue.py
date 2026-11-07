@@ -27,6 +27,18 @@ def _mock_expense_line_items_for_enqueue_holding_gate(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _no_coding_suggestions_for_completion_probe(monkeypatch):
+    # U-551b-f2: a completion repoint probe that RAISES is now a reported skip (repoint_probe_failed), no longer
+    # the first-write fallthrough. These tests never mock the suggestion read, so the blocked DB used to
+    # fall through by accident; they pin the first-write path, so give the probe an honest empty read.
+    # Tests that patch the read themselves override this.
+    monkeypatch.setattr(
+        "entities.coding_suggestion.persistence.repo.CodingSuggestionRepository.read_state_by_expense_ids",
+        lambda self, ids: {},
+    )
+
+
 def _exp(**over):
     base = dict(
         id=55,
@@ -238,6 +250,7 @@ def test_enqueue_on_complete_real_path_confirm_uses_dominant_local_coding():
     }
     coding_item = SimpleNamespace(
         public_id=coding_state["public_id"],
+        status="suggested",  # U-551b-f2: a non-repoint confirm is status-guarded; this is a first confirm
         realm_id="realm-1",
         qbo_purchase_qbo_id="P-100",
         qbo_purchase_id=99,

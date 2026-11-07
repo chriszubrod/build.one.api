@@ -39,10 +39,10 @@ from tests.test_u498_expense_purchase_line_identity_chain import (
 PUBLIC_ID = "11111111-1111-1111-1111-111111111111"
 
 
-def _make_item(*, confirmed_project_id=202, confirmed_sub_cost_code_id=101):
+def _make_item(*, confirmed_project_id=202, confirmed_sub_cost_code_id=101, status="enqueued"):
     return SimpleNamespace(
         public_id=PUBLIC_ID,
-        status="enqueued",
+        status=status,
         qbo_purchase_qbo_id=PURCHASE_QBO_ID,
         qbo_purchase_id=999,
         realm_id=REALM_ID,
@@ -80,7 +80,7 @@ def test_confirm_refuses_multi_line_purchase_before_db_write(_ref, _gate):
     from entities.coding_suggestion.business.service import CodingSuggestionService
 
     svc = CodingSuggestionService()
-    svc.read_by_public_id = MagicMock(return_value=_make_item())
+    svc.read_by_public_id = MagicMock(return_value=_make_item(status="pending"))
     svc.record_confirmation = MagicMock()
     svc.mark_enqueued = MagicMock()
 

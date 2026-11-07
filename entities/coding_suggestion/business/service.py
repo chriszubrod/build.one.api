@@ -770,6 +770,22 @@ class CodingSuggestionService:
         DIFFERENT ones are a NEW revision (record_confirmation + enqueue). Fresh targets absent
         (nothing diverges any more) keeps the old recovery of the persisted work.
 
+        U-551b-f2 status guard (NON-repoint only, before any resolver call), by the item's status:
+        ``written`` -> ``already_written``; ``resolved_externally`` -> ``resolved_externally``;
+        ``confirmed``/``enqueued`` with the repoint source -> ``repoint_pending`` (completion owns it);
+        ``enqueued`` (first write) -> ``already_enqueued``. A ``confirmed`` first write is the crash window
+        between ``record_confirmation`` and the enqueue: if the caller's (project, sub_cost_code) EQUALS the
+        persisted coding it is a RECOVERY (never ``record_confirmation``, no seq bump: enqueue +
+        ``mark_enqueued`` fenced on the item's seq; ``None`` -> ``already_terminal``, else ``enqueued`` +
+        ``recovered``); a DIFFERENT coding is a NEW revision recorded through the normal path, but its
+        ``record_confirmation`` is fenced on the seq this confirm read (a drain or another confirm that moved
+        the row in between makes the write miss -> ``not_recorded``). A row that still HOLDS a written record
+        (``written_sync_token`` + ``written_lines``, e.g. a repoint that bounced to ``changed_in_qbo`` /
+        ``error``) is never a first-write target -> ``already_written``. pending / suggested / flagged
+        and a recordless changed_in_qbo / error are unchanged (a first confirm or a re-review). Every refusal
+        is zero-write EXCEPT ``already_terminal``, which is returned AFTER the recovery enqueue (the enqueue
+        coalesces into the pending row and the drain honours the fenced mark, so it is harmless).
+
         ``allow_multi_line`` is set ONLY by the review-submit path, where every
         uncategorized line carries its own ExpenseLineItem coding and the worker writes
         each line with it. The confirm endpoint leaves it False: one document-level code
@@ -821,6 +837,62 @@ class CodingSuggestionService:
                 return {"status": "busy"}
             return self._confirm_under_lock(**kwargs)
 
+    def _enqueue_recode_and_mark(self, public_id: str, realm_id, expected_confirmation_seq) -> bool:
+        """Recovery tail shared by the first-write and repoint branches: enqueue the recode, then mark the
+        suggestion enqueued fenced on ``expected_confirmation_seq``. ``False`` = the mark was fenced out."""
+        from integrations.intuit.qbo.outbox.business.service import QboOutboxService
+
+        QboOutboxService().enqueue(
+            kind="recode_purchase_line",
+            entity_type="CodingSuggestion",
+            entity_public_id=public_id,
+            realm_id=realm_id,
+        )
+        return self.mark_enqueued(public_id, expected_confirmation_seq=expected_confirmation_seq) is not None
+
+    def _non_repoint_status_guard(
+        self, item: CodingSuggestion, public_id: str, project_id, sub_cost_code_id
+    ) -> Optional[dict]:
+        """U-551b-f2 status guard for a non-repoint confirm; ``None`` = proceed (pending / suggested /
+        flagged / a recordless changed_in_qbo / error, or a ``confirmed`` first write whose caller supplies a
+        DIFFERENT coding: ``_confirm_under_lock`` then records a new revision fenced on this item's seq).
+
+        ``confirmed`` first write = crash window between record_confirmation and enqueue. Caller's
+        ``(project_id, sub_cost_code_id)`` EQUAL to the persisted coding -> RECOVERY (no record_confirmation,
+        no seq bump; enqueue + mark fenced on the seq; a fenced-out mark -> ``already_terminal`` AFTER the
+        enqueue, harmless: the enqueue coalesces and the drain honours the fenced mark). DIFFERENT -> ``None``.
+        A row that still holds ANY half of a written record is ``already_written`` - checked BEFORE the
+        first-write recovery (only a completion repoint changes a line we wrote).
+        Every other refusal is zero-write."""
+        status = item.status
+        if status == "written":
+            return {"status": "already_written"}
+        if status == "resolved_externally":
+            return {"status": "resolved_externally"}
+        if status in ("confirmed", "enqueued") and (
+            getattr(item, "confirmation_source", None) == REPOINT_CONFIRMATION_SOURCE
+        ):
+            return {"status": "repoint_pending"}  # completion owns a repoint; this caller must not touch it
+        if getattr(item, "written_sync_token", None) or getattr(item, "written_lines", None):
+            # F5 (r3: BEFORE the first-write recovery, and EITHER half of the record counts): a row our drain
+            # has written is never a first-write target again - a first write never sets the token, and
+            # MarkCodingSuggestionWritten CASE-preserves it, so the token alone proves our write landed.
+            return {"status": "already_written"}
+        if status in ("confirmed", "enqueued"):
+            if status == "enqueued":
+                return {"status": "already_enqueued"}
+            same_coding = (project_id, sub_cost_code_id) == (
+                getattr(item, "confirmed_project_id", None),
+                getattr(item, "confirmed_sub_cost_code_id", None),
+            )
+            if same_coding:
+                if not self._enqueue_recode_and_mark(
+                    public_id, item.realm_id, getattr(item, "confirmation_seq", None)
+                ):
+                    return {"status": "already_terminal"}
+                return {"status": "enqueued", "enqueued": True, "recovered": True}
+        return None
+
     def _confirm_under_lock(
         self,
         *,
@@ -841,6 +913,14 @@ class CodingSuggestionService:
         item = self.read_by_public_id(public_id)
         if item is None:
             return {"status": "not_found"}
+
+        if not repoint:
+            # U-551b-f2: a NON-repoint confirm is only a first confirm / re-review / recovery. Any other
+            # status is refused with ZERO writes and BEFORE any resolver call (a confirm on a ``written``
+            # suggestion would record seq+1, find no placeholder line and drive the suggestion to ``error``).
+            guard = self._non_repoint_status_guard(item, public_id, project_id, sub_cost_code_id)
+            if guard is not None:
+                return guard
 
         if repoint and getattr(item, "confirmation_seq", None) != expected_confirmation_seq:
             # I1: the approval belongs to the revision the probe read; this item has moved on.
@@ -892,16 +972,7 @@ class CodingSuggestionService:
                 elif item.status == "enqueued":
                     return {"status": "already_enqueued"}
                 else:
-                    from integrations.intuit.qbo.outbox.business.service import QboOutboxService
-
-                    QboOutboxService().enqueue(
-                        kind="recode_purchase_line",
-                        entity_type="CodingSuggestion",
-                        entity_public_id=public_id,
-                        realm_id=item.realm_id,
-                    )
-                    marked = self.mark_enqueued(public_id, expected_confirmation_seq=expected_confirmation_seq)
-                    if marked is None:
+                    if not self._enqueue_recode_and_mark(public_id, item.realm_id, expected_confirmation_seq):
                         return {"status": "already_terminal"}
                     return {"status": "enqueued", "enqueued": True, "recovered": True}
             elif item.status != "written":
@@ -1014,7 +1085,13 @@ class CodingSuggestionService:
             ),
             repoint_targets_json=repoint_targets_json,
             # R4b-1 / I1: the repoint write lands only on the revision the CALLER's probe read (a lost race = no row).
-            expected_confirmation_seq=expected_confirmation_seq if repoint else None,
+            # F2: a ``confirmed`` first write re-recorded with a DIFFERENT coding is fenced on the seq read
+            # above, so a drain / other confirm that moved the row in between makes the write miss.
+            expected_confirmation_seq=(
+                expected_confirmation_seq
+                if repoint
+                else getattr(item, "confirmation_seq", None) if item.status == "confirmed" else None
+            ),
         )
         if recorded is None:
             if repoint:

@@ -31,7 +31,7 @@ def test_confirm_from_submit_enqueues_multi_line_purchase(_ref, _gate):
     from entities.coding_suggestion.business.service import CodingSuggestionService
 
     svc = CodingSuggestionService()
-    svc.read_by_public_id = MagicMock(return_value=_make_item())
+    svc.read_by_public_id = MagicMock(return_value=_make_item(status="pending"))
     svc.record_confirmation = MagicMock()
     svc.mark_enqueued = MagicMock()
     with patch.object(CodingSuggestionService, "_count_uncategorized_purchase_lines", return_value=2), \
@@ -52,7 +52,7 @@ def test_confirm_default_still_refuses_multi_line(_ref, _gate):
     from entities.coding_suggestion.business.service import CodingSuggestionService
 
     svc = CodingSuggestionService()
-    svc.read_by_public_id = MagicMock(return_value=_make_item())
+    svc.read_by_public_id = MagicMock(return_value=_make_item(status="pending"))
     svc.record_confirmation = MagicMock()
     with patch.object(CodingSuggestionService, "_count_uncategorized_purchase_lines", return_value=2):
         result = svc.confirm(
@@ -263,7 +263,7 @@ def test_confirm_records_its_confirmation_source(_ref, _gate, allow_multi_line, 
     from entities.coding_suggestion.business.service import CodingSuggestionService
 
     svc = CodingSuggestionService()
-    svc.read_by_public_id = MagicMock(return_value=_make_item())
+    svc.read_by_public_id = MagicMock(return_value=_make_item(status="pending"))
     svc.record_confirmation = MagicMock()
     svc.mark_enqueued = MagicMock()
     with patch.object(CodingSuggestionService, "_count_uncategorized_purchase_lines", return_value=1), \

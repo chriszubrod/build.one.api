@@ -1690,11 +1690,10 @@ class ExpenseService:
             # failure-isolated: never affects the completion result.
             self._enqueue_box_excel(expense=expense, project_id=project_id)
 
-        # Step 3b: Upload to general receipts folder (520 - Current Receipts / yyyy / mm)
-        receipts_upload_result = self._upload_to_general_receipts_folder(
-            expense=expense,
-            line_items=line_items,
-        )
+        # Step 3b: Queue the general receipts folder copy (520 - Current Receipts / yyyy / mm).
+        # U-777a: enqueued, not run inline — the Graph folder navigation happens at
+        # drain (`expense_receipts_copy`), where a Graph outage retries.
+        receipts_upload_result = self._enqueue_receipts_copy(expense)
         if receipts_upload_result.get("errors"):
             all_errors.extend(receipts_upload_result["errors"])
 
@@ -2294,6 +2293,28 @@ class ExpenseService:
             return item["item_id"]
         logger.error(f"Could not create subfolder '{folder_name}': {result.get('message')}")
         return None
+
+    def _enqueue_receipts_copy(self, expense) -> dict:
+        """Enqueue the `expense_receipts_copy` outbox row (U-777a). Never raises.
+
+        Result keeps the old step-3b shape (`success`, `errors`): a refused enqueue
+        (ALLOW_MS_WRITES off / no tenant) or an exception becomes an error entry
+        so `complete_expense` still reports 207, as for the other refused enqueues.
+        """
+        from shared.completion.sharepoint_fanout import REFUSED_ERROR_PLAIN
+
+        try:
+            from integrations.ms.outbox.business.service import MsOutboxService
+
+            queued = MsOutboxService().enqueue_expense_receipts_copy(
+                expense_public_id=str(expense.public_id),
+            )
+        except Exception as e:
+            logger.error(f"Error enqueueing receipts copy for expense {expense.public_id}: {e}")
+            return {"success": False, "queued": False, "errors": [{"error": str(e)}]}
+        if queued is None:
+            return {"success": False, "queued": False, "errors": [{"error": REFUSED_ERROR_PLAIN}]}
+        return {"success": True, "queued": True, "errors": []}
 
     def _upload_to_general_receipts_folder(self, expense, line_items: List) -> dict:
         """

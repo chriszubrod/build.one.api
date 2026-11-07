@@ -556,7 +556,7 @@ def test_complete_expense_finalises_a_FRACTIONAL_quantity_line_without_error():
     eli_svc = MagicMock()
     eli_svc.read_by_expense_id.return_value = [line]
     svc._expense_line_item_service = eli_svc
-    svc._upload_to_general_receipts_folder = MagicMock(return_value={"errors": []})
+    svc._enqueue_receipts_copy = MagicMock(return_value={"success": True, "queued": True, "errors": []})
     svc._enqueue_box_uploads = MagicMock()
 
     result = svc.complete_expense("expense-55")

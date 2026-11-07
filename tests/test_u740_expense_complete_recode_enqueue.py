@@ -55,7 +55,7 @@ def _complete_svc(*, finalize_returns=...):
     svc.vendor_service.read_by_id.return_value = SimpleNamespace(public_id="vendor-pub-1")
     svc._expense_line_item_service = MagicMock()
     svc._expense_line_item_service.read_by_expense_id.return_value = []
-    svc._upload_to_general_receipts_folder = MagicMock(return_value={"errors": []})
+    svc._enqueue_receipts_copy = MagicMock(return_value={"success": True, "queued": True, "errors": []})
     svc._enqueue_box_uploads = MagicMock()
     svc._enqueue_box_excel = MagicMock()
     svc.sync_to_excel_workbook = MagicMock(return_value={"errors": []})

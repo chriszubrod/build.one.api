@@ -13,17 +13,21 @@ snapshot for all expenses on that project) plus
 methods then enqueue the `insert_excel_row` / `append_excel_row` /
 `upload_sharepoint_file` rows that actually write to Graph.
 
-**Since U-777 (2026-11-06)** the same handler also runs
-`ExpenseService._upload_to_general_receipts_folder` (the `520 - Current
-Receipts/yyyy/mm` copy) for each expense whose status is exactly `completed`,
-in the row of the expense's **lowest** project only (lines with no project are
-ignored for that choice; an expense with no project on any line gets no row and
-no receipts copy — booked). Drafts are skipped: their completion runs the step.
-A receipts failure — `errors`, an exception, or `success: false` with an empty
-`errors` list (no date, 520 not found, yyyy/mm get-or-create failed) — is a
-retryable `receipts:failed expense_public_id=…` error on the row; the reason is
-in the `ms.outbox.expense_pull_fanout.receipts_failed` log's `result_message`.
-A holding-code expense logs `receipts_deferred_holding` and is not an error.
+**Since U-777a** the `520 - Current Receipts/yyyy/mm` copy is its own outbox kind,
+`expense_receipts_copy` (EntityType `Expense`, empty payload, **one coalesced row
+per expense**), no longer part of this handler (U-777 had put it in the lowest
+project's row, which missed project-less expenses and starved when that row
+failed). The pull enqueues one per `completed` expense it touched, projects or
+not; `complete_expense` step 3b enqueues one too instead of running the Graph
+folder navigation inline. The handler re-reads the expense and ALL its lines at
+drain and calls `ExpenseService._upload_to_general_receipts_folder`: a missing or
+non-`completed` expense is logged and done; a holding-code expense logs
+`deferred_holding` (not an error); `errors`, an exception, or `success: false`
+with an empty `errors` list (no date, 520 not found, yyyy/mm get-or-create
+failed) is a retryable `receipts:failed expense_public_id=...` error, with the
+reason in the `ms.outbox.expense_receipts_copy.failed` / `.exception` log
+(`result_message` / `error_message`). The pull result carries
+`receipts_copy_enqueued/refused/failed`.
 The tick also fans out every **completed** expense whose UNCHANGED purchase had
 attachables in this tick's snapshot (late-attached receipts), merged into the
 same per-project rows, including on an empty tick; it is re-read after linking
@@ -151,6 +155,6 @@ the margin before it first lands would miss that receipt — booked (stage `Crea
   `sharepoint_uploads` counts for the project.
 - Column Z of the tracker DETAILS tab carries each line's public_id.
 - The module folder holds `EXP - … .pdf` for the expense.
-- For a completed expense: the lowest-project row's log line carries
-  `receipts_uploads` / `receipts_skipped`, and `520 - Current Receipts/<yyyy>/<mm>`
+- For a completed expense: the `ms.outbox.expense_receipts_copy.completed` log line
+  carries `receipts_uploads` / `receipts_skipped`, and `520 - Current Receipts/<yyyy>/<mm>`
   holds the same `EXP - … ` file.

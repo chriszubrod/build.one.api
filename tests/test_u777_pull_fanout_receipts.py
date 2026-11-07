@@ -1,6 +1,7 @@
 """
-U-777 — QBO-pull fan-out copies receipts to `520 - Current Receipts`, and a
-late-attached receipt gets a fan-out. Pure mocks: no DB, Graph or QBO.
+U-777 — a late-attached receipt gets a fan-out. (U-777a moved the
+`520 - Current Receipts` copy out of the fan-out handler into its own kind; see
+test_u777a_receipts_copy.py.) Pure mocks: no DB, Graph or QBO.
 """
 import json
 import logging
@@ -18,7 +19,6 @@ from integrations.ms.outbox.business.worker import MsOutboxWorker
 REALM_ID = "realm-test"
 OK_EXCEL = {"success": True, "synced_count": 1, "errors": []}
 OK_SP = {"success": True, "synced_count": 1, "skipped_count": 0, "errors": []}
-OK_RECEIPTS = {"success": True, "synced_count": 1, "skipped_count": 0, "errors": [], "deferred_holding": False}
 
 
 def _expense(eid, status="completed"):
@@ -38,116 +38,28 @@ def _row(payload):
     )
 
 
-def _run_handler(*, project_id, expenses, lines, receipts_side_effect=None, receipts_result=OK_RECEIPTS):
+_DEFAULT_ENQUEUE = object()
+
+
+def _run_handler(*, project_id, expenses, lines, receipts_enqueue=_DEFAULT_ENQUEUE):
     svc = MagicMock()
     by_pub = {e.public_id: e for e in expenses}
     svc.read_by_public_id.side_effect = lambda public_id: by_pub.get(public_id)
     svc.sync_expenses_batch_to_excel.return_value = OK_EXCEL
     svc._upload_attachments_to_module_folder.return_value = OK_SP
-    if receipts_side_effect is not None:
-        svc._upload_to_general_receipts_folder.side_effect = receipts_side_effect
-    else:
-        svc._upload_to_general_receipts_folder.return_value = receipts_result
     eli = MagicMock()
     eli.read_by_expense_id.side_effect = lambda expense_id: lines.get(expense_id, [])
     payload = {"project_id": project_id, "expense_public_ids": [e.public_id for e in expenses]}
+    outbox = MagicMock()
+    if receipts_enqueue is not _DEFAULT_ENQUEUE:
+        outbox.enqueue_expense_receipts_copy.side_effect = receipts_enqueue
+    _run_handler.last = svc  # survives a raising handler
+    svc.outbox = outbox  # U-777a: the handler enqueues a receipts copy per completed expense
     with patch("entities.expense.business.service.ExpenseService", return_value=svc), patch(
         "entities.expense_line_item.business.service.ExpenseLineItemService", return_value=eli
-    ):
+    ), patch("integrations.ms.outbox.business.service.MsOutboxService", return_value=outbox):
         MsOutboxWorker(repo=MagicMock())._handle_expense_pull_fanout(_row(payload), payload)
     return svc
-
-
-def test_completed_single_project_expense_gets_receipts_with_full_line_set():
-    e = _expense(1)
-    ls = [_line(10), _line(10)]
-    svc = _run_handler(project_id=10, expenses=[e], lines={1: ls})
-    svc._upload_to_general_receipts_folder.assert_called_once_with(expense=e, line_items=ls)
-
-
-@pytest.mark.parametrize("status", ["draft", "in_review", "submitted", "approved", "declined", None])
-def test_non_completed_expense_skips_receipts_but_keeps_excel_and_module_folder(status):
-    e = _expense(1, status=status)
-    svc = _run_handler(project_id=10, expenses=[e], lines={1: [_line(10)]})
-    svc._upload_to_general_receipts_folder.assert_not_called()
-    svc.sync_expenses_batch_to_excel.assert_called_once()
-    svc._upload_attachments_to_module_folder.assert_called_once()
-
-
-def test_multi_project_expense_runs_receipts_only_from_lowest_project_row():
-    e = _expense(1)
-    ls = [_line(20), _line(10), _line(None)]
-    low = _run_handler(project_id=10, expenses=[e], lines={1: ls})
-    high = _run_handler(project_id=20, expenses=[e], lines={1: ls})
-    low._upload_to_general_receipts_folder.assert_called_once_with(expense=e, line_items=ls)
-    high._upload_to_general_receipts_folder.assert_not_called()
-
-
-def test_null_project_lines_are_ignored_when_picking_lowest():
-    e = _expense(1)
-    ls = [_line(None), _line(20)]
-    svc = _run_handler(project_id=20, expenses=[e], lines={1: ls})
-    svc._upload_to_general_receipts_folder.assert_called_once()
-
-
-def test_receipts_errors_raise_labeled_and_other_expenses_still_run():
-    e1, e2 = _expense(1), _expense(2)
-    results = {
-        "exp-pub-1": {"success": False, "synced_count": 0, "skipped_count": 0, "errors": [{"error": "boom"}]},
-        "exp-pub-2": OK_RECEIPTS,
-    }
-    calls = []
-
-    def _side(expense, line_items):
-        calls.append(expense.public_id)
-        return results[expense.public_id]
-
-    with pytest.raises(MsServerError, match="receipts:failed expense_public_id=exp-pub-1") as ei:
-        _run_handler(
-            project_id=10, expenses=[e1, e2],
-            lines={1: [_line(10)], 2: [_line(10)]}, receipts_side_effect=_side,
-        )
-    assert calls == ["exp-pub-1", "exp-pub-2"]
-    assert ei.value.is_retryable is True
-
-
-def test_receipts_failure_with_empty_errors_is_retryable():
-    bad = {"success": False, "message": "Could not navigate to '520 - Current Receipts' folder",
-           "synced_count": 0, "skipped_count": 0, "errors": []}
-    with pytest.raises(MsServerError, match="receipts:failed expense_public_id=exp-pub-1") as ei:
-        _run_handler(project_id=10, expenses=[_expense(1)], lines={1: [_line(10)]}, receipts_result=bad)
-    assert ei.value.is_retryable is True
-
-
-def test_receipts_exception_is_retryable_and_isolated():
-    e1, e2 = _expense(1), _expense(2)
-    seen = []
-
-    def _side(expense, line_items):
-        seen.append(expense.public_id)
-        if expense.public_id == "exp-pub-1":
-            raise RuntimeError("graph down")
-        return OK_RECEIPTS
-
-    with pytest.raises(MsServerError, match="receipts"):
-        _run_handler(project_id=10, expenses=[e1, e2],
-                     lines={1: [_line(10)], 2: [_line(10)]}, receipts_side_effect=_side)
-    assert seen == ["exp-pub-1", "exp-pub-2"]
-
-
-def test_deferred_holding_is_not_an_error():
-    deferred = {"success": True, "synced_count": 0, "skipped_count": 0, "errors": [], "deferred_holding": True}
-    svc = _run_handler(project_id=10, expenses=[_expense(1)], lines={1: [_line(10)]}, receipts_result=deferred)
-    svc._upload_to_general_receipts_folder.assert_called_once()
-
-
-def test_completed_log_carries_receipts_counts(caplog):
-    res = {"success": True, "synced_count": 3, "skipped_count": 2, "errors": [], "deferred_holding": False}
-    with caplog.at_level(logging.INFO):
-        _run_handler(project_id=10, expenses=[_expense(1)], lines={1: [_line(10)]}, receipts_result=res)
-    rec = next(r for r in caplog.records if r.getMessage() == "ms.outbox.expense_pull_fanout.completed")
-    assert rec.receipts_uploads == 3
-    assert rec.receipts_skipped == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -158,7 +70,9 @@ object_default = object()
 
 
 def _run_tick(*, changed=(), late_linked=None, link_returns=1, lines_by_expense=None,
-              outbox_result=object_default, reread=None, box=False, capture=None):
+              outbox_result=object_default, reread=None, box=False, capture=None,
+              receipts_result=object_default, receipts_side_effect=None, identity_fail_on_second=None, project_missing=False,
+              identity_none_on_second=False, fanout_side_effect=None):
     """changed: list of (qbo_id, expense) the main loop projects. late_linked: dict qbo_id -> expense
     for UNCHANGED purchases with a new attachable."""
     from scripts.sync_qbo_purchase import sync_qbo_to_local
@@ -178,27 +92,40 @@ def _run_tick(*, changed=(), late_linked=None, link_returns=1, lines_by_expense=
     attachable.sync_attachables_for_purchase.return_value = [MagicMock()]
 
     exp_svc = MagicMock()
+    projected_by_qbo = dict(changed)
     reads: dict = {}
 
     def _read_identity(qbo_id, realm):
         # `reread`: qbo_id -> expense returned from the SECOND read of that purchase (post-link).
         reads[qbo_id] = reads.get(qbo_id, 0) + 1
+        if identity_fail_on_second is not None and reads[qbo_id] >= 2:
+            identity_fail_on_second()
+        if identity_none_on_second and reads[qbo_id] >= 2:
+            return None
         if reread and qbo_id in reread and reads[qbo_id] >= 2:
             return reread[qbo_id]
+        if reads[qbo_id] >= 2 and qbo_id in projected_by_qbo:
+            return projected_by_qbo[qbo_id]  # post-link re-read of a changed purchase succeeds by default
         return late_linked.get(qbo_id)
 
     exp_svc.read_by_qbo_identity.side_effect = _read_identity
     eli = MagicMock()
     eli.read_by_expense_id.side_effect = lambda expense_id: lines_by_expense.get(expense_id, [])
     proj = MagicMock()
-    proj.read_by_id.side_effect = lambda pid: SimpleNamespace(id=pid, public_id=f"proj-pub-{pid}")
+    proj.read_by_id.side_effect = lambda pid: None if project_missing else SimpleNamespace(id=pid, public_id=f"proj-pub-{pid}")
     outbox = MagicMock()
     outbox.enqueue_expense_pull_fanout.return_value = MagicMock() if outbox_result is object_default else outbox_result
+    if fanout_side_effect is not None:
+        outbox.enqueue_expense_pull_fanout.side_effect = fanout_side_effect
+    if receipts_side_effect is not None:
+        outbox.enqueue_expense_receipts_copy.side_effect = receipts_side_effect
+    elif receipts_result is not object_default:
+        outbox.enqueue_expense_receipts_copy.return_value = receipts_result
     box_outbox, box_wb = MagicMock(), MagicMock()
     box_wb.read_by_project_id.return_value = {"box_file_id": "bf", "worksheet_name": "DETAILS"}
     box_outbox.enqueue_box_excel_batch.return_value = True
     if capture is not None:
-        capture.update(exp_svc=exp_svc, box_outbox=box_outbox)
+        capture.update(exp_svc=exp_svc, box_outbox=box_outbox, outcome=outcome)
 
     with patch("integrations.box.outbox.business.service.BoxOutboxService", return_value=box_outbox), patch(
         "integrations.box.excel.business.mapping_service.BoxProjectWorkbookService", return_value=box_wb

@@ -221,6 +221,8 @@ def test_completion_forwards_the_exemption_to_its_OWN_line_finalize():
     svc.project_service = MagicMock()
     svc._expense_line_item_service = MagicMock()
     svc._expense_line_item_service.read_by_expense_id.return_value = [_eli()]
+    # U-777a step 3b enqueues (tenant lookup = DB); keep this test pure-mock.
+    svc._enqueue_receipts_copy = MagicMock(return_value={"success": True, "queued": True, "errors": []})
 
     try:
         svc.complete_expense(public_id="exp-1")

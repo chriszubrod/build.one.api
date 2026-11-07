@@ -36,6 +36,12 @@ KIND_UPDATE_DRAFT = "update_draft"  # U-549 Phase C1
 # the same two service methods the tick used, so a Graph outage retries instead
 # of being swallowed to a WARN.
 KIND_EXPENSE_PULL_FANOUT = "expense_pull_fanout"
+# U-777a: the "520 - Current Receipts / yyyy / mm" copy of a COMPLETED expense's
+# attachments, as its own per-EXPENSE row. It used to ride inside the
+# expense_pull_fanout row of the expense's lowest project (U-777), which left
+# project-less expenses with no copy and let one refused project row starve it.
+# Also replaces the inline Graph folder navigation in complete_expense step 3b.
+KIND_EXPENSE_RECEIPTS_COPY = "expense_receipts_copy"
 
 # Kinds that WRITE Excel (directly or via a child row). A dead-letter of any of
 # these is `critical` in reconciliation (failed Excel writes must be followed up).
@@ -130,7 +136,13 @@ class SharePointUploadTally:
 # `_find_coalescible` below does the per-attachment discrimination.
 _COALESCING_KINDS: Set[str] = {
     KIND_UPLOAD_SHAREPOINT_FILE,
+    KIND_EXPENSE_RECEIPTS_COPY,
 }
+
+# Kinds whose identity IS (EntityType, EntityPublicId, Kind): the payload carries
+# nothing that distinguishes two rows, and the handler re-reads the entity at
+# drain, so a second enqueue while one is pending is redundant by construction.
+_ENTITY_KEYED_COALESCING_KINDS: Set[str] = {KIND_EXPENSE_RECEIPTS_COPY}
 
 # Fields that identify WHERE/WHAT a SharePoint upload writes. Two enqueues that
 # agree on every one of these are the same physical upload.
@@ -346,6 +358,9 @@ class MsOutboxService:
         Find a pending/failed row for the same (entity_type, entity_public_id,
         kind) that represents the SAME physical upload — mirroring
         `integrations/box/outbox/business/service.py::_find_coalescible`.
+        Kinds in `_ENTITY_KEYED_COALESCING_KINDS` (U-777a `expense_receipts_copy`)
+        have no per-upload identity: the newest pending/failed row for the
+        entity is returned as-is.
 
         Coalescing is DESTRUCTIVE: only the winning row's payload ever drains,
         so a false match silently loses a document while a false miss costs one
@@ -375,6 +390,10 @@ class MsOutboxService:
             entity_public_id=entity_public_id,
             kind=kind,
         )
+        if kind in _ENTITY_KEYED_COALESCING_KINDS:
+            # Newest pending/failed row for the entity; no attachment/target
+            # discrimination applies (see _ENTITY_KEYED_COALESCING_KINDS).
+            return next((c for c in candidates or [] if c), None)
         attachment_id = payload.get("attachment_id")
         for candidate in candidates or []:
             if not candidate or not candidate.payload:
@@ -704,6 +723,26 @@ class MsOutboxService:
                 "project_id": int(project_id),
                 "expense_public_ids": [str(e) for e in expense_public_ids],
             },
+        )
+
+    def enqueue_expense_receipts_copy(self, *, expense_public_id: str) -> Optional[MsOutbox]:
+        """
+        Enqueue the general-receipts-folder copy (520 - Current Receipts / yyyy / mm)
+        for one expense. Coalesces: at most one pending row per expense, so a
+        pull re-run or a completion racing the pull does not stack rows. The
+        expense is re-read at drain; nothing is carried in the payload.
+        Returns None when refused (ALLOW_MS_WRITES off / no tenant).
+        """
+        tenant_id = _resolve_tenant_id()
+        if not tenant_id:
+            logger.error("ms.outbox.enqueue_expense_receipts_copy.no_tenant_id")
+            return None
+        return self.enqueue(
+            kind=KIND_EXPENSE_RECEIPTS_COPY,
+            entity_type="Expense",
+            entity_public_id=str(expense_public_id),
+            tenant_id=tenant_id,
+            payload={},
         )
 
     def enqueue_sharepoint_upload(

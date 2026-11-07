@@ -218,6 +218,7 @@ def _link_attachables_for_unchanged_purchases(
     attachable_service: QboAttachableService,
     expense_service: ExpenseService,
     changed_qbo_ids: set,
+    purchase_qbo_by_expense_id: Optional[dict] = None,
 ) -> tuple[int, list]:
     """
     Sync + link attachables whose parent Purchase did NOT change this tick.
@@ -293,7 +294,42 @@ def _link_attachables_for_unchanged_purchases(
                     extra={"error_type": "NotFound"},
                 )
         newly_linked.append((reread or expense, expense_id))
+        if purchase_qbo_by_expense_id is not None:
+            purchase_qbo_by_expense_id[expense_id] = qbo_id
     return linked_total, newly_linked
+
+
+def _hold_watermark_for_unretryable_receipts(
+    outcome, pairs: list, purchase_qbo_by_expense_id: Optional[dict] = None,
+) -> None:
+    """Hold the watermark past expenses whose receipts copy has no persisted retry owner.
+
+    `pairs` = (expense, expense_id). `SyncOutcome.record_projection_failure`
+    appends to `projection_failed_ids`, so `should_hold` is True and
+    `WatermarkRun.commit` holds the watermark (bounded by
+    QBO_WATERMARK_HOLD_BOUND_SECONDS, then force-advanced with a critical
+    ReconciliationIssue per id, recorded at face value). The hold replays the
+    TIMESTAMP window; the id list only decides hold-vs-advance and labels the
+    issue, so a non-purchase token still holds. Called directly rather than via
+    `record_projection_error`, whose ValueError->skip rule must never apply here.
+
+    The recorded id is the SOURCE PURCHASE's QBO id (never an expense public id):
+    the explicit map first, then `expense.qbo_id`, else a namespaced token.
+    """
+    purchase_qbo_by_expense_id = purchase_qbo_by_expense_id or {}
+    for expense, expense_id in pairs:
+        qbo_id = purchase_qbo_by_expense_id.get(expense_id) or getattr(expense, "qbo_id", None)
+        if not qbo_id:
+            qbo_id = f"expense:{expense_id}"
+            logger.warning(
+                "qbo.purchase.receipts_hold_without_purchase_id",
+                extra={"expense_id": expense_id},
+            )
+        if str(qbo_id) in outcome.projection_failed_ids:
+            continue
+        outcome.record_projection_failure(
+            qbo_id, "receipts copy has no persisted retry owner (enqueue refused/failed)",
+        )
 
 
 def _enqueue_ms_fanout(
@@ -301,25 +337,35 @@ def _enqueue_ms_fanout(
     fanout_expenses: list,
     expense_line_item_service,
     lines_by_expense_id: dict,
+    unretryable_receipts: Optional[list] = None,
 ) -> tuple[dict, dict]:
     """
     Enqueue the MS fan-out (Excel DETAILS rows + SharePoint module folder + the
     520 receipts copy, all run at drain) for `fanout_expenses`
     ((expense, expense_id) pairs, deduped by expense id here): one
-    `expense_pull_fanout` row per project. Returns `(counts, project_expense_map)`;
-    the map ({project_id: [(expense, [lines for that project])]}) feeds the Box
+    `expense_pull_fanout` row per project, plus one `expense_receipts_copy` row per
+    COMPLETED expense (projects or not). Returns `(counts, project_expense_map)`;
+    `unretryable_receipts`, when given, collects (expense, expense_id) of every completed expense
+    whose receipts-copy enqueue was refused/raised AND that no successfully enqueued
+    fan-out row covers (the caller holds the watermark for those). The map ({project_id: [(expense, [lines for that project])]}) feeds the Box
     block. Shared by the normal path and the empty-tick late-attach path (U-777).
     """
-    counts = {"enqueued": 0, "refused": 0, "failed": 0}
+    counts = {
+        "enqueued": 0, "refused": 0, "failed": 0,
+        "receipts_copy_enqueued": 0, "receipts_copy_refused": 0, "receipts_copy_failed": 0,
+    }
+    covered_expense_ids = set()  # expenses owned by a SUCCESSFULLY enqueued fan-out row
     project_expense_map = {}  # project_id -> [(expense, [line_items_for_this_project])]
     if not fanout_expenses:
         return counts, project_expense_map
 
     seen_expense_ids = set()
+    receipts_candidates = []  # deduped (expense, expense_id), for the per-expense receipts copy
     for expense, expense_id in fanout_expenses:
         if expense_id in seen_expense_ids:
             continue
         seen_expense_ids.add(expense_id)
+        receipts_candidates.append((expense, expense_id))
         try:
             eli_list = lines_by_expense_id.get(expense_id)
             if eli_list is None:
@@ -371,6 +417,7 @@ def _enqueue_ms_fanout(
                 counts["refused"] += 1
             else:
                 counts["enqueued"] += 1
+                covered_expense_ids.update(_expense_pk(e) for e, _ in expense_line_pairs)
         except Exception as fan_e:
             logger.warning(
                 "Could not enqueue MS fan-out for project %s: %s",
@@ -378,6 +425,36 @@ def _enqueue_ms_fanout(
                 type(fan_e).__name__,
             )
             counts["failed"] += 1
+
+    # U-777a: the 520 receipts copy is its own per-EXPENSE row (coalesced), so it
+    # also covers completed expenses whose lines carry no project, and does not
+    # depend on any project's fan-out row succeeding. Failure-isolated per expense.
+    for expense, expense_id in receipts_candidates:
+        if getattr(expense, "status", None) != "completed":
+            continue
+        ok = False
+        try:
+            queued = ms_outbox.enqueue_expense_receipts_copy(
+                expense_public_id=str(expense.public_id),
+            )
+            if queued is None:
+                counts["receipts_copy_refused"] += 1
+            else:
+                counts["receipts_copy_enqueued"] += 1
+                ok = True
+        except Exception as rc_e:
+            logger.warning(
+                "Could not enqueue receipts copy for expense %s: %s",
+                getattr(expense, "public_id", None),
+                type(rc_e).__name__,
+            )
+            counts["receipts_copy_failed"] += 1
+        # An expense covered by a successfully enqueued expense_pull_fanout row is
+        # retried by that persisted row (the handler re-enqueues the receipts copy).
+        # Anything else (project-less, project lookup failed, fan-out refused/raised)
+        # has no persisted owner: only holding the watermark makes a later pull retry.
+        if not ok and unretryable_receipts is not None and expense_id not in covered_expense_ids:
+            unretryable_receipts.append((expense, expense_id))
     return counts, project_expense_map
 
 
@@ -430,6 +507,7 @@ def sync_qbo_to_local(
     expense_line_item_service = ExpenseLineItemService()
     late_linked = 0
     late_linked_expenses: list = []
+    purchase_qbo_by_expense_id: dict = {}  # expense_id -> SOURCE purchase QBO id (hold-id provenance)
     lines_by_expense_id = {}  # expense_id -> line rows already read after projection (saves a re-read)
     if last_sync_time:
         late_linked, late_linked_expenses = _link_attachables_for_unchanged_purchases(
@@ -437,12 +515,14 @@ def sync_qbo_to_local(
             attachable_service=attachable_service,
             expense_service=expense_service,
             changed_qbo_ids={p.qbo_id for p in purchases if p.qbo_id},
+            purchase_qbo_by_expense_id=purchase_qbo_by_expense_id,
         )
 
     if not purchases:
         logger.info(f"No Purchase updates found since {last_sync_time or 'beginning'}")
         # U-777: a late-attached receipt on a completed expense still has to reach
         # SharePoint, so the empty tick fans those out through the same enqueue.
+        empty_unretryable: list = []
         empty_counts, _ = _enqueue_ms_fanout(
             fanout_expenses=[
                 (e, eid) for e, eid in late_linked_expenses
@@ -450,7 +530,9 @@ def sync_qbo_to_local(
             ],
             expense_line_item_service=expense_line_item_service,
             lines_by_expense_id=lines_by_expense_id,
+            unretryable_receipts=empty_unretryable,
         )
+        _hold_watermark_for_unretryable_receipts(outcome, empty_unretryable, purchase_qbo_by_expense_id)
         return {
             "purchases_synced": 0,
             "expenses_module_synced": 0,
@@ -459,6 +541,9 @@ def sync_qbo_to_local(
             "ms_fanout_enqueued": empty_counts["enqueued"],
             "ms_fanout_refused": empty_counts["refused"],
             "ms_fanout_failed": empty_counts["failed"],
+            "receipts_copy_enqueued": empty_counts["receipts_copy_enqueued"],
+            "receipts_copy_refused": empty_counts["receipts_copy_refused"],
+            "receipts_copy_failed": empty_counts["receipts_copy_failed"],
             "box_excel_batches": 0,
             "skipped_count": 0,
             "skipped_purchase_ids": [],
@@ -476,6 +561,9 @@ def sync_qbo_to_local(
     ms_fanout_enqueued = 0   # expense_pull_fanout outbox rows written (Excel + SharePoint run at drain)
     ms_fanout_refused = 0    # ALLOW_MS_WRITES gate off / no tenant — nothing enqueued
     ms_fanout_failed = 0     # project lookup / enqueue exception — no row written
+    receipts_copy_enqueued = 0  # expense_receipts_copy rows (one per completed expense)
+    receipts_copy_refused = 0
+    receipts_copy_failed = 0
     box_excel_batches = 0
     synced_expenses = []     # (expense, expense_id) — collected for the per-project fan-out
     # A1: the per-run attachable snapshot is bounded to the pull's own watermark —
@@ -529,6 +617,8 @@ def sync_qbo_to_local(
             outcome.record_projected()
             expense_id = _expense_pk(expense)
             synced_expenses.append((expense, expense_id))
+            if purchase.qbo_id:
+                purchase_qbo_by_expense_id[expense_id] = purchase.qbo_id
             logger.info(f"Synced QboPurchase {purchase.id} to Expense {expense.id}")
 
             if local_expense is not None:
@@ -553,6 +643,29 @@ def sync_qbo_to_local(
                     purchase_qbo_id=purchase.qbo_id, expense_id=expense_id,
                     authoritative=authoritative, window_since=window_since,
                 )
+                # U-777a: the receipts-copy eligibility (status == completed) must see
+                # the expense AFTER linking, not the object projection returned — a
+                # concurrent completion would otherwise be missed. Falls back to the
+                # projected object (error_type only logged).
+                fresh, reread_error = None, "NotFound"
+                try:
+                    fresh = expense_service.read_by_qbo_identity(purchase.qbo_id, realm_id)
+                except (QboBudgetExceededError, QboWriteRefusedError):
+                    raise
+                except Exception as reread_e:
+                    reread_error = type(reread_e).__name__
+                if fresh is None:
+                    logger.warning(
+                        "qbo.purchase.receipts_copy_reread_failed",
+                        extra={"error_type": reread_error},
+                    )
+                    # Receipts-copy eligibility could not be established: keep the
+                    # projected object but hold the watermark so the next pull retries.
+                    outcome.record_projection_failure(
+                        purchase.qbo_id, "post-link re-read failed; receipts-copy eligibility unknown",
+                    )
+                else:
+                    synced_expenses[-1] = (fresh, expense_id)
 
         except Exception as e:
             outcome.record_projection_error(
@@ -574,14 +687,20 @@ def sync_qbo_to_local(
         if getattr(e, "status", None) == "completed"
     ]
     if fanout_expenses:
+        unretryable_receipts: list = []
         fanout_counts, project_expense_map = _enqueue_ms_fanout(
             fanout_expenses=fanout_expenses,
             expense_line_item_service=expense_line_item_service,
             lines_by_expense_id=lines_by_expense_id,
+            unretryable_receipts=unretryable_receipts,
         )
+        _hold_watermark_for_unretryable_receipts(outcome, unretryable_receipts, purchase_qbo_by_expense_id)
         ms_fanout_enqueued += fanout_counts["enqueued"]
         ms_fanout_refused += fanout_counts["refused"]
         ms_fanout_failed += fanout_counts["failed"]
+        receipts_copy_enqueued += fanout_counts["receipts_copy_enqueued"]
+        receipts_copy_refused += fanout_counts["receipts_copy_refused"]
+        receipts_copy_failed += fanout_counts["receipts_copy_failed"]
 
         # --- Box: doc-push (PDFs -> project's "14 - Invoices") + BATCHED Box Excel ---
         # Best-effort, ALLOW_BOX_WRITES-gated. Box Excel is batched per project (one
@@ -636,6 +755,9 @@ def sync_qbo_to_local(
         "ms_fanout_enqueued": ms_fanout_enqueued,
         "ms_fanout_refused": ms_fanout_refused,
         "ms_fanout_failed": ms_fanout_failed,
+        "receipts_copy_enqueued": receipts_copy_enqueued,
+        "receipts_copy_refused": receipts_copy_refused,
+        "receipts_copy_failed": receipts_copy_failed,
         "box_excel_batches": box_excel_batches,
         "skipped_count": len(outcome.skipped_ids),
         "skipped_purchase_ids": outcome.skipped_ids,

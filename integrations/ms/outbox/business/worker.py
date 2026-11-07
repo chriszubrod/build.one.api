@@ -20,6 +20,7 @@ from integrations.ms.outbox.business.model import MsOutbox
 from integrations.ms.outbox.business.service import (
     KIND_APPEND_EXCEL_ROW,
     KIND_EXPENSE_PULL_FANOUT,
+    KIND_EXPENSE_RECEIPTS_COPY,
     KIND_INSERT_EXCEL_ROW,
     KIND_SEND_MAIL,
     KIND_UPDATE_DRAFT,
@@ -101,6 +102,14 @@ def _raise_fanout_transient_db_error(*, step: str, project_id: int, entity_publi
     )
 
 
+def _raise_receipts_copy_error(*, label: str, expense_public_id: str) -> None:
+    """Retryable failure with a label-only message (no raw Graph/DB text)."""
+    raise MsServerError(
+        f"expense_receipts_copy: {label} expense_public_id={expense_public_id}",
+        request_path=f"expense_receipts_copy/{expense_public_id}",
+    )
+
+
 # Cross-process drain lock.
 DRAIN_LOCK_NAME = "ms_outbox_drain"
 DRAIN_LOCK_TIMEOUT_MS = 1000
@@ -168,6 +177,7 @@ class MsOutboxWorker:
             KIND_SEND_MAIL: self._handle_send_mail,
             KIND_UPDATE_DRAFT: self._handle_update_draft,
             KIND_EXPENSE_PULL_FANOUT: self._handle_expense_pull_fanout,
+            KIND_EXPENSE_RECEIPTS_COPY: self._handle_expense_receipts_copy,
         }
         self._retry_policy = RetryPolicy.for_writes()
 
@@ -506,6 +516,7 @@ class MsOutboxWorker:
             KIND_UPLOAD_SHAREPOINT_FILE,
             KIND_SEND_MAIL,
             KIND_EXPENSE_PULL_FANOUT,
+            KIND_EXPENSE_RECEIPTS_COPY,
         ):
             return
 
@@ -574,7 +585,7 @@ class MsOutboxWorker:
 
         expense_line_pairs: list = []
         sharepoint_jobs: list = []
-        receipts_jobs: list = []  # (expense, ALL lines) — U-777 general-receipts copy
+        receipts_expenses: list = []  # completed AT DRAIN — U-777a receipts-copy enqueue
 
         for expense_public_id in expense_public_ids:
             try:
@@ -642,14 +653,8 @@ class MsOutboxWorker:
 
             expense_line_pairs.append((expense, project_items))
             sharepoint_jobs.append((expense, project_items, len(line_items)))
-            # U-777: the 520 - Current Receipts copy is per expense, not per project.
-            # Only the row of the LOWEST project on the expense runs it, so a
-            # multi-project expense is copied from exactly one of its rows. Only a
-            # completed expense: a draft's completion runs this step itself.
             if getattr(expense, "status", None) == "completed":
-                line_project_ids = [li.project_id for li in line_items if li.project_id is not None]
-                if line_project_ids and project_id == min(line_project_ids):
-                    receipts_jobs.append((expense, line_items))
+                receipts_expenses.append(expense)
 
         if not expense_line_pairs:
             return
@@ -698,50 +703,37 @@ class MsOutboxWorker:
             sp_synced += int(sp_result.get("synced_count") or 0)
             sp_skipped += int(sp_result.get("skipped_count") or 0)
 
-        receipts_uploaded = 0
-        receipts_skipped = 0
+        # U-777a: this persisted row owns retry responsibility for the 520 receipts
+        # copy of every expense it carries that is completed at drain. The kind
+        # coalesces, so the pull-time enqueue, this one and the other project rows
+        # of the same expense collapse to one pending row; it also bridges rows
+        # enqueued before the receipts copy became its own kind. A refused/raising
+        # enqueue is a labeled retryable error, isolated per expense.
+        if receipts_expenses:
+            from integrations.ms.outbox.business.service import MsOutboxService
 
-        # A dict entry (not None): _label_fanout_error only appends the expense id for dicts.
-        receipts_failed_entry = {"step": "receipts", "error": "failed"}
-
-        def _receipts_log(level, event: str, expense_pid: str, **extra: Any) -> None:
-            name = f"ms.outbox.expense_pull_fanout.{event}"
-            level(name, extra={
-                "event_name": name,
-                "entity_public_id": entity_public_id,
-                "expense_public_id": expense_pid,
-                "project_id": project_id,
-                **extra,
-            })
-
-        for expense, all_line_items in receipts_jobs:
-            expense_pid = str(expense.public_id)
-            try:
-                rc_result = expense_service._upload_to_general_receipts_folder(
-                    expense=expense, line_items=all_line_items,
-                )
-            except Exception:
-                # One expense's receipts failure must not stop the others.
-                _receipts_log(logger.warning, "receipts_exception", expense_pid)
-                labeled_errors.append(("receipts", receipts_failed_entry, expense_pid))
-                continue
-            if rc_result.get("deferred_holding"):
-                _receipts_log(logger.info, "receipts_deferred_holding", expense_pid)
-                continue
-            rc_errors = rc_result.get("errors") or []
-            if not rc_errors and rc_result.get("success") is False:
-                # Failure branches with an empty errors list (no date, drive or
-                # folder not found): the message is the only signal. Retry, so a
-                # persistent one dead-letters into a visible ReconciliationIssue.
-                _receipts_log(
-                    logger.warning, "receipts_failed", expense_pid,
-                    result_message=rc_result.get("message"),
-                )
-                rc_errors = [receipts_failed_entry]
-            for entry in rc_errors:
-                labeled_errors.append(("receipts", entry, expense_pid))
-            receipts_uploaded += int(rc_result.get("synced_count") or 0)
-            receipts_skipped += int(rc_result.get("skipped_count") or 0)
+            receipts_failed_entry = {"step": "receipts", "error": "failed"}
+            receipts_outbox = MsOutboxService()
+            for expense in receipts_expenses:
+                expense_pid = str(expense.public_id)
+                event, extra = "receipts_enqueue_refused", {}
+                try:
+                    queued = receipts_outbox.enqueue_expense_receipts_copy(
+                        expense_public_id=expense_pid,
+                    )
+                except Exception as e:
+                    queued = None
+                    event, extra = "receipts_enqueue_exception", {"error_type": type(e).__name__}
+                if queued is None:
+                    name = f"ms.outbox.expense_pull_fanout.{event}"
+                    logger.warning(name, extra={
+                        "event_name": name,
+                        "entity_public_id": entity_public_id,
+                        "expense_public_id": expense_pid,
+                        "project_id": project_id,
+                        **extra,
+                    })
+                    labeled_errors.append(("receipts", receipts_failed_entry, expense_pid))
 
         logger.info(
             "ms.outbox.expense_pull_fanout.completed",
@@ -753,8 +745,6 @@ class MsOutboxWorker:
                 "excel_rows": excel_result.get("synced_count", 0),
                 "sharepoint_uploads": sp_synced,
                 "sharepoint_skipped": sp_skipped,
-                "receipts_uploads": receipts_uploaded,
-                "receipts_skipped": receipts_skipped,
                 "error_count": len(labeled_errors),
             },
         )
@@ -769,6 +759,79 @@ class MsOutboxWorker:
                 ),
                 request_path=f"expense_pull_fanout/{entity_public_id}/project/{project_id}",
             )
+
+    def _handle_expense_receipts_copy(self, row: MsOutbox, payload: Dict[str, Any]) -> None:
+        """
+        U-777a: copy a COMPLETED expense's attachments into the general receipts
+        folder (520 - Current Receipts / yyyy / mm). One row per expense, so it is
+        independent of how many projects (or none) the expense's lines carry.
+
+        Re-reads the expense and ALL its lines at drain. A missing or not-yet-
+        completed expense is logged and the row is done (a draft's completion
+        enqueues its own row). `deferred_holding` is done (INFO). Any failure —
+        an errors list, a `success: False` result with an empty list, an
+        exception, or a DB read error — raises a retryable `MsServerError` whose
+        text is a label only; the real message goes to the structured log.
+        """
+        from entities.expense.business.service import ExpenseService
+        from entities.expense_line_item.business.service import ExpenseLineItemService
+
+        expense_public_id = str(row.entity_public_id)
+
+        def _log(level, event: str, **extra: Any) -> None:
+            name = f"ms.outbox.expense_receipts_copy.{event}"
+            level(name, extra={
+                "event_name": name,
+                "outbox_public_id": row.public_id,
+                "expense_public_id": expense_public_id,
+                **extra,
+            })
+
+        expense_service = ExpenseService()
+        try:
+            expense = expense_service.read_by_public_id(public_id=expense_public_id)
+        except Exception as e:
+            _log(logger.warning, "transient_db_error", step="read_expense", error_type=type(e).__name__)
+            _raise_receipts_copy_error(label="read_expense failed", expense_public_id=expense_public_id)
+        if expense is None:
+            _log(logger.warning, "expense_missing")
+            return
+        if getattr(expense, "status", None) != "completed":
+            _log(logger.info, "not_completed", status=getattr(expense, "status", None))
+            return
+
+        try:
+            line_items = ExpenseLineItemService().read_by_expense_id(expense_id=expense.id) or []
+        except Exception as e:
+            _log(logger.warning, "transient_db_error", step="read_expense_lines", error_type=type(e).__name__)
+            _raise_receipts_copy_error(label="read_expense_lines failed", expense_public_id=expense_public_id)
+
+        try:
+            result = expense_service._upload_to_general_receipts_folder(
+                expense=expense, line_items=line_items,
+            )
+        except Exception as e:
+            _log(logger.warning, "exception", error_type=type(e).__name__, error_message=str(e))
+            _raise_receipts_copy_error(label="receipts:failed", expense_public_id=expense_public_id)
+
+        if result.get("deferred_holding"):
+            _log(logger.info, "deferred_holding")
+            return
+        errors = result.get("errors") or []
+        if errors or result.get("success") is False:
+            # Failure branches with an empty errors list (no date, drive or folder
+            # not found) carry their only signal in `message`.
+            _log(
+                logger.warning, "failed",
+                result_message=result.get("message"), error_count=len(errors),
+            )
+            _raise_receipts_copy_error(label="receipts:failed", expense_public_id=expense_public_id)
+
+        _log(
+            logger.info, "completed",
+            receipts_uploads=int(result.get("synced_count") or 0),
+            receipts_skipped=int(result.get("skipped_count") or 0),
+        )
 
     def _handle_upload_sharepoint_file(
         self,

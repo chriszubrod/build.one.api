@@ -51,10 +51,12 @@ code `00.02` is refused BEFORE any write exactly as Bill's (U-632) — the parke
 No SQL change. Tests: tests/test_u551b_expense_transactional_review_decision.py (28 + the no-retry pin), test_u551b_holding_code.py (5), test_u541_bill_transactional_review_decision.py (+ reject-stale, duplicate-under-lock, replay-after-split, message/schema pins, the no-retry pin). Full suite 9982 passed, 1 skipped, 0 failed (8 min 18 s). Codex out of credits → Opus F2 round 1 CHANGES-REQUESTED (P2: a retried read inside the decision transaction could run outside the locks) → round 2 PASS; Pass 3 PASS (P2 QBO divergence booked U-551b-f1; P3s booked f2/f3). DEPLOYED 2026-11-03 01:38Z as image `75eb1350` (ACR run caek) — the iOS decide arm
 (U-572b) 404s in prod until the API ships (Chris's go).
 
-- [x] **U-551b-f1 — SHIPPED `9ee5bee6` (2026-11-06): a reviewer's recode reaches QuickBooks — completion repoints the lines the drain wrote.** NOT DEPLOYED: SQL-FIRST
-  (`entities/coding_suggestion/sql/dbo.coding_suggestion.sql`: three additive columns + three sprocs with `= NULL` params), then pause the scheduler's
-  `drain_outbox_qbo` timer, let in-flight handlers finish, swap the image, resume — the mixed window is unsafe in BOTH directions (an old-image worker
-  consumes a repoint as a first write; an old-image confirm takes no lock). Design: `docs/design/u551b-f1-repoint-revision-model.md` (revision =
+- [x] **U-551b-f1 — SHIPPED `9ee5bee6` (2026-11-06): a reviewer's recode reaches QuickBooks — completion repoints the lines the drain wrote.** DEPLOYED 2026-11-07 22:40Z as image
+  `f38f2a22` (ACR run caes, digest 56d1189a) — SQL applied FIRST from the clean trunk tip (`dbo.coding_suggestion.sql`, 29 batches; pre-apply census: all 15
+  live sprocs == the pre-unit base, so the whole file was safe; the new columns + 5 params verified live), then build → stop → start; the ~10-minute mixed
+  window carried ZERO recode rows (the gate was left ON — flipping it off would have silently dropped any completion's recode, the 2026-07-16 trap). Post-deploy:
+  openapi 200, scheduler ticks landing, no qbo outbox failures. The ACR CLI exited 1 on a local DNS blip of its log stream while the run had succeeded — check
+  `az acr task list-runs` before rebuilding. Design: `docs/design/u551b-f1-repoint-revision-model.md` (revision =
   ConfirmationSeq; snapshot = written record read at n + local lines read AFTER it; approval bound to its snapshot; per-suggestion sp_getapplock held
   by the drain read→mark, by confirm read→mark_enqueued, by completion across probe→confirm). 8 builder dispatches (2 bites + 6 rounds), Codex xhigh
   ×14 calls, twin ×8, Pass 3 ×5 (final clean), Pass 2 ×2; 62/62 mutants killed; full suite 11118 passed, 0 failed, 1 environmental skip (baseline 10698 on the trunk base); prod census read-only.
@@ -67,7 +69,7 @@ No SQL change. Tests: tests/test_u551b_expense_transactional_review_decision.py 
   suggestions on one expense only the first diverged candidate is repointed per completion · **f8 (P3, Pass 3 notes)** a confirm's 10 s lock wait
   holds a pooled connection + a threadpool thread; a repoint whose local amount ≠ qty×rate drops the old Qty/UnitPrice (amount untouched).
   `[U-551b follow-up — shipped]`
-- [x] **U-551b-f1 (P2 — Pass 3; a prerequisite of U-572b going live) — SHIPPED `9ee5bee6` 2026-11-06, see the block above (deploy SQL-first, drain paused).** Original booking: a reviewer's recode can permanently diverge from QBO: `enqueue_coding_recode_on_submit`
+- [x] **U-551b-f1 (P2 — Pass 3; a prerequisite of U-572b going live) — SHIPPED `9ee5bee6` 2026-11-06, DEPLOYED 2026-11-07 22:40Z (image f38f2a22), see the block above.** Original booking: a reviewer's recode can permanently diverge from QBO: `enqueue_coding_recode_on_submit`
   confirms the submit-time coding (when not a holding code) and drains within ~30 s; an approve through this route that changes the SCC only updates the local
   line; `_enqueue_coding_recode_on_complete` then skips (`no_uncoded_staged_lines`), so QBO keeps the submitter's coding while the app shows the reviewer's. Same
   gap for web edits during in_review today. Fix: completion compares the local line SCC against the staged ItemRef, or an approve that changes an already

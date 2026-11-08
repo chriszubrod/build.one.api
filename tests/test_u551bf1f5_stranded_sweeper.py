@@ -53,13 +53,15 @@ def test_stranded_sproc_live_outbox_statuses_exactly_pending_failed_in_progress_
     # kind would then mask or fake a live outbox row)
     anti = re.search(r"NOT EXISTS\s*\((.*?)\)\s*ORDER BY", body, re.DOTALL).group(1)
     assert "o.[Kind] = N'recode_purchase_line'" in anti
-    types = re.search(r"o\.\[EntityType\]\s+IN\s*\(([^)]*)\)", anti).group(1)
-    assert sorted(re.findall(r"N'(\w+)'", types)) == ["CodingSuggestion", "ExpenseCodingItem"]
+    # U-551b-f1-f5 fix: CodingSuggestion is the only entity type enqueued (U-652 retired ExpenseCodingItem;
+    # tests/test_u652_coding_suggestion_sql_static.py forbids the literal in scoped SQL) — same vocabulary as the service guard
+    types = re.search(r"o\.\[EntityType\]\s*=\s*(N'\w+')", anti).group(1)
+    assert re.findall(r"N'(\w+)'", types) == ["CodingSuggestion"]
     assert "o.[EntityPublicId] = cs.[PublicId]" in anti
     # kills: the HasDeadLetter arm widened/changed to another status (a failed row would block the sweeper)
     dead = re.search(r"CASE WHEN EXISTS\s*\((.*?)\)\s*THEN 1", body, re.DOTALL).group(1)
     assert re.findall(r"d\.\[Status\]\s*(?:=|IN)\s*\(?\s*N'(\w+)'", dead) == ["dead_letter"]
-    assert set(re.findall(r"N'(\w+)'", dead)) - {"recode_purchase_line", "CodingSuggestion", "ExpenseCodingItem"} == {"dead_letter"}
+    assert set(re.findall(r"N'(\w+)'", dead)) - {"recode_purchase_line", "CodingSuggestion"} == {"dead_letter"}
 
 
 def test_recovery_sproc_covers_error_repoint_and_written_without_record():

@@ -230,7 +230,7 @@ three DB calls: record, enqueue, mark), and a repoint the drain marked `error`.
 - **D4** A `dead_letter` recode outbox row blocks both actions (`dead_letter_pending`, zero writes); the
   operator replays it (`scripts/retry_qbo_outbox_dead_letters.py`).
 - **D5** Stranded = `confirmed`, `ConfirmedAt` older than `@OlderThanSeconds` (300), and no outbox row of
-  kind `recode_purchase_line` (entity type `CodingSuggestion`/`ExpenseCodingItem`) in
+  kind `recode_purchase_line` (entity type `CodingSuggestion`) in
   `pending|failed|in_progress`; `done` is NOT live.
 
 | State | Action | Fence |
@@ -246,9 +246,9 @@ deploy instant): older `written` rows legitimately have no record.
 
 Two self-healing paths cover the partial-failure orderings: if the record succeeded but the enqueue raised,
 the row is `confirmed` with no outbox row and the sweeper re-enqueues it after 300 s; if the enqueue succeeded
-but the mark was fenced out, the drain processes `confirmed` rows and marks on the live seq. Entity types are
-deliberately asymmetric: the sproc's `HasDeadLetter` scans `EntityType IN (CodingSuggestion, ExpenseCodingItem)`
-to catch legacy rows, while the service/enqueue guard checks `CodingSuggestion`, the only type enqueued today.
+but the mark was fenced out, the drain processes `confirmed` rows and marks on the live seq. Entity type is
+`CodingSuggestion` everywhere (sproc anti-join, `HasDeadLetter`, the service and enqueue guards): U-652 retired
+`ExpenseCodingItem` and its static test forbids the literal in scoped SQL, so there is no legacy arm to scan.
 
 Deploy: SQL first (two new sprocs + the guard), then the API image, then the scheduler.
 

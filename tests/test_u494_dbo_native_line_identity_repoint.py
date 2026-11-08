@@ -34,6 +34,9 @@ PRE_U490_EXPENSE_CODING_SPROC_NAMES = frozenset(
         "ReadCodingSuggestionExistsForPurchase",
         "ReadExternallyResolvedCodingSuggestionCandidates",
         "MarkCodingSuggestionResolvedExternally",
+        # U-551b-f1-f5: the stranded-confirmed sweeper and the recovery-candidates read
+        "ReadStrandedConfirmedCodingSuggestions",
+        "ReadCodingSuggestionRecoveryCandidates",
     }
 )
 

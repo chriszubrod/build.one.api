@@ -1324,7 +1324,7 @@ BEGIN
                 SELECT 1
                 FROM [qbo].[Outbox] d
                 WHERE d.[Kind] = N'recode_purchase_line'
-                  AND d.[EntityType] IN (N'CodingSuggestion', N'ExpenseCodingItem')
+                  AND d.[EntityType] = N'CodingSuggestion'
                   AND d.[EntityPublicId] = cs.[PublicId]
                   AND d.[Status] = N'dead_letter'
             ) THEN 1 ELSE 0 END AS BIT
@@ -1336,7 +1336,7 @@ BEGIN
           SELECT 1
           FROM [qbo].[Outbox] o
           WHERE o.[Kind] = N'recode_purchase_line'
-            AND o.[EntityType] IN (N'CodingSuggestion', N'ExpenseCodingItem')
+            AND o.[EntityType] = N'CodingSuggestion'
             AND o.[EntityPublicId] = cs.[PublicId]
             AND o.[Status] IN (N'pending', N'failed', N'in_progress')
       )

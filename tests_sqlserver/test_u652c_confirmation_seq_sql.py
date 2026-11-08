@@ -304,37 +304,6 @@ def test_null_expected_seq_still_applies_to_flagged_row_legacy(
     conn.commit()
 
 
-def test_mark_changed_in_qbo_still_honours_expected_row_version(conn, seeded):
-    cur = conn.cursor()
-    _confirm(cur, seeded)
-    conn.commit()
-    rv = cur.execute(
-        "SELECT RowVersion FROM dbo.CodingSuggestion WHERE PublicId=?;", (seeded,)
-    ).fetchone().RowVersion
-    cur.execute(
-        "UPDATE dbo.CodingSuggestion SET ModifiedDatetime=SYSUTCDATETIME() WHERE PublicId=?;",
-        (seeded,),
-    )
-    conn.commit()
-    cur.execute(
-        "EXEC dbo.MarkCodingSuggestionChangedInQbo @PublicId=?, @ExpectedRowVersion=?;",
-        (seeded, rv),
-    )
-    assert cur.fetchone() is None
-    assert _read_snapshot(cur, seeded).Status == "enqueued"
-    rv2 = cur.execute(
-        "SELECT RowVersion FROM dbo.CodingSuggestion WHERE PublicId=?;", (seeded,)
-    ).fetchone().RowVersion
-    cur.execute(
-        "EXEC dbo.MarkCodingSuggestionChangedInQbo @PublicId=?, @ExpectedRowVersion=?;",
-        (seeded, rv2),
-    )
-    row = cur.fetchone()
-    assert row is not None
-    assert row.Status == "changed_in_qbo"
-    conn.commit()
-
-
 def test_confirmation_seq_alter_is_idempotent(conn):
     cur = conn.cursor()
     u652_sql._exec_batches(cur, CODING_SUGGESTION_SQL)

@@ -200,13 +200,17 @@ def test_purchase_recode_purchase_line_threads_realm_id_to_item_ref_resolution()
         "integrations.intuit.qbo.purchase.external.client.QboPurchaseClient"
     ) as mock_client_cls:
         mock_client_cls.return_value.__enter__.return_value = mock_client
-        connector.recode_purchase_line(
+        connector.recode_purchase_lines(
             realm_id=REALM_ID,
             qbo_purchase_qbo_id="p-1",
-            target_qbo_line_id="1",
-            sub_cost_code_id=7,
-            project_id=None,
-            description="d",
+            lines=[
+                {
+                    "target_qbo_line_id": "1",
+                    "sub_cost_code_id": 7,
+                    "project_id": None,
+                    "description": "d",
+                }
+            ],
             expected_sync_token="3",
         )
 

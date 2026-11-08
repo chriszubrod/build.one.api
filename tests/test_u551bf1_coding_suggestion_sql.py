@@ -143,28 +143,19 @@ def _update_where(body):
     return m.group(1)
 
 
-LEGACY_ROWVERSION = "AND (@ExpectedRowVersion IS NULL OR cs.[RowVersion] = @ExpectedRowVersion)"
-
-
-@pytest.mark.parametrize("proc,statuses,legacy_rowversion", [
+@pytest.mark.parametrize("proc,statuses", [
     # U-551b-f1-f5: "error" admitted in the seq-given branch so the admin redrive of an error repoint can fence
-    ("RecordCodingSuggestionConfirmation", {"written", "confirmed", "enqueued", "error"}, False),
-    ("MarkCodingSuggestionEnqueued", {"confirmed", "enqueued"}, False),
-    ("MarkCodingSuggestionWritten", {"confirmed", "enqueued"}, False),
-    # the U-652 @ExpectedRowVersion clause is kept (deploy-window compat) - pinned AS WRITTEN, then removed
-    # so the revision guard itself is held to the same exact shape as its siblings
-    ("MarkCodingSuggestionChangedInQbo", {"confirmed", "enqueued"}, True),
-    ("MarkCodingSuggestionError", {"confirmed", "enqueued"}, False),
+    ("RecordCodingSuggestionConfirmation", {"written", "confirmed", "enqueued", "error"}),
+    ("MarkCodingSuggestionEnqueued", {"confirmed", "enqueued"}),
+    ("MarkCodingSuggestionWritten", {"confirmed", "enqueued"}),
+    ("MarkCodingSuggestionChangedInQbo", {"confirmed", "enqueued"}),
+    ("MarkCodingSuggestionError", {"confirmed", "enqueued"}),
 ])
-def test_guard_predicate_shape_has_no_tautology_and_the_exact_status_set(proc, statuses, legacy_rowversion):
+def test_guard_predicate_shape_has_no_tautology_and_the_exact_status_set(proc, statuses):
     flat = re.sub(r"\s+", " ", _update_where(_proc(proc))).strip()
     assert not re.search(r"\bOR\s+1\s*=\s*1\b", flat, flags=re.I)
     assert not re.search(r"\b1\s*=\s*1\b", flat)
-    if legacy_rowversion:
-        assert flat.count(LEGACY_ROWVERSION) == 1, flat
-        flat = flat.replace(" " + LEGACY_ROWVERSION, "")
-    else:
-        assert "RowVersion" not in flat
+    assert "RowVersion" not in flat
     # exactly one OR, at the top of the seq guard: (@Expected IS NULL OR (seq = @Expected AND status IN (...)))
     assert len(re.findall(r"\bOR\b", flat)) == 1
     m = re.fullmatch(

@@ -24,7 +24,7 @@ def _item_target(qty, price):
 
 def _apply(target, quantity, rate, amount):
     _connector()._apply_recode_mutation_to_raw_line(
-        target, item_ref=NEW_ITEM, project_id=None, description=None,
+        target, item_ref=NEW_ITEM, description=None,
         quantity=quantity, rate=rate, amount=amount, is_billable=None, realm_id="r",
     )
     return target["ItemBasedExpenseLineDetail"]

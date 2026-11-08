@@ -844,40 +844,6 @@ class PurchaseExpenseConnector:
             )
             return None
 
-    def recode_purchase_line(
-        self,
-        *,
-        realm_id: str,
-        qbo_purchase_qbo_id: str,
-        target_qbo_line_id: str,
-        sub_cost_code_id: int,
-        project_id: Optional[int],
-        description: Optional[str],
-        expected_sync_token: str,
-        quantity: Optional[Union[int, Decimal]] = None,
-        rate: Optional[Decimal] = None,
-        amount: Optional[Decimal] = None,
-        is_billable: Optional[bool] = None,
-    ) -> dict:
-        """Single-line wrapper around recode_purchase_lines (U-652)."""
-        return self.recode_purchase_lines(
-            realm_id=realm_id,
-            qbo_purchase_qbo_id=qbo_purchase_qbo_id,
-            lines=[
-                {
-                    "target_qbo_line_id": target_qbo_line_id,
-                    "sub_cost_code_id": sub_cost_code_id,
-                    "project_id": project_id,
-                    "description": description,
-                    "quantity": quantity,
-                    "rate": rate,
-                    "amount": amount,
-                    "is_billable": is_billable,
-                }
-            ],
-            expected_sync_token=expected_sync_token,
-        )
-
     @staticmethod
     def _live_token_matches(raw: dict, expected: str) -> bool:
         """The ONE compare of a live raw Purchase's SyncToken against our record's token."""
@@ -963,6 +929,20 @@ class PurchaseExpenseConnector:
             token_one_ahead = (not is_repoint_call) and self._token_is_exactly_one_ahead(
                 live_sync_token, expected_sync_token
             )
+            # U-652d: per-call lookup memo (local to this call; a lookup that raises is never stored).
+            item_ref_cache: dict = {}
+            customer_ref_cache: dict = {}
+
+            def _item_ref_for(sub_cost_code_id):
+                if sub_cost_code_id not in item_ref_cache:
+                    item_ref_cache[sub_cost_code_id] = self._get_qbo_item_ref(sub_cost_code_id, realm_id)
+                return item_ref_cache[sub_cost_code_id]
+
+            def _customer_ref_for(project_id):
+                if project_id not in customer_ref_cache:
+                    customer_ref_cache[project_id] = self._get_qbo_customer_ref(project_id)
+                return customer_ref_cache[project_id]
+
             for spec in lines:
                 target_qbo_line_id = str(spec["target_qbo_line_id"])
                 sub_cost_code_id = spec["sub_cost_code_id"]
@@ -973,7 +953,7 @@ class PurchaseExpenseConnector:
                 if target is None:
                     return {"status": "line_not_found", "sync_token": live_sync_token}
 
-                item_ref = self._get_qbo_item_ref(sub_cost_code_id, realm_id)
+                item_ref = _item_ref_for(sub_cost_code_id)
                 if not self._raw_line_is_categorize_placeholder(target):
                     is_item_based = target.get("DetailType") == "ItemBasedExpenseLineDetail"
                     live_item_value = (
@@ -982,7 +962,7 @@ class PurchaseExpenseConnector:
                     # (a) already carries the target item: ours, unchanged.
                     if is_item_based and item_ref is not None and live_item_value == item_ref.value:
                         if token_one_ahead and spec.get("project_id"):
-                            customer_ref = self._get_qbo_customer_ref(spec["project_id"])
+                            customer_ref = _customer_ref_for(spec["project_id"])
                             live_customer = (
                                 (target.get("ItemBasedExpenseLineDetail") or {}).get("CustomerRef") or {}
                             ).get("value")
@@ -1040,13 +1020,13 @@ class PurchaseExpenseConnector:
                 self._apply_recode_mutation_to_raw_line(
                     target,
                     item_ref=item_ref,
-                    project_id=spec.get("project_id"),
                     description=spec.get("description"),
                     quantity=spec.get("quantity"),
                     rate=spec.get("rate"),
                     amount=spec.get("amount"),
                     is_billable=spec.get("is_billable"),
                     realm_id=realm_id,
+                    customer_ref=_customer_ref_for(spec["project_id"]) if spec.get("project_id") else None,
                 )
 
             # Strip QBO response-only fields before echoing the document back on
@@ -1087,15 +1067,14 @@ class PurchaseExpenseConnector:
         target: dict,
         *,
         item_ref,
-        project_id: Optional[int],
         description: Optional[str],
         quantity: Optional[Union[int, Decimal]],
         rate: Optional[Decimal],
         amount: Optional[Decimal],
         is_billable: Optional[bool],
         realm_id: str,
+        customer_ref=None,
     ) -> None:
-        customer_ref = self._get_qbo_customer_ref(project_id) if project_id else None
         # Off the placeholder: AccountBased; on a repoint (U-551b-f1): the prior ItemBased detail.
         old = target.get("AccountBasedExpenseLineDetail") or target.get("ItemBasedExpenseLineDetail") or {}
         item_detail: dict = {

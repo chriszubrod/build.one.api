@@ -28,6 +28,7 @@ from tests.test_expense_recode import (
     _make_item_sibling_dict,
     _make_raw_purchase,
     _patch_raw_client,
+    _recode_via_lines,
 )
 
 PUBLIC_ID = "11111111-1111-1111-1111-111111111111"
@@ -44,7 +45,7 @@ def _call_recode(connector, **overrides):
         "expected_sync_token": SYNC_TOKEN,
     }
     kwargs.update(overrides)
-    return connector.recode_purchase_line(**kwargs)
+    return _recode_via_lines(connector, **kwargs)
 
 
 def _posted_target_detail(mock_client) -> dict:

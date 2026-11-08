@@ -141,7 +141,17 @@ def _call_recode(connector, **overrides):
         "expected_sync_token": SYNC_TOKEN,
     }
     kwargs.update(overrides)
-    return connector.recode_purchase_line(**kwargs)
+    return _recode_via_lines(connector, **kwargs)
+
+
+def _recode_via_lines(connector, *, realm_id, qbo_purchase_qbo_id, expected_sync_token, **spec):
+    """Single-spec call of recode_purchase_lines (U-652d: replaces the removed one-line wrapper)."""
+    return connector.recode_purchase_lines(
+        realm_id=realm_id,
+        qbo_purchase_qbo_id=qbo_purchase_qbo_id,
+        lines=[spec],
+        expected_sync_token=expected_sync_token,
+    )
 
 
 def test_single_line_happy_path_written():

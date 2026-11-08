@@ -930,7 +930,9 @@ class QboOutboxWorker:
         )
 
     @staticmethod
-    def _recode_is_billable(item, local_line, project_id=None) -> Optional[bool]:
+    def _recode_is_billable(
+        item, local_line, project_id=None, *, project_cache: Optional[dict] = None
+    ) -> Optional[bool]:
         """Resolve Billable for expense-coding recode at drain time.
 
         A human-stamped ``billable_decided_at`` is authoritative. Otherwise seed
@@ -951,7 +953,13 @@ class QboOutboxWorker:
         try:
             from entities.project.business.service import ProjectService
 
-            project = ProjectService().read_by_id(int(effective_project_id))
+            project_key = int(effective_project_id)
+            if project_cache is not None and project_key in project_cache:
+                project = project_cache[project_key]
+            else:
+                project = ProjectService().read_by_id(project_key)
+                if project_cache is not None:
+                    project_cache[project_key] = project
         except Exception as exc:
             logger.warning(
                 "Could not read project %s for recode Billable seed: %s",
@@ -971,15 +979,24 @@ class QboOutboxWorker:
     _CONFIRMATION_SCOPE_CHANGED = "confirmation_scope_changed"
 
     def _resolve_recode_line_economics(
-        self, row: QboOutbox, item, *, target_qbo_line_id: str
+        self,
+        row: QboOutbox,
+        item,
+        *,
+        target_qbo_line_id: str,
+        expense_cache: Optional[dict] = None,
     ) -> tuple[Optional[object], Optional[str]]:
         from entities.expense.business.service import ExpenseService
         from entities.expense_line_item.business.service import ExpenseLineItemService
         from integrations.intuit.qbo.base.ids import coerce_id
 
-        expense = ExpenseService().read_by_qbo_identity(
-            item.qbo_purchase_qbo_id, row.realm_id
-        )
+        cache_key = (item.qbo_purchase_qbo_id, row.realm_id)
+        if expense_cache is not None and cache_key in expense_cache:
+            expense = expense_cache[cache_key]
+        else:
+            expense = ExpenseService().read_by_qbo_identity(item.qbo_purchase_qbo_id, row.realm_id)
+            if expense_cache is not None:
+                expense_cache[cache_key] = expense
         if expense is None:
             reason = (
                 f"no dbo.Expense for QboId={item.qbo_purchase_qbo_id!r} "
@@ -1117,10 +1134,12 @@ class QboOutboxWorker:
             return None, self._CONFIRMATION_SCOPE_CHANGED
         resolved: list[dict] = []
         missing_eli = 0
+        expense_cache: dict = {}
+        project_cache: dict = {}
         for qbo_line_id in uncategorized:
             try:
                 local_line, reason = self._resolve_recode_line_economics(
-                    row, item, target_qbo_line_id=qbo_line_id
+                    row, item, target_qbo_line_id=qbo_line_id, expense_cache=expense_cache
                 )
             except Exception as exc:
                 logger.warning(
@@ -1164,6 +1183,7 @@ class QboOutboxWorker:
                     sub_cost_code_id=sub_cost_code_id,
                     project_id=project_id,
                     description=getattr(local_line, "description", None),
+                    project_cache=project_cache,
                 )
             )
 
@@ -1172,7 +1192,15 @@ class QboOutboxWorker:
         return resolved, None
 
     def _recode_target_from_local_line(
-        self, item, qbo_line_id: str, local_line, *, sub_cost_code_id, project_id, description
+        self,
+        item,
+        qbo_line_id: str,
+        local_line,
+        *,
+        sub_cost_code_id,
+        project_id,
+        description,
+        project_cache: Optional[dict] = None,
     ) -> dict:
         """One recode line spec: the coding comes from the caller, the economics from ``local_line``."""
         project_id = int(project_id) if project_id else None
@@ -1184,7 +1212,9 @@ class QboOutboxWorker:
             "quantity": local_line.quantity,
             "rate": local_line.rate,
             "amount": local_line.amount,
-            "is_billable": self._recode_is_billable(item, local_line, project_id=project_id),
+            "is_billable": self._recode_is_billable(
+                item, local_line, project_id=project_id, project_cache=project_cache
+            ),
         }
 
     def _resolve_repoint_targets(
@@ -1215,11 +1245,13 @@ class QboOutboxWorker:
             if written is None or written.get("item_ref_value") != entry.get("repoint_from_item_ref_value"):
                 return None, "repoint_target_not_ours"
         targets: list[dict] = []
+        expense_cache: dict = {}
+        project_cache: dict = {}
         for entry in persisted:
             qbo_line_id = str(entry.get("qbo_line_id") or "")
             try:
                 local_line, _reason = self._resolve_recode_line_economics(
-                    row, item, target_qbo_line_id=qbo_line_id
+                    row, item, target_qbo_line_id=qbo_line_id, expense_cache=expense_cache
                 )
             except Exception as exc:
                 logger.warning(
@@ -1247,6 +1279,7 @@ class QboOutboxWorker:
                         sub_cost_code_id=sub_cost_code_id,
                         project_id=entry.get("project_id"),
                         description=entry.get("description"),
+                        project_cache=project_cache,
                     ),
                     repoint_from_item_ref_value=entry.get("repoint_from_item_ref_value"),
                 )

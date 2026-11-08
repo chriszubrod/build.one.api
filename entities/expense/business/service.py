@@ -853,16 +853,9 @@ class ExpenseService:
             summary["items"].append(skip_item)
             return summary
 
-        seen_public_ids: set[str] = set()
-        deduped: list[dict] = []
-        for item in coding_items:
-            public_id = item.get("public_id")
-            if not public_id or str(public_id) in seen_public_ids:
-                continue
-            seen_public_ids.add(str(public_id))
-            deduped.append(item)
+        items_with_id = [item for item in coding_items if item.get("public_id")]
 
-        if not deduped:
+        if not items_with_id:
             summary["skipped"] = 1
             summary["items"].append({"reason": "no_coding_items"})
             return summary
@@ -877,7 +870,7 @@ class ExpenseService:
 
         dominant = self._resolve_dominant_expense_coding_for_submit(expense_id=expense_id)
 
-        for item in deduped:
+        for item in items_with_id:
             public_id = item.get("public_id")
             status = item.get("status")
             item_result: dict[str, Any] = {"public_id": public_id, "status": status}

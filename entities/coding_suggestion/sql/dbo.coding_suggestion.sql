@@ -916,9 +916,6 @@ GO
 CREATE OR ALTER PROCEDURE MarkCodingSuggestionChangedInQbo
 (
     @PublicId UNIQUEIDENTIFIER,
-    -- U-652 (superseded by U-652c's @ExpectedConfirmationSeq): kept only so the API image deployed
-    -- before U-652c keeps working during the deploy window. No current caller passes it; drop later.
-    @ExpectedRowVersion BINARY(8) = NULL,
     @ExpectedConfirmationSeq INT = NULL
 )
 AS
@@ -937,7 +934,6 @@ BEGIN
         @UpdatedId = cs.[Id]
     FROM dbo.[CodingSuggestion] cs
     WHERE cs.[PublicId] = @PublicId
-      AND (@ExpectedRowVersion IS NULL OR cs.[RowVersion] = @ExpectedRowVersion)
       AND (
           @ExpectedConfirmationSeq IS NULL
           OR (

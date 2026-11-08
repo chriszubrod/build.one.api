@@ -117,7 +117,7 @@ def test_multi_line_billability_follows_each_lines_project():
     worker = QboOutboxWorker()
     with patch.object(worker, "_read_uncategorized_staging_line_ids", return_value=["1", "2"]), \
          patch.object(worker, "_resolve_recode_line_economics",
-                      side_effect=lambda row, it, target_qbo_line_id: (lines[target_qbo_line_id], None)), \
+                      side_effect=lambda row, it, target_qbo_line_id, expense_cache=None: (lines[target_qbo_line_id], None)), \
          patch("entities.project.business.service.ProjectService") as ps:
         ps.return_value.read_by_id.side_effect = _projects({900: False, 100: True, 200: False})
         targets, err = worker._resolve_recode_purchase_line_targets(_make_outbox(), item)

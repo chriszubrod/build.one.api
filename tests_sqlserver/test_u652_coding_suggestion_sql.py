@@ -566,44 +566,6 @@ def test_confirmation_records_and_returns_confirmation_source(conn):
     conn.commit()
 
 
-def test_changed_in_qbo_mark_is_skipped_when_the_row_changed_since_it_was_read(conn):
-    """A stale worker (read an endpoint confirmation) must not overwrite a newer review-submit
-    confirmation that landed after its read."""
-    cur = conn.cursor()
-    pub = uuid.uuid4()
-    cur.execute(
-        """
-        INSERT INTO dbo.CodingSuggestion (PublicId, TargetKind, QboPurchaseQboId, RealmId, Status)
-        VALUES (?, N'expense', N'P-RV', N'realm-1', N'enqueued');
-        """,
-        (pub,),
-    )
-    conn.commit()
-    stale = cur.execute("SELECT RowVersion FROM dbo.CodingSuggestion WHERE PublicId = ?", (pub,)).fetchval()
-    cur.execute(
-        """
-        EXEC dbo.RecordCodingSuggestionConfirmation @PublicId=?, @ConfirmedProjectId=1,
-             @ConfirmedSubCostCodeId=2, @Status=N'confirmed', @ConfirmationSource=N'review_submit';
-        """,
-        (pub,),
-    )
-    cur.fetchall()
-    conn.commit()
-
-    cur.execute("EXEC dbo.MarkCodingSuggestionChangedInQbo @PublicId=?, @ExpectedRowVersion=?;", (pub, stale))
-    assert cur.fetchone() is None
-    conn.commit()
-    status, source = cur.execute(
-        "SELECT Status, ConfirmationSource FROM dbo.CodingSuggestion WHERE PublicId = ?", (pub,)
-    ).fetchone()
-    assert (status, source) == ("confirmed", "review_submit")
-
-    current = cur.execute("SELECT RowVersion FROM dbo.CodingSuggestion WHERE PublicId = ?", (pub,)).fetchval()
-    cur.execute("EXEC dbo.MarkCodingSuggestionChangedInQbo @PublicId=?, @ExpectedRowVersion=?;", (pub, current))
-    assert cur.fetchone().Status == "changed_in_qbo"
-    conn.commit()
-
-
 def test_queue_returns_one_row_per_purchase_with_its_uncategorized_line_count(conn):
     cur = conn.cursor()
     two_lines, _, _ = _insert_expense_purchase(cur, qbo_purchase_qbo_id="P-Q2")

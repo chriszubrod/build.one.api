@@ -470,6 +470,19 @@ problem when scoping.
 - [ ] **Auto-complete runs synchronous workbook work inside the 15-min purchase pull** while the purchase lock is held - watch pull duration.
 
 
+## U-166 / U-652d slice 1 follow-ups (booked 2026-11-08)
+
+- [ ] **U-652d (3) ReadCodingSuggestionStateByExpenseIds OR-join -> UNION ALL** - own sub-slice. Rewrites three SQL-text pin suites (tests/test_u498 golden + `test_read_state_pin_rejects_a_preceding_union_branch`, which deliberately treats a UNION as a mutation - redesign its intent; test_u494 SQLite slice; test_u480 predicate slice). Capture the prod plan before/after first; the gain is unmeasured.
+- [ ] **U-652d items still open on the board row:** (1) one definition of "uncategorized" (P0), (4) one projection view/TVF + a single guarded status setter, (8) retire legacy `qbo_purchase_line_id`/`qbo_line_id` keys, (9) deterministic ExpenseId, (10) `claim_and_confirm` (P0), (11) create the suggestion at QBO pull (behaviour change), (12) atomic confirm + enqueue (P0), (14) access check into the service. (5) is struck: `@SyncToken` is the live repoint fence. P0 items wait for the Codex reviewer.
+- [ ] 🟡 **U-171's first-line delete moves the PDF onto ONE surviving line** (web `BillEdit.tsx:132-183`); with U-166 the rule is "every line", so copy the link onto every link-free survivor.
+- [ ] 🟡 **BillView reads the attachment from the FIRST line only** (web `BillView.tsx:83-92`) - a bill whose PDF sits on another line shows none. Read any line's link.
+- [ ] 🟡 **Invoice packet enrichment drops an unlinked line's PDF** (`entities/invoice/business/enrichment.py:84-90`, per-line OUTER APPLY TOP 1) - fall back to a sibling line's attachment on the same bill.
+- [ ] 🟢 **`BillLineItemAttachmentService.create` silently returns an existing link to a DIFFERENT attachment** (`entities/bill_line_item_attachment/business/service.py:73-78`). No current caller hits it (web only attaches to an empty line); an API/agent caller would be ignored silently. Either 409 or repoint (needs an Update sproc).
+- [ ] 🟢 **Attachment reads are not access-gated** (`AttachmentService.read_by_public_id` / `read_by_id`) and `/create/bill-line-item-attachment` accepts any `attachment_public_id` (pre-existing; U-166 Pass 3). Bind the attachment to an entity the caller can read.
+- [ ] 🟢 **2 TB3 bills have PDFs on some lines and not others with more than one PDF** (bill 16967 line 23780, 2 PDFs; bill 17037 line 21706, 3 PDFs; both completed) - human call, not filled by the U-166 backfill.
+- [ ] 🟢 **16,714 bills have no PDF link on any line** - U-535b's job, not U-166's.
+
+
 ## U-738 / U-740 follow-ups - expense <-> QBO coding (booked 2026-10-27)
 
 - [ ] **24 leftover expense lines need manual review** (U-738 RESULT CSV in Downloads): 12 leftover already in a SharePoint DETAILS workbook (workbook row cleanup + merge), 7 with no live replacement line (QBO line deleted?), 2 with different receipts on both lines, 2 ambiguous pairs, 1 amount mismatch.

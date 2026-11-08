@@ -122,36 +122,67 @@ Order: (1) read `LastError`, confirm the gates are on; (2) **replay first** (pre
 and redrive report `dead_letter_pending` and write nothing while a dead letter exists
 (design D4). Do not clear/replace the dead-letter row by re-confirming.
 
-## 6. Written-without-record (f3b, OPEN)
+## 6. Written-without-record (f3b)
 
 A `written` suggestion with `WrittenSyncToken IS NULL AND WrittenLinesJson IS NULL` and
 `WrittenAt >= RECORD_REQUIRED_SINCE_UTC` (2026-11-07 22:40 UTC, `shared/api/admin.py`; older
-rows legitimately predate the record). Typical cause: a first-write crash after the QBO POST
-(retry sees `already_recoded`, keeps the empty record; design §3 "accepted"). Consequence: a
-later repoint of those lines is refused `no_written_record`, because ownership is never claimed
-from an observation. Adoption is manual today (not built); the sweeper only lists them.
+rows legitimately predate the record). Typical cause: a first-write crash after the QBO POST.
+New crashes are PREVENTED (the retry emits the record when the live token is exactly snapshot+1
+and the CustomerRef matches); rows already stranded are fixed by the admin route. Consequence of
+leaving one: a later repoint of those lines is refused `no_written_record`. Completion treats a
+NULL record as legacy, so **leaving the row is always safe**.
 
-Safe recipe:
-1. Open the Purchase in QBO (`QboPurchaseQboId` on the row) and confirm the lines carry the
-   coding the row says. If correct and nobody needs to repoint it: **leave it**. Completion skips
-   a NULL record as legacy; nothing breaks.
-2. If a repoint is genuinely needed: **operator only; record the change in `SESSION_NOTES.md`.**
-   Live GET the Purchase, take its `SyncToken` and, for each line **we** coded, the
-   `Id` and `ItemRef.value`. `WrittenLinesJson` is a JSON array of objects with the keys
-   `model.written_lines` parses (`entities/coding_suggestion/business/model.py`): `qbo_line_id`
-   (the QBO line `Id`) and `item_ref_value` (the `ItemRef.value` we wrote), one per line we coded —
-   compare with an existing healthy row. Then (one row, by PublicId, only while still NULL):
+**Deploy:** SQL first (`AdoptCodingSuggestionWrittenRecord` in `dbo.coding_suggestion.sql`),
+then the API image; the route calls the sproc and 500s without it.
+
+**Route (system admin, gates on):** `POST /api/v1/admin/expense-coding/suggestions/{public_id}/adopt-written-record`.
+One read-only GET of the live purchase under the suggestion lock; never writes to QBO. 200
+`{"data": {status: "adopted", lines, written_sync_token}}`; 404 `not_found`; 422 non-UUID; else
+409 with `detail` = one of:
+
+| detail | meaning |
+|---|---|
+| `writes_disabled` | recode gate off (§7) |
+| `busy` | suggestion lock held, retry |
+| `not_written` / `has_record` | not a record-less `written` row |
+| `not_a_first_write` | source is not `review_submit` / `confirm_endpoint` |
+| `legacy` | `WrittenAt` before the cut-off or unknown: cannot tell crash gap from legacy |
+| `moved` | `ConfirmationSeq` NULL, or revised since the read |
+| `no_confirmed_coding` | `confirm_endpoint` row without a confirmed sub cost code |
+| `no_live_token` | the GET returned no `SyncToken` |
+| `line_holding` / `line_unmapped` | the code resolves to a holding code / no QBO item |
+| `line_missing` | a local line's QBO id is not on the live purchase (deleted) |
+| `line_not_recoded` | the live line(s) do not carry the coding (all-or-nothing, nothing recorded) |
+| `ambiguous_lines` | more than one live line carries the confirmed pair |
+
+**What is verified.** When the row has a confirmed sub cost code (any first-write source), the
+CONFIRMED coding (`confirmed_sub_cost_code_id` / `confirmed_project_id`, what the drain wrote) is
+matched first: exactly one live line carries it -> only that line is recorded. `review_submit` with
+no match (or no confirmed code) falls to multi-line mode only when it has more than one linked line (a
+single-linked-line row refuses like `confirm_endpoint`): each locally coded line is checked against
+its own local coding (NULL-coded lines skipped). **Residual:** the adopt cannot recover which lines
+were on the placeholder at write time; the confirmed match is preferred because it under-claims at
+worst (a later repoint is refused `repoint_target_not_ours`, the same outcome as leaving the row),
+while multi-line mode may over-claim pre-categorized lines - the operator must verify EVERY recorded
+line was on the placeholder before our write (the purchase pull overwrites the local coding with
+whatever QBO holds). When in doubt, leave the row.
+
+**Hand-UPDATE (only if the route refuses and you verified by eye):** operator only; record it in
+`SESSION_NOTES.md`. Live GET the Purchase; take its `SyncToken` and, per line **we** coded, the
+`Id`, `ItemRef.value` and the local sub cost code id. One row, by PublicId, only while still NULL
+and only for the seq you read:
 
 ```sql
 UPDATE dbo.CodingSuggestion
 SET WrittenSyncToken = '<live SyncToken>',
-    WrittenLinesJson = '[{"qbo_line_id": "<QBO line Id>", "item_ref_value": "<ItemRef.value>"}]'
+    WrittenLinesJson = '[{"qbo_line_id": "<QBO line Id>", "item_ref_value": "<ItemRef.value>", "sub_cost_code_id": <int>}]'
 WHERE PublicId = '<uuid>' AND Status = 'written'
-  AND WrittenSyncToken IS NULL AND WrittenLinesJson IS NULL;
+  AND WrittenSyncToken IS NULL AND WrittenLinesJson IS NULL
+  AND ConfirmationSeq = <seq you read>;
 ```
 
-   Verify the live token has not moved between GET and UPDATE (repeat the GET). A wrong record
-   makes the next repoint write or fence against the wrong lines.
+Repeat the GET first to be sure the token has not moved. A wrong record makes the next repoint
+write or fence against the wrong lines.
 
 ## 7. Gates
 

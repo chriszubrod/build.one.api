@@ -929,6 +929,170 @@ class CodingSuggestionService:
             logger.warning("coding_suggestion.redrive_enqueued public_id=%s confirmation_seq=%s", public_id, new_seq)
             return {"status": "enqueued", "confirmation_seq": new_seq}
 
+    def adopt_written_record(self, public_id: str, *, record_required_since=None) -> dict:
+        """U-551b-f1-f3b ADOPT: give a record-less ``written`` row (a first write that crashed between the QBO
+        POST and the mark) the written record it lacks, after GET-verifying the live Purchase. System-admin
+        action; NEVER writes to QBO (one read-only GET). Whole body under the suggestion lock; the external-write
+        gate is checked FIRST (a record write is a mark). All-or-nothing: every locally coded line must be
+        ItemBased on the live purchase carrying the item (and customer) of the CONFIRMED coding (single-target
+        first write) or of the local line (multi-line review_submit; post-pull residual), else a named refusal
+        and zero writes. The adopted token is the GET's (the document that CONTAINS our lines), never
+        ``SyncTokenAtSuggest``. Persist is fenced on the ConfirmationSeq read here (a revision since -> ``moved``)."""
+        from datetime import datetime
+
+        from integrations.intuit.qbo.base.client import recode_write_gate_reason
+
+        gate_reason = recode_write_gate_reason()
+        if gate_reason is not None:
+            return {"status": "writes_disabled", "reason": gate_reason}
+
+        with coding_suggestion_lock(public_id, timeout_ms=CONFIRM_SUGGESTION_LOCK_TIMEOUT_MS) as acquired:
+            if not acquired:
+                logger.warning("coding_suggestion.lock_busy public_id=%s holder=adopt", public_id)
+                return {"status": "busy"}
+            item = self.read_by_public_id(public_id)
+            if item is None:
+                return {"status": "not_found"}
+            if item.status != "written":
+                return {"status": "not_written"}
+            if item.written_sync_token is not None or item.written_lines_json is not None:
+                return {"status": "has_record"}
+            if item.confirmation_source not in ("review_submit", "confirm_endpoint"):
+                return {"status": "not_a_first_write"}
+            written_at = item.written_at
+            if isinstance(written_at, str):
+                try:
+                    written_at = datetime.fromisoformat(written_at)
+                except ValueError:
+                    written_at = None
+            if written_at is None or record_required_since is None or written_at < record_required_since:
+                return {"status": "legacy"}  # unknown / pre-record age: cannot tell a crash gap from legacy
+            if item.confirmation_seq is None:
+                return {"status": "moved"}  # nothing to fence the persist on: refuse here, never reach the sproc THROW
+            if not (item.expense_id and item.qbo_purchase_qbo_id and item.realm_id):
+                return {"status": "line_not_recoded"}  # nothing to verify against
+
+            from integrations.intuit.qbo.base.cost_code_resolver import resolve_qbo_item_ref
+            from integrations.intuit.qbo.purchase.connector.expense.business.service import (
+                PurchaseExpenseConnector,
+            )
+            from entities.expense_line_item.business.service import ExpenseLineItemService
+            from shared.lifecycle.completion_gate import HoldingCodeRefused
+
+            locals_ = [
+                line for line in ExpenseLineItemService().read_by_expense_id(item.expense_id)
+                if getattr(line, "qbo_id", None)
+            ]
+            # Mode selection. The adopt CANNOT recover which lines were on the placeholder at write time
+            # (the drain wrote `item.confirmed_*` to the placeholder PurchaseLine(s); the 15-min purchase
+            # pull has since overwritten the local lines). So whenever a confirmed coding exists we match
+            # the live lines against IT first: it under-claims at worst (a later repoint of an unclaimed
+            # line is refused `repoint_target_not_ours`, the same outcome as leaving the row), whereas
+            # multi-line mode may over-claim pre-categorized lines - the operator must verify EVERY
+            # recorded line was on the placeholder before our write.
+            has_confirmed = bool(item.confirmed_sub_cost_code_id)
+            if item.confirmation_source == "confirm_endpoint" and not has_confirmed:
+                return {"status": "no_confirmed_coding"}
+
+            connector = PurchaseExpenseConnector()
+            raw = connector.get_purchase_raw(realm_id=item.realm_id, qbo_purchase_qbo_id=item.qbo_purchase_qbo_id)
+            if raw.get("SyncToken") is None:
+                return {"status": "no_live_token"}
+            live_sync_token = str(raw.get("SyncToken"))
+            live_by_id = {str(line.get("Id")): line for line in (raw.get("Line") or [])}
+
+            def _resolve(scc):
+                try:
+                    return resolve_qbo_item_ref(scc, item.realm_id), None
+                except HoldingCodeRefused:
+                    return None, {"status": "line_holding"}
+
+            def _carries(live, ref, customer_ref):
+                detail = (live or {}).get("ItemBasedExpenseLineDetail") or {}
+                return (
+                    live is not None
+                    and live.get("DetailType") == "ItemBasedExpenseLineDetail"
+                    and (detail.get("ItemRef") or {}).get("value") == ref.value
+                    and (customer_ref is None or (detail.get("CustomerRef") or {}).get("value") == customer_ref.value)
+                )
+
+            written_lines: list[dict] = []
+            if has_confirmed:
+                ref, refusal = _resolve(item.confirmed_sub_cost_code_id)
+                if refusal:
+                    return refusal
+                if ref is None:
+                    return {"status": "line_unmapped"}
+                customer_ref = None
+                if item.confirmed_project_id:
+                    customer_ref = connector._get_qbo_customer_ref(item.confirmed_project_id)
+                    if customer_ref is None:
+                        return {"status": "line_not_recoded"}
+                matches = [
+                    str(local.qbo_id) for local in locals_
+                    if _carries(live_by_id.get(str(local.qbo_id)), ref, customer_ref)
+                ]
+                if len(matches) > 1:
+                    return {"status": "ambiguous_lines"}
+                if matches:
+                    written_lines.append(
+                        {
+                            "qbo_line_id": matches[0],
+                            "item_ref_value": ref.value,
+                            "sub_cost_code_id": int(item.confirmed_sub_cost_code_id),
+                        }
+                    )
+                elif item.confirmation_source == "confirm_endpoint" or len(locals_) == 1:
+                    # A confirm_endpoint write, or a review_submit with a SINGLE linked line, wrote the
+                    # confirmed coding to exactly one line: zero matches means it is not there any more
+                    # (a human recoded it) — refuse; never fall back to the local coding, which mirrors QBO.
+                    if any(str(local.qbo_id) not in live_by_id for local in locals_):
+                        return {"status": "line_missing"}
+                    return {"status": "line_not_recoded"}
+            if not written_lines:
+                # review_submit with no confirmed scc, or a MULTI-line review_submit none of whose lines
+                # carries the confirmed coding: multi-line mode. The per-line coding lives only in the local lines. RESIDUAL: after a
+                # purchase pull the local coding mirrors QBO, so this proves self-consistency, not that the
+                # lines were ours (pre-categorized lines may be over-claimed) - the operator must confirm
+                # by eye that every recorded line was on the placeholder (see the runbook).
+                for local in locals_:
+                    scc = getattr(local, "sub_cost_code_id", None)
+                    if not scc:
+                        continue  # no local coding to verify against: skipped, not adopted
+                    ref, refusal = _resolve(scc)
+                    if refusal:
+                        return refusal
+                    if ref is None:
+                        return {"status": "line_unmapped"}
+                    live = live_by_id.get(str(local.qbo_id))
+                    if live is None:
+                        return {"status": "line_missing"}
+                    customer_ref = None
+                    project_id = getattr(local, "project_id", None)
+                    if project_id:
+                        customer_ref = connector._get_qbo_customer_ref(project_id)
+                        if customer_ref is None:
+                            return {"status": "line_not_recoded"}
+                    if not _carries(live, ref, customer_ref):
+                        return {"status": "line_not_recoded"}
+                    written_lines.append(
+                        {"qbo_line_id": str(local.qbo_id), "item_ref_value": ref.value, "sub_cost_code_id": int(scc)}
+                    )
+            if not written_lines:
+                return {"status": "line_not_recoded"}
+
+            record_json = json.dumps(written_lines)
+            adopted = self.repo.adopt_written_record(
+                public_id, live_sync_token, record_json, item.confirmation_seq
+            )
+            if adopted is None:
+                logger.warning("coding_suggestion.adopt_lost public_id=%s", public_id)
+                return {"status": "moved"}
+            logger.warning(
+                "coding_suggestion.adopt_written_record public_id=%s lines=%s", public_id, len(written_lines)
+            )
+            return {"status": "adopted", "lines": len(written_lines), "written_sync_token": live_sync_token}
+
     def mark_error(
         self,
         public_id: str,

@@ -930,6 +930,51 @@ async def redrive_error_repoint_router(
     raise HTTPException(status_code=409, detail=result.get("status", "refused"))
 
 
+@router.post("/expense-coding/suggestions/{public_id}/adopt-written-record")
+async def adopt_written_record_router(
+    public_id: str,
+    current_user: dict = Depends(require_system_admin()),
+):
+    """System-admin ADOPT of the written record of a first write that crashed between the QBO POST and the
+    mark (U-551b-f1-f3b). One read-only GET verifies the live purchase; never writes to QBO. Refusals: 404
+    `not_found`, else 409 with `detail` = the refusal status (writes_disabled, busy, not_written, has_record,
+    not_a_first_write, legacy, moved, no_confirmed_coding, no_live_token, line_holding, line_unmapped,
+    line_missing, line_not_recoded, ambiguous_lines).
+
+    Verification rule: when `confirmed_sub_cost_code_id` is set (any first-write source) the live lines are matched
+    against the CONFIRMED coding first (`confirmed_project_id` too): exactly one live line carries it -> only that
+    line is recorded; more than one -> `ambiguous_lines`; zero -> `confirm_endpoint`, or a `review_submit` with a SINGLE linked line, refuses
+    (`line_missing` / `line_not_recoded`); only a `review_submit` with MULTIPLE linked lines falls back to the
+    local line coding (NULL-coded lines skipped, all-or-nothing). The adopt cannot recover which lines
+    were on the placeholder at write time; the confirmed match is preferred because it under-claims at worst (a
+    later repoint is refused `repoint_target_not_ours`, the same outcome as leaving the row), while multi-line mode
+    may over-claim pre-categorized lines - the operator must verify EVERY recorded line was on the placeholder
+    before our write (the local coding mirrors QBO after a purchase pull); prefer leaving the row (completion
+    treats a NULL record as legacy)."""
+    try:
+        canonical = str(uuid.UUID(public_id))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=422, detail="public_id must be a UUID")
+
+    def _run() -> dict[str, Any]:
+        from entities.coding_suggestion.business.service import CodingSuggestionService
+
+        return CodingSuggestionService().adopt_written_record(
+            canonical, record_required_since=RECORD_REQUIRED_SINCE_UTC
+        )
+
+    result = await asyncio.to_thread(_run)
+    logger.warning(
+        "admin.expense_coding.adopt_written_record public_id=%s status=%s user_id=%s",
+        canonical, result.get("status"), current_user.get("user_id"),
+    )
+    if result.get("status") == "adopted":
+        return {"data": result}
+    if result.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="not_found")
+    raise HTTPException(status_code=409, detail=result.get("status", "refused"))
+
+
 @router.post(
     "/expense/backfill-uncoded-to-draft",
     dependencies=[Depends(_require_drain_secret)],

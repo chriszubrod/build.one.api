@@ -367,6 +367,35 @@ class CodingSuggestionRepository:
             logger.error(f"Error marking coding suggestion {public_id} written: {error}")
             raise map_database_error(error)
 
+    def adopt_written_record(
+        self,
+        public_id: str,
+        written_sync_token: str,
+        written_lines_json: str,
+        expected_confirmation_seq: int,
+    ) -> Optional[CodingSuggestion]:
+        """U-551b-f1-f3b: persist a GET-verified written record onto a record-less ``written`` row.
+
+        The sproc's guard (written + no record + same seq) is the refusal set; ``None`` = it lost.
+        """
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="AdoptCodingSuggestionWrittenRecord",
+                    params={
+                        "PublicId": public_id,
+                        "WrittenSyncToken": written_sync_token,
+                        "WrittenLinesJson": written_lines_json,
+                        "ExpectedConfirmationSeq": expected_confirmation_seq,
+                    },
+                )
+                return self._from_db(cursor.fetchone())
+        except Exception as error:
+            logger.error(f"Error adopting written record for coding suggestion {public_id}: {error}")
+            raise map_database_error(error)
+
     def read_externally_resolved_candidates(self) -> list[dict]:
         try:
             with get_connection() as conn:

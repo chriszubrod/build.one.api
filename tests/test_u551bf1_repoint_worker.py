@@ -210,6 +210,8 @@ def test_first_write_written_replaces_the_previous_record():
 
 
 def test_first_write_already_recoded_preserves_record_and_token():
+    # U-551b-f1-f3b: a first-write already_recoded now carries the record WHEN the connector emits verified_lines;
+    # without them (this case) it still preserves both NULLs. The with-record case is in test_u551bf1f3b_prevent_empty_record.py.
     prev = [{"qbo_line_id": "L1", "item_ref_value": "item-A", "sub_cost_code_id": 5}]
     svc, _, _ = _run(_item(source="review_submit", written_lines=prev, targets=None),
                      connector_result={"status": "already_recoded", "sync_token": "9"})

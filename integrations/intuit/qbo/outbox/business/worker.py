@@ -1377,6 +1377,7 @@ class QboOutboxWorker:
             # may have recoded recorded lines since: its record REPLACES the old one, never merges.
             previous = getattr(item, "written_lines", None) or []
             fresh_write = status == "written"
+            adopt_live_token = False
             if is_repoint:
                 if fresh_write:
                     new_lines = list(result.get("written_lines") or []) + list(result.get("verified_lines") or [])
@@ -1385,6 +1386,11 @@ class QboOutboxWorker:
                 merged = _merge_written_lines(previous, new_lines) if new_lines else None
             elif fresh_write:
                 merged = list(result.get("written_lines") or []) or None
+            elif result.get("verified_lines"):
+                adopt_live_token = True
+                # U-551b-f1-f3b: a first-write retry whose write already landed (connector proved live
+                # token == snapshot+1): REPLACE the record with the verified lines, adopt the live token.
+                merged = list(result["verified_lines"])
             else:
                 merged = None  # first-write already_recoded: preserve both the record and the token
             _terminal_mark(
@@ -1392,7 +1398,7 @@ class QboOutboxWorker:
                 svc.mark_written,
                 # already_recoded: keep the token OUR write produced (a human header edit since
                 # must stay visible to the next repoint's fence).
-                sync_token=result.get("sync_token") if fresh_write else None,
+                sync_token=result.get("sync_token") if (fresh_write or adopt_live_token) else None,
                 written_lines_json=json.dumps(merged) if merged is not None else None,
             )
         elif status == "line_not_found":

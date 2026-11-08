@@ -163,6 +163,8 @@ def test_repoint_already_carrying_target_reports_verified_lines():
 
 
 def test_first_write_already_recoded_has_no_token_check_and_no_verified_lines():
+    # U-551b-f1-f3b: a first-write already_recoded now carries the record ONLY at live == expected+1 (+ CustomerRef);
+    # here live 9 vs expected 5 (not +1) so it still emits nothing. The +1 cases live in test_u551bf1f3b_prevent_empty_record.py.
     res, client = _run(_raw([_item_line("1", item="item-42")], token="9"), [_spec()])
     assert res["status"] == "already_recoded"
     assert "verified_lines" not in res and "written_lines" not in res

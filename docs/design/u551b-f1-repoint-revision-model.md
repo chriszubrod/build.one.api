@@ -70,6 +70,7 @@ Outcomes that are *accepted and unchanged*: a crash between a REPOINT's QBO POST
 territory); the same crash on a FIRST write (retry finds the target already present →
 `already_recoded` → `written` with the previous, possibly empty, record and token — no ownership is
 claimed from an observation, so a later repoint of those lines is refused `no_written_record`, f3);
+(U-551b-f1-f3b supersedes the empty-record outcome: PREVENT emits the record on a provable retry, ADOPT is the admin fix for rows already stranded — `docs/design/u551b-f1-f3b-adopt-written-record.md`);
 a stranded `confirmed` with no outbox row (f5 sweeper); the pull rewriting local coding (f1).
 
 ## 4. Mechanisms

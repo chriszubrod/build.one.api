@@ -1393,3 +1393,95 @@ BEGIN
     ORDER BY u.[SortAt];
 END;
 GO
+
+
+-- U-551b-f1-f3b: ADOPT the written record of a first write that crashed between the QBO POST and the mark.
+-- The API (system-admin action) has already GET-verified every coded line against the live Purchase; this
+-- only persists the result. Guard IS the refusal set: written, NO record at all, same revision the caller
+-- read (a revision recorded since loses -> 0 rows -> the service answers `moved`). SET is unconditional and
+-- both params are required: never the CASE-preserve pattern (that is how a record-less `written` was made).
+-- WrittenAt / Status / ConfirmationSeq are untouched.
+CREATE OR ALTER PROCEDURE AdoptCodingSuggestionWrittenRecord
+(
+    @PublicId UNIQUEIDENTIFIER,
+    @WrittenSyncToken NVARCHAR(50),
+    @WrittenLinesJson NVARCHAR(MAX),
+    @ExpectedConfirmationSeq INT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @WrittenSyncToken IS NULL OR @WrittenLinesJson IS NULL OR @ExpectedConfirmationSeq IS NULL
+        THROW 50000, 'AdoptCodingSuggestionWrittenRecord requires @WrittenSyncToken, @WrittenLinesJson and @ExpectedConfirmationSeq', 1;
+
+    BEGIN TRANSACTION;
+
+    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
+    DECLARE @UpdatedId BIGINT;
+
+    UPDATE cs
+    SET
+        [WrittenSyncToken] = @WrittenSyncToken,
+        [WrittenLinesJson] = @WrittenLinesJson,
+        [ModifiedDatetime] = @Now,
+        @UpdatedId = cs.[Id]
+    FROM dbo.[CodingSuggestion] cs
+    WHERE cs.[PublicId] = @PublicId
+      AND cs.[Status] = N'written'
+      AND cs.[WrittenSyncToken] IS NULL
+      AND cs.[WrittenLinesJson] IS NULL
+      AND cs.[ConfirmationSeq] = @ExpectedConfirmationSeq;
+
+    SELECT
+        cs.[Id],
+        cs.[PublicId],
+        cs.[RowVersion],
+        cs.[TargetKind],
+        cs.[BillId],
+        cs.[BillCreditId],
+        cs.[ExpenseId],
+        cs.[AttachmentId],
+        cs.[VendorId],
+        cs.[QboPurchaseId],
+        cs.[QboPurchaseQboId],
+        cs.[RealmId],
+        cs.[SyncTokenAtSuggest],
+        cs.[Status],
+        cs.[SuggestedProjectId],
+        cs.[SuggestedSubCostCodeId],
+        cs.[SuggestedDescription],
+        cs.[SuggestionSource],
+        cs.[SuggestionReason],
+        cs.[SuggestionConfidence],
+        cs.[SuggestedAt],
+        cs.[FeaturesJson],
+        cs.[ModelVersion],
+        cs.[ConfirmedProjectId],
+        cs.[ConfirmedSubCostCodeId],
+        cs.[ConfirmedDescription],
+        cs.[WasOverridden],
+        cs.[ConfirmedByUserId],
+        cs.[ConfirmedAt],
+        cs.[ConfirmedMixedCodes],
+        cs.[PrefillState],
+        cs.[ConfirmationSource],
+        cs.[ConfirmationSeq],
+        cs.[FlagReason],
+        cs.[FlaggedAt],
+        cs.[WrittenAt],
+        cs.[WriteError],
+        cs.[WrittenSyncToken],
+        cs.[WrittenLinesJson],
+        cs.[ClaimedByUserId],
+        cs.[ClaimedAt],
+        cs.[CompanyId],
+        cs.[CreatedByUserId],
+        CONVERT(VARCHAR(19), cs.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), cs.[ModifiedDatetime], 120) AS [ModifiedDatetime]
+    FROM dbo.[CodingSuggestion] cs
+    WHERE cs.[Id] = @UpdatedId;
+
+    COMMIT TRANSACTION;
+END;
+GO

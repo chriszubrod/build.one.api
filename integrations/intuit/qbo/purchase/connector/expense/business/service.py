@@ -892,11 +892,28 @@ class PurchaseExpenseConnector:
         drain's empty-revision no-op so ``written`` is only asserted while QBO is as our record says.
         A QBO error from the GET propagates (the worker's normal retry/backoff).
         """
+        raw = self._get_purchase_raw(realm_id=realm_id, qbo_purchase_qbo_id=qbo_purchase_qbo_id)
+        return self._live_token_matches(raw, expected_sync_token)
+
+    @staticmethod
+    def _get_purchase_raw(*, realm_id: str, qbo_purchase_qbo_id: str) -> dict:
+        """U-551b-f1-f3b: the ONE read-only GET of the raw Purchase document (never writes to QBO)."""
         from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
 
         with QboPurchaseClient(realm_id=realm_id) as client:
-            raw = client.get_purchase_raw(qbo_purchase_qbo_id)
-        return self._live_token_matches(raw, expected_sync_token)
+            return client.get_purchase_raw(qbo_purchase_qbo_id)
+
+    def get_purchase_raw(self, *, realm_id: str, qbo_purchase_qbo_id: str) -> dict:
+        """Public read-only accessor for the adopt action (U-551b-f1-f3b): the live raw Purchase."""
+        return self._get_purchase_raw(realm_id=realm_id, qbo_purchase_qbo_id=qbo_purchase_qbo_id)
+
+    @staticmethod
+    def _token_is_exactly_one_ahead(live: str, expected: str) -> bool:
+        """U-551b-f1-f3b: True iff ``live`` == ``expected`` + 1 (exactly one QBO update since our snapshot)."""
+        try:
+            return str(int(live)) == str(int(expected) + 1)
+        except (TypeError, ValueError):
+            return False
 
     def recode_purchase_lines(
         self,
@@ -938,6 +955,14 @@ class PurchaseExpenseConnector:
 
             pending_specs: list[tuple[dict, dict, object]] = []
             verified_lines: list[dict] = []
+            # U-551b-f1-f3b: a first-write retry that finds every spec already on its target may emit the
+            # record only when the write is provably OURS (live token == snapshot + 1, CustomerRef matches).
+            first_write_provable = True
+            # Evaluated BEFORE the per-spec CustomerRef lookups: a failing token rule emits nothing, so it
+            # must not cost project reads (and the rule is independent of them).
+            token_one_ahead = (not is_repoint_call) and self._token_is_exactly_one_ahead(
+                live_sync_token, expected_sync_token
+            )
             for spec in lines:
                 target_qbo_line_id = str(spec["target_qbo_line_id"])
                 sub_cost_code_id = spec["sub_cost_code_id"]
@@ -956,6 +981,13 @@ class PurchaseExpenseConnector:
                     )
                     # (a) already carries the target item: ours, unchanged.
                     if is_item_based and item_ref is not None and live_item_value == item_ref.value:
+                        if token_one_ahead and spec.get("project_id"):
+                            customer_ref = self._get_qbo_customer_ref(spec["project_id"])
+                            live_customer = (
+                                (target.get("ItemBasedExpenseLineDetail") or {}).get("CustomerRef") or {}
+                            ).get("value")
+                            if customer_ref is None or live_customer != customer_ref.value:
+                                first_write_provable = False
                         verified_lines.append(
                             {
                                 "qbo_line_id": target_qbo_line_id,
@@ -984,6 +1016,14 @@ class PurchaseExpenseConnector:
                 result: dict = {"status": "already_recoded", "sync_token": live_sync_token}
                 if is_repoint_call:
                     # Token matched ours: the live lines provably carry the local coding.
+                    result["verified_lines"] = verified_lines
+                elif (
+                    first_write_provable
+                    and verified_lines
+                    and token_one_ahead
+                ):
+                    # U-551b-f1-f3b PREVENT: a first write that crashed between the POST and the mark; the
+                    # retry finds our write (token +1) and hands the worker its record + the live token.
                     result["verified_lines"] = verified_lines
                 return result
 

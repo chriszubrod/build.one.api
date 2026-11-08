@@ -37,6 +37,8 @@ PRE_U490_EXPENSE_CODING_SPROC_NAMES = frozenset(
         # U-551b-f1-f5: the stranded-confirmed sweeper and the recovery-candidates read
         "ReadStrandedConfirmedCodingSuggestions",
         "ReadCodingSuggestionRecoveryCandidates",
+        # U-551b-f1-f3b: the guarded adopt of a crash-gap first write's written record
+        "AdoptCodingSuggestionWrittenRecord",
     }
 )
 

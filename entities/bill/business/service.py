@@ -9,6 +9,7 @@ Invariants
   Concurrency: UpdateBillById takes @RowVersion; finalize uses draft guard instead of rowversion.
   Cascade: delete_by_public_id uses DeleteBillCascadeById for dependent rows.
   Review: a line whose CodingPrefillState is still 'prefilled' (an untouched suggestion) blocks Submit for Review, the create-time auto-submit and Complete with 422 unreviewed_prefill (U-674); suspense-coded lines block Complete (U-632).
+  Attachments: a line added to a bill whose other lines share exactly ONE attachment inherits it (BillLineItemService.create, best-effort, U-166); contract labor and the QBO pull opt out.
   Duplicates: vendor+number+date hard duplicate (DuplicateBillError) runs before U-723 possible-duplicate gates; possible duplicates (Rules A/B/C) are gated at the HTTP layer and audited in dbo.BillDuplicateOverride.
 External writes
   sync_bill_to_qbo via qbo outbox (ALLOW_QBO_WRITES).

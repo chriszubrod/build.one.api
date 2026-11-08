@@ -609,6 +609,7 @@ class ContractLaborBillService:
                             markup=effective_markup,
                             price=scc_price,
                             is_draft=True,
+                            inherit_bill_attachment=False,  # U-166: CL links each line to its own PDF below
                         )
                         line_items_created_this_project += 1
                         result["line_items_created"] += 1

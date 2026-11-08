@@ -388,6 +388,7 @@ class BillLineItemConnector:
                 price=price,
                 is_draft=False,
                 _via_internal_pipeline=True,
+                inherit_bill_attachment=False,  # U-166: QBO pull keeps its own attachable linking
             )
 
         def _stamp_line_identity(candidate: BillLineItem) -> Optional[BillLineItem]:

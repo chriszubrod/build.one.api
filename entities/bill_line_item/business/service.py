@@ -90,9 +90,13 @@ class BillLineItemService:
             bill_id=bill_id, bill_public_id=bill_public_id, what=what, exempt=exempt
         )
 
-    def create(self, *, tenant_id: int = None, bill_public_id: str, sub_cost_code_id: Optional[int] = None, project_public_id: Optional[str] = None, description: Optional[str] = None, quantity: Optional[Decimal] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True, coding_prefill_state: Optional[str] = None, _via_internal_pipeline: bool = False) -> BillLineItem:
+    def create(self, *, tenant_id: int = None, bill_public_id: str, sub_cost_code_id: Optional[int] = None, project_public_id: Optional[str] = None, description: Optional[str] = None, quantity: Optional[Decimal] = None, rate: Optional[Decimal] = None, amount: Optional[Decimal] = None, is_billable: Optional[bool] = None, is_billed: Optional[bool] = None, markup: Optional[Decimal] = None, price: Optional[Decimal] = None, is_draft: bool = True, coding_prefill_state: Optional[str] = None, _via_internal_pipeline: bool = False, inherit_bill_attachment: bool = True) -> BillLineItem:
         """
         Create a new bill line item.
+
+        U-166: when `inherit_bill_attachment` (default), the new line is linked to
+        the bill's attachment if its other lines all share exactly ONE. Failure
+        to inherit never fails the create.
         """
         self._assert_parent_editable(
             bill_public_id=bill_public_id,
@@ -120,7 +124,7 @@ class BillLineItemService:
                 raise ValueError(f"Project with public_id '{project_public_id}' not found.")
             project_id = project.id
         
-        return self.repo.create(
+        created = self.repo.create(
             # U-446b: the sproc re-checks the parent INSIDE the writing
             # transaction, closing the check-then-write race the Python guard
             # above cannot. Always passed explicitly, though the sproc default is
@@ -141,6 +145,52 @@ class BillLineItemService:
             coding_prefill_state=coding_prefill_state,
             created_by_user_id=current_user_id.get(),
         )
+        if inherit_bill_attachment:
+            self._inherit_bill_attachment(created, bill_id=bill.id)
+        return created
+
+    def _inherit_bill_attachment(self, created, *, bill_id) -> None:
+        """U-166: link a freshly created line to the bill's single shared attachment.
+
+        Reads the bill's OTHER lines' BLIA rows; exactly one distinct AttachmentId
+        -> link the new line to it via the BLIA service (terminal lock intact).
+        Zero or several distinct -> nothing. Never raises.
+
+        Deliberately service-level, like bill create's own placeholder link: it
+        reuses evidence the bill already carries, so it does not re-check
+        ATTACHMENTS.can_create or route through ProcessEngine (a gate here would
+        make inheritance fail silently for some roles).
+        """
+        try:
+            from entities.bill_line_item_attachment.business.service import (
+                BillLineItemAttachmentService,
+            )
+            from entities.attachment.business.service import AttachmentService
+
+            siblings = [li for li in self.repo.read_by_bill_id(bill_id=bill_id) if li.id != created.id]
+            if not siblings:
+                return
+            blia_svc = BillLineItemAttachmentService()
+            links = blia_svc.read_by_bill_line_item_ids(
+                [str(li.public_id) for li in siblings]
+            )
+            attachment_ids = {
+                int(l.attachment_id) for l in links if l.attachment_id is not None
+            }
+            if len(attachment_ids) != 1:
+                return
+            attachment = AttachmentService().read_by_id(next(iter(attachment_ids)))
+            if not attachment or not getattr(attachment, "public_id", None):
+                return
+            blia_svc.create(
+                bill_line_item_public_id=str(created.public_id),
+                attachment_public_id=str(attachment.public_id),
+            )
+        except Exception as exc:  # noqa: BLE001 - inheritance is best-effort
+            logger.warning(
+                "u166.inherit_bill_attachment_failed bill_id=%s bill_line_item_id=%s error_type=%s",
+                bill_id, getattr(created, "id", None), type(exc).__name__,
+            )
 
     def read_all(self) -> list[BillLineItem]:
         """

@@ -769,6 +769,166 @@ class CodingSuggestionService:
                 skipped += 1
         return {"marked": marked, "skipped": skipped}
 
+    # ------------------------------------------------------------------
+    # U-551b-f1-f5: recovery of a lost enqueue (timer) and of an `error` repoint (system admin)
+    # ------------------------------------------------------------------
+
+    _RECODE_OUTBOX_KIND = "recode_purchase_line"
+    _RECODE_OUTBOX_ENTITY_TYPE = "CodingSuggestion"  # what confirm / _enqueue_recode_and_mark enqueue with
+
+    def _has_recode_dead_letter(self, public_id: str) -> bool:
+        """A dead-lettered recode may already have reached QBO: nothing re-enqueues behind one (an
+        operator replays it). Reads the outbox repo directly (the service exposes no read)."""
+        from integrations.intuit.qbo.outbox.business.service import QboOutboxService
+
+        return bool(
+            QboOutboxService().repo.read_dead_letter_by_entity(
+                kind=self._RECODE_OUTBOX_KIND,
+                entity_type=self._RECODE_OUTBOX_ENTITY_TYPE,
+                entity_public_id=public_id,
+            )
+        )
+
+    def sweep_stranded_confirmed(
+        self,
+        *,
+        dry_run: bool = True,
+        older_than_seconds: int = 300,
+        limit: int = 100,
+        record_required_since=None,
+    ) -> dict:
+        """Re-enqueue ``confirmed`` rows whose enqueue was lost (the approval was given; only the enqueue
+        step died). Gated like confirm: gate off + apply = ZERO writes. NEVER touches an ``error`` row
+        (a deterministic error would loop every tick) - those are only REPORTED under ``recovery``.
+        Each row is re-read under the suggestion lock and re-checked (status 'confirmed', seq unchanged)
+        before ``_enqueue_recode_and_mark``; a dead letter blocks it."""
+        from integrations.intuit.qbo.base.client import recode_write_gate_reason
+        from integrations.intuit.qbo.base.errors import CodingSuggestionBusyError
+
+        gate = recode_write_gate_reason()
+        candidates = self.repo.read_stranded_confirmed(older_than_seconds=older_than_seconds, limit=limit)
+        recovery_rows = self.repo.read_recovery_candidates(record_required_since=record_required_since, limit=limit)
+        result: dict[str, Any] = {
+            "gate": gate,
+            "candidates": len(candidates),
+            "enqueued": 0,
+            "dead_letter_pending": [],
+            "busy": [],
+            "moved": [],
+            "errors": [],
+            "would_enqueue": [],
+            "recovery": {
+                "error_repoint": [r["public_id"] for r in recovery_rows if r.get("category") == "error_repoint"],
+                "written_without_record": [
+                    r["public_id"] for r in recovery_rows if r.get("category") == "written_without_record"
+                ],
+            },
+        }
+        if gate is not None and not dry_run:
+            result.update({"status": "skipped", "reason": gate})
+            self._log_sweep(result)
+            return result
+
+        for candidate in candidates:
+            public_id = candidate["public_id"]
+            try:
+                if candidate.get("has_dead_letter"):
+                    result["dead_letter_pending"].append(public_id)
+                    continue
+                if dry_run:
+                    result["would_enqueue"].append(public_id)
+                    continue
+                with coding_suggestion_lock(public_id, timeout_ms=CONFIRM_SUGGESTION_LOCK_TIMEOUT_MS) as acquired:
+                    if not acquired:
+                        result["busy"].append(public_id)
+                        continue
+                    item = self.read_by_public_id(public_id)
+                    if (
+                        item is None
+                        or item.status != "confirmed"
+                        or item.confirmation_seq != candidate.get("confirmation_seq")
+                    ):
+                        result["moved"].append(public_id)
+                        continue
+                    seq = item.confirmation_seq
+                    if self._enqueue_recode_and_mark(public_id, item.realm_id or candidate.get("realm_id"), seq):
+                        result["enqueued"] += 1
+                    else:
+                        result["moved"].append(public_id)
+            except CodingSuggestionBusyError:
+                result["busy"].append(public_id)
+            except Exception as error:
+                result["errors"].append({"id": public_id, "error": type(error).__name__})
+        result["status"] = "dry_run" if dry_run else "ok"
+        self._log_sweep(result)
+        return result
+
+    @staticmethod
+    def _log_sweep(result: dict) -> None:
+        recovery = result["recovery"]
+        flagged = (
+            result.get("status") == "skipped" or result["enqueued"] or result["would_enqueue"]
+            or any(result[k] for k in ("dead_letter_pending", "busy", "moved", "errors"))
+            or any(recovery.values())
+        )
+        message = (
+            "coding_suggestion.sweep_stranded status=%s gate=%s candidates=%d enqueued=%d would_enqueue=%s "
+            "dead_letter_pending=%s busy=%s moved=%s errors=%s error_repoint=%s written_without_record=%s"
+        )
+        args = (
+            result.get("status"), result["gate"], result["candidates"], result["enqueued"],
+            result["would_enqueue"], result["dead_letter_pending"], result["busy"], result["moved"],
+            result["errors"], recovery["error_repoint"], recovery["written_without_record"],
+        )
+        (logger.warning if flagged else logger.info)(message, *args)
+
+    def redrive_error_repoint(self, public_id: str) -> dict:
+        """System-admin re-drive of a repoint the drain marked ``error``: re-record the SAME approved
+        revision (the row's own ``repoint_targets_json``) as a NEW ConfirmationSeq, fenced on the seq read
+        here, then enqueue; the drain's token fence writes it or marks ``changed_in_qbo``. Whole body under
+        the suggestion lock. A first-write ``error`` is ``not_a_repoint`` (the cockpit confirm recovers it)."""
+        from integrations.intuit.qbo.base.client import recode_write_gate_reason
+
+        gate_reason = recode_write_gate_reason()
+        if gate_reason is not None:
+            return {"status": "writes_disabled", "reason": gate_reason}
+
+        with coding_suggestion_lock(public_id, timeout_ms=CONFIRM_SUGGESTION_LOCK_TIMEOUT_MS) as acquired:
+            if not acquired:
+                logger.warning("coding_suggestion.lock_busy public_id=%s holder=redrive", public_id)
+                return {"status": "busy"}
+            item = self.read_by_public_id(public_id)
+            if item is None:
+                return {"status": "not_found"}
+            if item.status != "error":
+                return {"status": "not_error"}
+            if item.confirmation_source != REPOINT_CONFIRMATION_SOURCE:
+                return {"status": "not_a_repoint"}
+            if not item.repoint_targets:
+                return {"status": "no_repoint_targets"}
+            if self._has_recode_dead_letter(public_id):
+                return {"status": "dead_letter_pending"}
+
+            recorded = self.record_confirmation(
+                public_id=public_id,
+                confirmed_project_id=item.confirmed_project_id,
+                confirmed_sub_cost_code_id=item.confirmed_sub_cost_code_id,
+                confirmed_description=item.confirmed_description,
+                expected_sync_token=item.written_sync_token,  # as confirm(repoint=True): the drain fences on OUR write's token
+                status="confirmed",
+                confirmation_source=REPOINT_CONFIRMATION_SOURCE,
+                repoint_targets_json=item.repoint_targets_json,
+                expected_confirmation_seq=item.confirmation_seq,
+            )
+            if recorded is None:
+                logger.warning("coding_suggestion.redrive_revision_lost public_id=%s", public_id)
+                return {"status": "moved"}
+            new_seq = getattr(recorded, "confirmation_seq", None)
+            if not self._enqueue_recode_and_mark(public_id, item.realm_id, new_seq):
+                return {"status": "moved"}
+            logger.warning("coding_suggestion.redrive_enqueued public_id=%s confirmation_seq=%s", public_id, new_seq)
+            return {"status": "enqueued", "confirmation_seq": new_seq}
+
     def mark_error(
         self,
         public_id: str,

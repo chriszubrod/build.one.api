@@ -646,7 +646,11 @@ CREATE OR ALTER PROCEDURE RecordCodingSuggestionConfirmation
     @PrefillState NVARCHAR(12) = NULL,
     @ConfirmationSource NVARCHAR(20) = NULL,
     @RepointTargetsJson NVARCHAR(MAX) = NULL,
-    @ExpectedConfirmationSeq INT = NULL  -- U-551b-f1 R4b: when given, the UPDATE lands only on the revision the caller read
+    -- U-551b-f1 R4b: when given, the UPDATE lands only on the revision the caller read.
+    -- U-551b-f1-f5: that fenced branch also admits Status 'error', so the system-admin redrive of an
+    -- `error` repoint can re-record the SAME approved revision fenced on the seq it read. The unfenced
+    -- branch (seq NULL) is unchanged.
+    @ExpectedConfirmationSeq INT = NULL
 )
 AS
 BEGIN
@@ -682,7 +686,7 @@ BEGIN
           @ExpectedConfirmationSeq IS NULL
           OR (
               cs.[ConfirmationSeq] = @ExpectedConfirmationSeq
-              AND cs.[Status] IN (N'written', N'confirmed', N'enqueued')
+              AND cs.[Status] IN (N'written', N'confirmed', N'enqueued', N'error')
           )
       );
 
@@ -1292,5 +1296,100 @@ BEGIN
       AND cs.[Status] IN (N'pending', N'suggested', N'flagged', N'changed_in_qbo');
 
     COMMIT TRANSACTION;
+END;
+GO
+
+
+-- U-551b-f1-f5: confirmed rows whose enqueue was lost (crash/raise between RecordCodingSuggestionConfirmation
+-- and the outbox enqueue). "Live" outbox = pending / failed / in_progress; `done` is NOT live (a done
+-- row for a still-`confirmed` suggestion means the drain finished without marking it). HasDeadLetter
+-- lets the caller refuse (an operator replays dead letters), never re-enqueue behind one.
+CREATE OR ALTER PROCEDURE ReadStrandedConfirmedCodingSuggestions
+(
+    @OlderThanSeconds INT = 300,
+    @Limit INT = 100
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT TOP (@Limit)
+        cs.[PublicId],
+        cs.[RealmId],
+        cs.[ConfirmationSeq],
+        cs.[ConfirmationSource],
+        CONVERT(VARCHAR(23), cs.[ConfirmedAt], 121) AS [ConfirmedAt],
+        CAST(
+            CASE WHEN EXISTS (
+                SELECT 1
+                FROM [qbo].[Outbox] d
+                WHERE d.[Kind] = N'recode_purchase_line'
+                  AND d.[EntityType] IN (N'CodingSuggestion', N'ExpenseCodingItem')
+                  AND d.[EntityPublicId] = cs.[PublicId]
+                  AND d.[Status] = N'dead_letter'
+            ) THEN 1 ELSE 0 END AS BIT
+        ) AS [HasDeadLetter]
+    FROM dbo.[CodingSuggestion] cs
+    WHERE cs.[Status] = N'confirmed'
+      AND cs.[ConfirmedAt] <= DATEADD(SECOND, -@OlderThanSeconds, SYSUTCDATETIME())
+      AND NOT EXISTS (
+          SELECT 1
+          FROM [qbo].[Outbox] o
+          WHERE o.[Kind] = N'recode_purchase_line'
+            AND o.[EntityType] IN (N'CodingSuggestion', N'ExpenseCodingItem')
+            AND o.[EntityPublicId] = cs.[PublicId]
+            AND o.[Status] IN (N'pending', N'failed', N'in_progress')
+      )
+    ORDER BY cs.[ConfirmedAt];
+END;
+GO
+
+
+-- U-551b-f1-f5: report-only recovery visibility. (a) `error` repoints (admin redrive); (b) `written` rows
+-- with no written record (adoption is f3b, open). Legacy pre-record rows are excluded by the caller's
+-- @RecordRequiredSince.
+CREATE OR ALTER PROCEDURE ReadCodingSuggestionRecoveryCandidates
+(
+    @RecordRequiredSince DATETIME2(3) = NULL,
+    @Limit INT = 100
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT TOP (@Limit)
+        u.[PublicId],
+        u.[RealmId],
+        u.[ConfirmationSeq],
+        u.[Category],
+        u.[WriteError]
+    FROM (
+        SELECT
+            cs.[PublicId],
+            cs.[RealmId],
+            cs.[ConfirmationSeq],
+            N'error_repoint' AS [Category],
+            cs.[WriteError] AS [WriteError],
+            cs.[ModifiedDatetime] AS [SortAt]
+        FROM dbo.[CodingSuggestion] cs
+        WHERE cs.[Status] = N'error'
+          AND cs.[ConfirmationSource] = N'complete_repoint'
+
+        UNION ALL
+
+        SELECT
+            cs.[PublicId],
+            cs.[RealmId],
+            cs.[ConfirmationSeq],
+            N'written_without_record' AS [Category],
+            cs.[WriteError] AS [WriteError],
+            cs.[ModifiedDatetime] AS [SortAt]
+        FROM dbo.[CodingSuggestion] cs
+        WHERE cs.[Status] = N'written'
+          AND cs.[WrittenSyncToken] IS NULL
+          AND cs.[WrittenLinesJson] IS NULL
+          AND (@RecordRequiredSince IS NULL OR cs.[WrittenAt] >= @RecordRequiredSince)
+    ) u
+    ORDER BY u.[SortAt];
 END;
 GO

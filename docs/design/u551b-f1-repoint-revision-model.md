@@ -211,3 +211,44 @@ is unsafe in BOTH directions: an old-image worker does not know persisted target
 consume a repoint as a first write and advance `WrittenSyncToken` without lines), and an old-image
 confirm does not take the lock. So: apply SQL → pause the QBO drain timer → let in-flight handlers
 finish → swap the image → resume. This round adds no SQL.
+
+## 8. Recovery (f5 sweeper, f3 redrive)
+
+Two lost-step failures had no in-app recovery: a `confirmed` row whose enqueue never happened (confirm is
+three DB calls: record, enqueue, mark), and a repoint the drain marked `error`.
+
+- **D1** The sweeper remediates ONLY stranded `confirmed` rows: it re-reads the row under
+  `coding_suggestion_lock`, re-checks `Status='confirmed'` and an unchanged seq, then runs
+  `_enqueue_recode_and_mark(public_id, realm_id, seq)`. Gated by `recode_write_gate_reason()` like confirm
+  (gate off + apply = zero writes).
+- **D2** No timer ever re-drives an `error` row (a deterministic error such as `repoint_line_holding` would
+  loop every tick). `error` rows are only REPORTED (`recovery.error_repoint`).
+- **D3** Re-driving an `error` repoint is a human system-admin action (`POST .../redrive-repoint`,
+  `require_system_admin()`): under the lock it re-records the row's own `RepointTargetsJson` as a new seq,
+  fenced on the seq it read (`RecordCodingSuggestionConfirmation` admits `error` in the seq-given branch
+  only), then enqueues. The drain's token fence then writes or marks `changed_in_qbo`.
+- **D4** A `dead_letter` recode outbox row blocks both actions (`dead_letter_pending`, zero writes); the
+  operator replays it (`scripts/retry_qbo_outbox_dead_letters.py`).
+- **D5** Stranded = `confirmed`, `ConfirmedAt` older than `@OlderThanSeconds` (300), and no outbox row of
+  kind `recode_purchase_line` (entity type `CodingSuggestion`/`ExpenseCodingItem`) in
+  `pending|failed|in_progress`; `done` is NOT live.
+
+| State | Action | Fence |
+|---|---|---|
+| `confirmed`, no live outbox row | sweeper re-enqueues | lock + status + seq re-check; mark fenced on seq |
+| `error`, source `complete_repoint` | admin redrive | lock + `ExpectedConfirmationSeq` (admits `error`) |
+| `error`, first write | cockpit confirm (existing recovery); redrive refuses `not_a_repoint` | - |
+| `written` without a record | report only (`recovery.written_without_record`); adoption = f3b, open | - |
+| `dead_letter` outbox row | operator replay; sweeper/redrive report `dead_letter_pending` | - |
+
+`written_without_record` is bounded by `RECORD_REQUIRED_SINCE_UTC` (shared/api/admin.py, the U-551b-f1
+deploy instant): older `written` rows legitimately have no record.
+
+Two self-healing paths cover the partial-failure orderings: if the record succeeded but the enqueue raised,
+the row is `confirmed` with no outbox row and the sweeper re-enqueues it after 300 s; if the enqueue succeeded
+but the mark was fenced out, the drain processes `confirmed` rows and marks on the live seq. Entity types are
+deliberately asymmetric: the sproc's `HasDeadLetter` scans `EntityType IN (CodingSuggestion, ExpenseCodingItem)`
+to catch legacy rows, while the service/enqueue guard checks `CodingSuggestion`, the only type enqueued today.
+
+Deploy: SQL first (two new sprocs + the guard), then the API image, then the scheduler.
+

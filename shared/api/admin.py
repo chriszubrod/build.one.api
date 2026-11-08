@@ -4,6 +4,7 @@ import hmac
 import logging
 import os
 import time
+import uuid
 from contextlib import ExitStack
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -860,6 +861,73 @@ async def reconcile_expense_coding_externally_resolved_router(
             )
 
     return await _timed("expense_coding.reconcile_externally_resolved", _run)
+
+
+# U-551b-f1-f5: the instant U-551b-f1 (the written-record columns) went live in prod. A `written` coding
+# suggestion with no written record that was written BEFORE this predates the record and is expected
+# (legacy); one written at/after it is a real gap the sweeper reports. Naive UTC (DATETIME2 has no zone).
+# SQL went live first and the ~10-minute mixed window carried zero recode rows (TODO.md U-551b-f1 block), so the
+# exact instant is not load-bearing.
+RECORD_REQUIRED_SINCE_UTC = datetime(2026, 11, 7, 22, 40, 0)
+
+
+@router.post(
+    "/expense-coding/sweep-stranded",
+    dependencies=[Depends(_require_drain_secret)],
+)
+async def sweep_stranded_coding_suggestions_router(
+    apply: bool = Query(default=False),
+    older_than_seconds: int = Query(default=300, ge=60, le=86400),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    """Re-enqueue `confirmed` coding suggestions whose outbox enqueue was lost (U-551b-f1-f5).
+
+    Default is dry-run (`apply=false`). Never re-drives an `error` row - those are only reported
+    under `result.recovery`. Gated by the recode write gate exactly like confirm.
+    """
+    def _run() -> dict[str, Any]:
+        from entities.coding_suggestion.business.service import CodingSuggestionService
+        from shared.authz.context import system_authz
+
+        with system_authz():
+            return CodingSuggestionService().sweep_stranded_confirmed(
+                dry_run=not apply,
+                older_than_seconds=older_than_seconds,
+                limit=limit,
+                record_required_since=RECORD_REQUIRED_SINCE_UTC,
+            )
+
+    return await _timed("expense_coding.sweep_stranded", _run)
+
+
+@router.post("/expense-coding/suggestions/{public_id}/redrive-repoint")
+async def redrive_error_repoint_router(
+    public_id: str,
+    current_user: dict = Depends(require_system_admin()),
+):
+    """System-admin re-drive of a repoint the drain marked `error` (U-551b-f1-f5). Re-records the SAME
+    approved revision as a new ConfirmationSeq and enqueues. Refusals: 404 `not_found`, else 409 with
+    `detail` = the refusal status."""
+    try:
+        canonical = str(uuid.UUID(public_id))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=422, detail="public_id must be a UUID")
+
+    def _run() -> dict[str, Any]:
+        from entities.coding_suggestion.business.service import CodingSuggestionService
+
+        return CodingSuggestionService().redrive_error_repoint(canonical)
+
+    result = await asyncio.to_thread(_run)
+    logger.warning(
+        "admin.expense_coding.redrive_repoint public_id=%s status=%s user_id=%s",
+        canonical, result.get("status"), current_user.get("user_id"),
+    )
+    if result.get("status") == "enqueued":
+        return {"data": result}
+    if result.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="not_found")
+    raise HTTPException(status_code=409, detail=result.get("status", "refused"))
 
 
 @router.post(

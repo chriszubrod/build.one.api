@@ -147,7 +147,8 @@ LEGACY_ROWVERSION = "AND (@ExpectedRowVersion IS NULL OR cs.[RowVersion] = @Expe
 
 
 @pytest.mark.parametrize("proc,statuses,legacy_rowversion", [
-    ("RecordCodingSuggestionConfirmation", {"written", "confirmed", "enqueued"}, False),
+    # U-551b-f1-f5: "error" admitted in the seq-given branch so the admin redrive of an error repoint can fence
+    ("RecordCodingSuggestionConfirmation", {"written", "confirmed", "enqueued", "error"}, False),
     ("MarkCodingSuggestionEnqueued", {"confirmed", "enqueued"}, False),
     ("MarkCodingSuggestionWritten", {"confirmed", "enqueued"}, False),
     # the U-652 @ExpectedRowVersion clause is kept (deploy-window compat) - pinned AS WRITTEN, then removed
@@ -193,4 +194,4 @@ def test_record_confirmation_where_has_no_tautology_and_the_exact_status_set():
     assert not re.search(r"\b1\s*=\s*1\b", flat)
     assert len(re.findall(r"\bOR\b", flat)) == 1
     (listed,) = re.findall(r"cs\.\[Status\] IN \(([^)]*)\)", flat)
-    assert set(re.findall(r"N'([a-z_]+)'", listed)) == {"written", "confirmed", "enqueued"}
+    assert set(re.findall(r"N'([a-z_]+)'", listed)) == {"written", "confirmed", "enqueued", "error"}  # U-551b-f1-f5

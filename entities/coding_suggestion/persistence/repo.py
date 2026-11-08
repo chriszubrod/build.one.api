@@ -390,6 +390,57 @@ class CodingSuggestionRepository:
             logger.error("Error reading externally resolved coding item candidates: %s", error)
             raise map_database_error(error)
 
+    def read_stranded_confirmed(self, older_than_seconds: int = 300, limit: int = 100) -> list[dict]:
+        """U-551b-f1-f5: ``confirmed`` rows with no live outbox row (the enqueue was lost)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadStrandedConfirmedCodingSuggestions",
+                    params={"OlderThanSeconds": older_than_seconds, "Limit": limit},
+                )
+                return [
+                    {
+                        "public_id": str(row.PublicId) if getattr(row, "PublicId", None) else None,
+                        "realm_id": getattr(row, "RealmId", None),
+                        "confirmation_seq": getattr(row, "ConfirmationSeq", None),
+                        "confirmation_source": getattr(row, "ConfirmationSource", None),
+                        "confirmed_at": getattr(row, "ConfirmedAt", None),
+                        "has_dead_letter": bool(getattr(row, "HasDeadLetter", False)),
+                    }
+                    for row in cursor.fetchall()
+                ]
+        except Exception as error:
+            logger.error("Error reading stranded confirmed coding suggestions: %s", error)
+            raise map_database_error(error)
+
+    def read_recovery_candidates(
+        self, record_required_since=None, limit: int = 100
+    ) -> list[dict]:
+        """U-551b-f1-f5: report-only ``error`` repoints and ``written`` rows with no written record."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadCodingSuggestionRecoveryCandidates",
+                    params={"RecordRequiredSince": record_required_since, "Limit": limit},
+                )
+                return [
+                    {
+                        "public_id": str(row.PublicId) if getattr(row, "PublicId", None) else None,
+                        "realm_id": getattr(row, "RealmId", None),
+                        "confirmation_seq": getattr(row, "ConfirmationSeq", None),
+                        "category": getattr(row, "Category", None),
+                        "write_error": getattr(row, "WriteError", None),
+                    }
+                    for row in cursor.fetchall()
+                ]
+        except Exception as error:
+            logger.error("Error reading coding suggestion recovery candidates: %s", error)
+            raise map_database_error(error)
+
     def mark_resolved_externally(
         self,
         public_id: str,

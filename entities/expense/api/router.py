@@ -54,6 +54,8 @@ logger = logging.getLogger(__name__)
 
 # Terminal coding statuses — everything else counts as OPEN for `needs_coding`.
 # `written` is the sole terminal state; do not derive openness from SubCostCodeId.
+# Narrower than coding_suggestion.business.model.TERMINAL_STATUSES on purpose: resolved_externally is
+# terminal for the write path but still shown as open here; pinned by test_u551bf1f9.
 EXPENSE_CODING_TERMINAL_STATUSES = frozenset({"written"})
 
 router = APIRouter(prefix="/api/v1", tags=["api", "expense"])

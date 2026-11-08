@@ -14,6 +14,23 @@ import json
 # the sproc param (NVARCHAR(20)) - a longer value is truncated silently and never matches.
 REPOINT_CONFIRMATION_SOURCE = "complete_repoint"
 
+# U-551b-f1-f9: the ONE coding-suggestion status policy. Every confirm guard, submit pre-filter,
+# completion candidate filter and drain worker reads these instead of respelling the status strings.
+TERMINAL_STATUSES = frozenset({"written", "resolved_externally"})
+IN_FLIGHT_STATUSES = frozenset({"confirmed", "enqueued"})
+# Rows completion may repoint: a written record or an in-flight revision; resolved_externally is not one.
+REPOINT_CANDIDATE_STATUSES = frozenset({"written"}) | IN_FLIGHT_STATUSES
+
+
+def is_repoint_pending(status, confirmation_source) -> bool:
+    """A completion repoint owns this row: in flight (confirmed/enqueued) under the repoint source."""
+    return status in IN_FLIGHT_STATUSES and confirmation_source == REPOINT_CONFIRMATION_SOURCE
+
+
+def has_written_record(item) -> bool:
+    """EITHER half of a written record (sync token or lines) counts."""
+    return bool(getattr(item, "written_sync_token", None) or getattr(item, "written_lines", None))
+
 
 @dataclass
 class VendorDominantSubCostCodeForBills:

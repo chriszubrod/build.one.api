@@ -46,6 +46,11 @@ from typing import Any, List, Optional
 # Third-party Imports
 
 # Local Imports
+from entities.coding_suggestion.business.model import (
+    REPOINT_CANDIDATE_STATUSES,
+    TERMINAL_STATUSES,
+    is_repoint_pending,
+)
 from integrations.ms.base.paths import sharepoint_safe_name
 from entities.expense.business.model import Expense
 from entities.expense.persistence.repo import ExpenseRepository
@@ -799,13 +804,8 @@ class ExpenseService:
 
     def enqueue_coding_recode_on_submit(self, *, expense_id: int, user_id: int) -> dict:
         """Enqueue one QBO recode per Expense CodingSuggestion (U-486 C2 / U-652)."""
-        from entities.expense.api.router import EXPENSE_CODING_TERMINAL_STATUSES
-        from entities.coding_suggestion.business.model import REPOINT_CONFIRMATION_SOURCE
         from entities.coding_suggestion.business.service import CodingSuggestionService
         from entities.coding_suggestion.persistence.repo import CodingSuggestionRepository
-
-        def _is_terminal_status(status: Optional[str]) -> bool:
-            return status in EXPENSE_CODING_TERMINAL_STATUSES or status == "resolved_externally"
 
         summary: dict[str, Any] = {
             "enqueued": 0,
@@ -885,14 +885,14 @@ class ExpenseService:
                 item_result["seeded_suggestion"] = True
                 seeded_suggestion = False
 
-            if _is_terminal_status(status):
+            if status in TERMINAL_STATUSES:
                 summary["skipped"] += 1
                 item_result["outcome"] = "skipped"
                 item_result["reason"] = "terminal_status"
                 summary["items"].append(item_result)
                 continue
 
-            if status in ("confirmed", "enqueued") and item.get("confirmation_source") == REPOINT_CONFIRMATION_SOURCE:
+            if is_repoint_pending(status, item.get("confirmation_source")):
                 # A repoint is pending/in flight: never re-confirm it as a FIRST write (that would
                 # replace the source and snapshot staging's token).
                 summary["skipped"] += 1
@@ -1001,7 +1001,8 @@ class ExpenseService:
             candidates = [
                 st
                 for st in states
-                if st.get("public_id") and st.get("status") in ("written", "confirmed", "enqueued")
+                if st.get("public_id")
+                and st.get("status") in REPOINT_CANDIDATE_STATUSES
             ]
             if not candidates:
                 return None
@@ -1125,16 +1126,12 @@ class ExpenseService:
         ``repoint_line_uncoded``) returns the skip dict: "could not compute" is never "nothing
         diverges" (I5), and the persisted approval is never recovered.
         """
-        from entities.coding_suggestion.business.model import REPOINT_CONFIRMATION_SOURCE
         from integrations.intuit.qbo.base.cost_code_resolver import resolve_qbo_item_ref
 
         full = repo.read_by_public_id(public_id)
         if full is None:
             return None
-        pending = (
-            full.status in ("confirmed", "enqueued")
-            and getattr(full, "confirmation_source", None) == REPOINT_CONFIRMATION_SOURCE
-        )
+        pending = is_repoint_pending(full.status, getattr(full, "confirmation_source", None))
         if full.status != "written" and not pending:
             return None
         if self._written_record_is_malformed(full):

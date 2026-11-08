@@ -11,10 +11,13 @@ from typing import Any, Optional
 
 # Local Imports
 from entities.coding_suggestion.business.model import (
+    IN_FLIGHT_STATUSES,
     REPOINT_CONFIRMATION_SOURCE,
     CodingSuggestion,
     VendorDominantProjectForBills,
     VendorDominantSubCostCodeForBills,
+    has_written_record,
+    is_repoint_pending,
 )
 from entities.coding_suggestion.persistence.repo import CodingSuggestionRepository
 from entities.sub_cost_code.business.holding_lines import assert_no_holding_on_lines
@@ -869,16 +872,14 @@ class CodingSuggestionService:
             return {"status": "already_written"}
         if status == "resolved_externally":
             return {"status": "resolved_externally"}
-        if status in ("confirmed", "enqueued") and (
-            getattr(item, "confirmation_source", None) == REPOINT_CONFIRMATION_SOURCE
-        ):
+        if is_repoint_pending(status, getattr(item, "confirmation_source", None)):
             return {"status": "repoint_pending"}  # completion owns a repoint; this caller must not touch it
-        if getattr(item, "written_sync_token", None) or getattr(item, "written_lines", None):
+        if has_written_record(item):
             # F5 (r3: BEFORE the first-write recovery, and EITHER half of the record counts): a row our drain
             # has written is never a first-write target again - a first write never sets the token, and
             # MarkCodingSuggestionWritten CASE-preserves it, so the token alone proves our write landed.
             return {"status": "already_written"}
-        if status in ("confirmed", "enqueued"):
+        if status in IN_FLIGHT_STATUSES:
             if status == "enqueued":
                 return {"status": "already_enqueued"}
             same_coding = (project_id, sub_cost_code_id) == (
@@ -929,8 +930,7 @@ class CodingSuggestionService:
 
         pending_repoint = (
             repoint
-            and item.status in ("confirmed", "enqueued")
-            and getattr(item, "confirmation_source", None) == REPOINT_CONFIRMATION_SOURCE
+            and is_repoint_pending(item.status, getattr(item, "confirmation_source", None))
         )  # recovery / in-flight: the persisted targets are the work, no coding args are needed
         if (not project_id or not sub_cost_code_id) and not pending_repoint:
             return {
@@ -952,9 +952,8 @@ class CodingSuggestionService:
             written = item.written_lines
             # A repoint stranded between confirm and enqueue (status 'confirmed', our source) is
             # recovered; one already enqueued is in flight. Anything else must be 'written'.
-            ours = getattr(item, "confirmation_source", None) == REPOINT_CONFIRMATION_SOURCE
             replacing = False
-            if item.status in ("confirmed", "enqueued") and ours:
+            if is_repoint_pending(item.status, getattr(item, "confirmation_source", None)):
                 # ``None`` = the probe's recompute failed (recover the persisted work as-is); ``[]`` =
                 # recomputed and nothing diverges any more (an EMPTY revision, R4b-0).
                 if repoint_targets is not None:

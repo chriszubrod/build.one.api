@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, Optional
 
 # Local Imports
-from entities.coding_suggestion.business.model import REPOINT_CONFIRMATION_SOURCE
+from entities.coding_suggestion.business.model import IN_FLIGHT_STATUSES, REPOINT_CONFIRMATION_SOURCE
 from integrations.intuit.qbo.base.correlation import (
     ensure_correlation_id,
     idempotency_key_context,
@@ -1301,8 +1301,8 @@ class QboOutboxWorker:
         # under ALLOW_QBO_WRITES). Process both 'enqueued' and 'confirmed': the
         # latter covers the crash window where enqueue succeeded but the follow-up
         # mark_enqueued did not — skipping it here would silently drop the write.
-        # Terminal states (written / changed_in_qbo / error) are idempotent skips.
-        if item.status not in ("enqueued", "confirmed"):
+        # Anything not in flight (written / changed_in_qbo / error / resolved_externally) is an idempotent skip.
+        if item.status not in IN_FLIGHT_STATUSES:
             return
 
         confirmation_seq = getattr(item, "confirmation_seq", None)

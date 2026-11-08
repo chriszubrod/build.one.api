@@ -1670,6 +1670,22 @@ class ExpenseService:
             if hasattr(self, "_expense_line_item_service"):
                 self._assert_no_holding_code_on_complete(expense.id)
 
+            # Step 4 (QBO recode / repoint enqueue, U-740 / U-551b-f1) runs BEFORE the
+            # parent flips to `completed` (U-551b-f1-f1 F1). While the parent is still
+            # `approved`, the QBO pull preserves the reviewer's local line coding, so
+            # the probe reads the reviewer's coding and the confirm persists its
+            # targets under the suggestion lock before the status flips. Run after
+            # finalize it raced a 15-minute pull landing in the gap, which rewrote
+            # the line back to QBO's coding and silently lost the recode.
+            # If finalize_by_id then fails, the enqueued recode is still correct work:
+            # the drain writes the persisted approval, and a later re-completion
+            # finds no divergence. The result is reported as `qbo_sync` below.
+            qbo_sync_result = self._enqueue_coding_recode_on_complete(
+                expense_id=expense.id,
+                qbo_linked=bool(getattr(expense, "qbo_id", None) and getattr(expense, "realm_id", None)),
+                expense=expense,
+            )
+
             finalized = self.repo.finalize_by_id(id=expense.id)
             if not finalized:
                 return {
@@ -1785,12 +1801,7 @@ class ExpenseService:
         if receipts_upload_result.get("errors"):
             all_errors.extend(receipts_upload_result["errors"])
 
-        # Step 4: Enqueue QBO purchase-line recode when staging is still uncoded (U-740).
-        qbo_sync_result = self._enqueue_coding_recode_on_complete(
-            expense_id=expense.id,
-            qbo_linked=bool(getattr(expense, "qbo_id", None) and getattr(expense, "realm_id", None)),
-            expense=expense,
-        )
+        # Step 4 (QBO recode enqueue) already ran before finalize — see above.
 
         # Step 5: Box mirror — enqueue line-item attachments to each mapped
         # project's Box folder. Additive + failure-isolated. One pass covers

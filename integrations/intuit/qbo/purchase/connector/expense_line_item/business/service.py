@@ -31,6 +31,9 @@ from integrations.intuit.qbo.reconciliation.persistence.repo import Reconciliati
 
 logger = logging.getLogger(__name__)
 
+# Parent Expense statuses during which a human owns the coding (U-551b-f1-f1).
+_UNDER_REVIEW_STATUSES = frozenset({"submitted", "in_review", "approved"})
+
 
 # Pure pull-side field decision, deliberately NOT connector state. The identical
 # AccountBasedExpenseLineDetail gap exists in the Bill and VendorCredit line
@@ -190,9 +193,12 @@ class PurchaseLineExpenseLineItemConnector:
             )
 
         expense = self.expense_service.read_by_id(expense_id)
-        parent_approved = (
-            expense is not None and getattr(expense, "status", None) == "approved"
-        )
+        # This early snapshot serves the create path and the holding-code recorder
+        # only. The UPDATE path decides on a LATE read taken after the existing line
+        # is read (`_apply_line_fields`, U-551b-f1-f1 F2) — a snapshot taken before
+        # the reference resolution / line read can miss a parent entering review.
+        parent_status = getattr(expense, "status", None) if expense is not None else None
+        parent_approved = parent_status == "approved"
 
         # Resolve sub_cost_code from item reference
         sub_cost_code_id = None
@@ -217,15 +223,64 @@ class PurchaseLineExpenseLineItemConnector:
                 details=details,
             )
 
-        def _write_sub_cost_code_id(direct: ExpenseLineItem) -> Optional[int]:
-            if parent_approved and resolved_holding:
+        def _under_review_coding(direct: ExpenseLineItem, status: Optional[str]) -> tuple:
+            """
+            The (sub_cost_code_id, project_public_id, description) triple this pull
+            writes onto an existing line — the ONE place the under-review rule
+            lives, so no update path can drift from another.
+
+            `status` is the parent's status read AFTER `direct` was read (U-551b-f1-f1
+            F2), so a parent that entered review before this read is seen.
+
+            While a human is reviewing the expense (submitted / in_review / approved)
+            QBO still holds the submitter's coding until the completion repoint
+            lands, so a line that already carries a value keeps it: the local sub
+            cost code (also when approved and QBO resolved the holding code —
+            recorded, as before), the local project, and a non-empty local
+            description. The project is kept by passing None: the SERVICE
+            (`ExpenseLineItemService.update_by_public_id`) re-reads the row and keeps
+            `existing.project_id` when the argument is None — the
+            `UpdateExpenseLineItemById` sproc has no CASE-preserve on ProjectId, and
+            `direct` does not hold the project's public id. An uncoded line, draft
+            and completed parents take QBO's values as before.
+            Quantity/rate/amount/billable/markup/price are never part of this triple
+            and always come from QBO.
+            """
+            approved = status == "approved"
+            under_review = status in _UNDER_REVIEW_STATUSES
+            if approved and resolved_holding:
                 _record_holding_on_approved(
                     f"QBO pull left approved Expense {expense_id} line {direct.id} "
                     f"with QBO-resolved holding SCC; kept local SubCostCodeId "
                     f"{direct.sub_cost_code_id}."
                 )
-                return direct.sub_cost_code_id
-            return sub_cost_code_id
+                write_scc = direct.sub_cost_code_id
+                preserved = direct.sub_cost_code_id is not None
+            elif under_review and direct.sub_cost_code_id is not None:
+                write_scc = direct.sub_cost_code_id
+                preserved = True
+            else:
+                write_scc = sub_cost_code_id
+                preserved = False
+            write_project = project_public_id
+            write_description = description
+            if under_review:
+                if getattr(direct, "project_id", None) is not None:
+                    write_project = None
+                    preserved = True
+                local_description = getattr(direct, "description", None)
+                if local_description is not None and str(local_description).strip():
+                    write_description = local_description
+                    preserved = True
+                if preserved:
+                    logger.info(
+                        "qbo.pull.local_coding_preserved_under_review "
+                        "expense=%s line_id=%s status=%s local_sub_cost_code_id=%s "
+                        "qbo_sub_cost_code_id=%s",
+                        expense_public_id, direct.id, status,
+                        direct.sub_cost_code_id, sub_cost_code_id,
+                    )
+            return write_scc, write_project, write_description
 
         # Resolve project from customer reference
         project_public_id = None
@@ -293,18 +348,26 @@ class PurchaseLineExpenseLineItemConnector:
             a fast-path HIT that skipped healing it would find such a row
             forever afterward and never correct it.
             """
+            # F2: the status that decides the coding triple is read no earlier than
+            # the line it protects (`direct`, read by the caller). One extra read per
+            # applied line. The update below carries `direct.row_version`, so a
+            # reviewer edit after the line read still fails the write; a review
+            # transition after the line read but before this read is seen here.
+            late_expense = self.expense_service.read_by_id(expense_id)
+            late_status = getattr(late_expense, "status", None) if late_expense is not None else None
             update_qty = preserve_stored_value(default_qty, qbo_line.qty, direct.quantity)
             update_rate = preserve_stored_value(default_rate, qbo_line.unit_price, direct.rate)
             update_markup = preserve_stored_value(default_markup, qbo_line.markup_percent, direct.markup)
 
             invoice_linked = getattr(self, "_u738_invoice_linked_eli_ids", frozenset())
             has_invoice_ref = coerce_id(direct.id) in invoice_linked
+            write_scc, write_project, write_description = _under_review_coding(direct, late_status)
             updated = self.expense_line_item_service.update_by_public_id(
                 direct.public_id,
                 row_version=direct.row_version,
-                sub_cost_code_id=_write_sub_cost_code_id(direct),
-                project_public_id=project_public_id,
-                description=description,
+                sub_cost_code_id=write_scc,
+                project_public_id=write_project,
+                description=write_description,
                 quantity=update_qty,
                 rate=update_rate,
                 amount=amount,

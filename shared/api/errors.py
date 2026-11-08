@@ -39,6 +39,7 @@ class ErrorCode:
 
     ENTRY_LOCKED = "entry_locked"  # parent entry left draft — only drafts accept edits; phone keeps edit queued
     ENTRY_APPROVED = "entry_approved"  # parent entry is APPROVED — terminal; phone discards the edit
+    PARENT_STATUS_MOVED = "parent_status_moved"  # line write fenced on the parent status found it moved — re-read and retry
     TRANSITION_INVALID = "transition_invalid"  # "Cannot transition from … to …"
     DUPLICATE_KEY = "duplicate_key"  # unique-key violation (2627/2601)
     CONCURRENCY_CONFLICT = "concurrency_conflict"  # UPDATE matched no row at the stored row version — reload and retry

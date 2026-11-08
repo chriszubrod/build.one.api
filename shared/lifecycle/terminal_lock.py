@@ -124,6 +124,7 @@ the sproc is the one that cannot be raced.
 
 from typing import Optional
 
+from shared.api.errors import ApiError, ErrorCode
 from shared.authz import current_is_system_context
 
 # The router maps this exact prefix to 422 + `status_locked`. ProcessEngine
@@ -202,6 +203,33 @@ def reraise_if_sproc_holding_code(error: Exception, *, what: str) -> None:
         from shared.lifecycle.completion_gate import HoldingCodeRefused
 
         raise HoldingCodeRefused(what) from error
+
+
+# U-551b-f1-f12 — the parent Expense's status moved between a caller's read and the line UPDATE.
+SPROC_PARENT_STATUS_MOVED_TOKEN = "PARENT_STATUS_MOVED:"
+
+
+class ParentStatusMovedError(ApiError):
+    """A line write fenced on `@ObservedParentStatus` found the parent's status had moved.
+
+    Same base family as `HoldingCodeRefused` (an `ApiError`; `CompletionRefused`
+    cannot be imported here without a cycle). Deliberately NEITHER a ValueError
+    (identity_fastpath's `record_projection_error` treats that as a permanent
+    SKIP, advancing the watermark past a decision that was never applied) NOR a
+    RuntimeError / DatabaseConcurrencyError (that HOLDS the watermark and fails
+    the expense). The QBO pull catches it by type and re-raises the standard
+    transient-race RuntimeError: the expense fails this tick, the watermark
+    holds, and the next tick re-reads the now-stable status.
+    """
+
+    def __init__(self, message: str = "The Expense status changed since it was read."):
+        super().__init__(status_code=409, detail=message, error_code=ErrorCode.PARENT_STATUS_MOVED)
+
+
+def reraise_if_sproc_parent_status_moved(error: Exception) -> None:
+    """Map a sproc PARENT_STATUS_MOVED RAISERROR to `ParentStatusMovedError`."""
+    if SPROC_PARENT_STATUS_MOVED_TOKEN in str(error):
+        raise ParentStatusMovedError() from error
 
 
 def is_terminal(status: Optional[str], *, is_draft: Optional[bool] = None) -> bool:

@@ -223,14 +223,16 @@ class _SequencedExpenseService:
         return SimpleNamespace(status=status, qbo_id="P-1", public_id="exp-pub")
 
 
-def _drive_sequenced(*statuses, direct=None, seq=None):
-    direct = direct or _local_line()
-    seq = seq or _SequencedExpenseService(*statuses)
+def _wire_connector(direct, seq, update_side_effect=None):
+    """Connector with every collaborator stubbed; returns (connector, line_svc mock)."""
     connector = PurchaseLineExpenseLineItemConnector()
     line_svc = Mock()
     line_svc.read_by_expense_id.return_value = [direct]
     line_svc.read_by_qbo_identity.return_value = direct
-    line_svc.update_by_public_id.return_value = SimpleNamespace(id=direct.id, public_id=direct.public_id)
+    if update_side_effect is None:
+        line_svc.update_by_public_id.return_value = SimpleNamespace(id=direct.id, public_id=direct.public_id)
+    else:
+        line_svc.update_by_public_id.side_effect = update_side_effect
     connector.expense_line_item_service = line_svc
     connector.sub_cost_code_service = Mock()
     connector.sub_cost_code_service.is_holding_code.return_value = False
@@ -240,6 +242,13 @@ def _drive_sequenced(*statuses, direct=None, seq=None):
     connector.project_service.read_by_qbo_identity.return_value = SimpleNamespace(
         id=77, public_id=QBO_PROJECT, qbo_id="cust-1", realm_id="realm-1"
     )
+    return connector, line_svc
+
+
+def _drive_sequenced(*statuses, direct=None, seq=None):
+    direct = direct or _local_line()
+    seq = seq or _SequencedExpenseService(*statuses)
+    connector, line_svc = _wire_connector(direct, seq)
     with patch(
         f"{_MODULE}.resolve_dbo_sub_cost_code", return_value=SimpleNamespace(id=QBO_SCC)
     ), patch(f"{_MODULE}.verify_identity_dbo_only", return_value="cust-1"):

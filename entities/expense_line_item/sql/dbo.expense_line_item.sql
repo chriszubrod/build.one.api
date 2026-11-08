@@ -391,7 +391,8 @@ CREATE OR ALTER PROCEDURE UpdateExpenseLineItemById
     @Markup DECIMAL(18,4) NULL,
     @Price DECIMAL(18,2) NULL,
     @IsDraft BIT = NULL,
-    @AllowTerminalParent BIT = 0
+    @AllowTerminalParent BIT = 0,
+    @ObservedParentStatus NVARCHAR(20) = NULL
 )
 AS
 BEGIN
@@ -430,7 +431,8 @@ BEGIN
         END
 
         DECLARE @TargetExpenseStatus NVARCHAR(20) = NULL;
-        SELECT @TargetExpenseStatus = [Status] FROM dbo.[Expense] WHERE [Id] = @ExpenseId;
+        SELECT @TargetExpenseStatus = [Status] FROM dbo.[Expense] WITH (UPDLOCK, HOLDLOCK) WHERE [Id] = @ExpenseId;
+        -- U-632: a holding/suspense code cannot land on an approved Expense line.
         IF @TargetExpenseStatus = N'approved'
            AND @SubCostCodeId IS NOT NULL
            AND EXISTS (
@@ -440,6 +442,18 @@ BEGIN
         BEGIN
             COMMIT TRANSACTION;
             RAISERROR('HOLDING_CODE: suspense sub cost code cannot be written onto an approved Expense line.', 16, 1);
+            RETURN;
+        END
+
+        -- U-551b-f1-f12: optional fence. A caller that decided from a parent status it read
+        -- earlier passes it; if the status under the parent lock differs, refuse (the status SELECT above takes the
+        -- parent lock; the COUNT locks only cover completed parents) (the line's
+        -- ROWVERSION does not move on a status-only transition, so it cannot catch this).
+        IF @ObservedParentStatus IS NOT NULL
+           AND (@TargetExpenseStatus IS NULL OR @TargetExpenseStatus <> @ObservedParentStatus)
+        BEGIN
+            COMMIT TRANSACTION;
+            RAISERROR('PARENT_STATUS_MOVED: the Expense status changed since it was read.', 16, 1);
             RETURN;
         END
     END

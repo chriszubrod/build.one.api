@@ -11,6 +11,7 @@ from integrations.intuit.qbo.customer.persistence.repo import QboCustomerReposit
 from entities.expense_line_item.business.service import ExpenseLineItemService
 from entities.expense_line_item.business.model import ExpenseLineItem
 from entities.project.business.service import ProjectService
+from shared.lifecycle.terminal_lock import ParentStatusMovedError
 from entities.sub_cost_code.business.service import SubCostCodeService
 from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 from integrations.intuit.qbo.base.identity_drift import stamp_line_identity_or_warn
@@ -362,23 +363,41 @@ class PurchaseLineExpenseLineItemConnector:
             invoice_linked = getattr(self, "_u738_invoice_linked_eli_ids", frozenset())
             has_invoice_ref = coerce_id(direct.id) in invoice_linked
             write_scc, write_project, write_description = _under_review_coding(direct, late_status)
-            updated = self.expense_line_item_service.update_by_public_id(
-                direct.public_id,
-                row_version=direct.row_version,
-                sub_cost_code_id=write_scc,
-                project_public_id=write_project,
-                description=write_description,
-                quantity=update_qty,
-                rate=update_rate,
-                amount=amount,
-                is_billable=pull_is_billable(direct, is_billable),
-                is_billed=u738_pull_is_billed(
-                    direct, is_billed, has_invoice_ref=has_invoice_ref
-                ),
-                markup=update_markup,
-                price=price,
-                _via_internal_pipeline=True,
-            )
+            try:
+                updated = self.expense_line_item_service.update_by_public_id(
+                    direct.public_id,
+                    row_version=direct.row_version,
+                    sub_cost_code_id=write_scc,
+                    project_public_id=write_project,
+                    description=write_description,
+                    quantity=update_qty,
+                    rate=update_rate,
+                    amount=amount,
+                    is_billable=pull_is_billable(direct, is_billable),
+                    is_billed=u738_pull_is_billed(
+                        direct, is_billed, has_invoice_ref=has_invoice_ref
+                    ),
+                    markup=update_markup,
+                    price=price,
+                    _via_internal_pipeline=True,
+                    observed_parent_status=late_status,
+                )
+            except ParentStatusMovedError:
+                # The parent moved between the status read and the UPDATE, so this
+                # pull's QBO-side fields for the line were NOT applied. Skipping would
+                # lose them: the expense would be recorded as synced and the watermark
+                # would advance, and a status-only approval does not touch the QBO
+                # Purchase, so nothing re-pulls it. Instead the expense fails this tick
+                # (RuntimeError, never ValueError => watermark HOLDS), and the next tick
+                # re-reads the now-stable status and lands.
+                logger.info(
+                    "qbo.pull.parent_status_moved_line_skipped expense_id=%s line_public_id=%s observed_status=%s",
+                    expense_id, direct.public_id, late_status,
+                )
+                raise_concurrent_write_race(
+                    entity_label="ExpenseLineItem", entity_id=direct.id,
+                    path_label="line fast path (parent status moved)",
+                )
             if updated is None:
                 # ROWVERSION race: a concurrent writer touched this exact
                 # ExpenseLineItem between the read and this UPDATE.

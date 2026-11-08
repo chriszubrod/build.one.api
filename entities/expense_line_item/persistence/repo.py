@@ -18,6 +18,7 @@ from shared.database import (
 )
 from shared.lifecycle.terminal_lock import (
     reraise_if_sproc_holding_code,
+    reraise_if_sproc_parent_status_moved,
     reraise_if_sproc_status_locked,
 )
 
@@ -253,6 +254,7 @@ class ExpenseLineItemRepository:
         *,
         allow_terminal_parent: bool = True,
         conn: Optional[pyodbc.Connection] = None,
+        observed_parent_status: Optional[str] = None,
     ) -> Optional[ExpenseLineItem]:
         """
         Update an expense line item by ID.
@@ -280,6 +282,9 @@ class ExpenseLineItemRepository:
                     "Price": Decimal(str(expense_line_item.price)) if expense_line_item.price is not None else None,
                 }
                 params["AllowTerminalParent"] = 1 if allow_terminal_parent else 0
+                # Only when set: an old container's name-bound call stays valid (SQL-first safe).
+                if observed_parent_status is not None:
+                    params["ObservedParentStatus"] = observed_parent_status
                 # Only include IsDraft if it's explicitly set (not None)
                 if expense_line_item.is_draft is not None:
                     params["IsDraft"] = 1 if expense_line_item.is_draft else 0
@@ -309,6 +314,7 @@ class ExpenseLineItemRepository:
                     )
                 return self._from_db(row)
         except Exception as error:
+            # typed sproc refusals first — map_database_error would turn them into a 500
             reraise_if_sproc_status_locked(
                 error, what="its line items cannot be changed"
             )
@@ -318,6 +324,7 @@ class ExpenseLineItemRepository:
                     "Suspense sub cost code cannot be written onto an approved expense line."
                 ),
             )
+            reraise_if_sproc_parent_status_moved(error)
             logger.error(f"Error during update expense line item by ID: {error}")
             raise map_database_error(error)
 

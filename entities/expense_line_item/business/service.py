@@ -216,6 +216,7 @@ class ExpenseLineItemService:
         _via_internal_pipeline: bool = False,
         billable_decided: bool = False,
         actor_user_id: Optional[int] = None,
+        observed_parent_status: Optional[str] = None,
     ) -> Optional[ExpenseLineItem]:
         """
         Update an expense line item by public ID.
@@ -296,7 +297,9 @@ class ExpenseLineItemService:
 
         try:
             return self.repo.update_by_id(
-                existing, allow_terminal_parent=is_exempt(_via_internal_pipeline)
+                existing,
+                allow_terminal_parent=is_exempt(_via_internal_pipeline),
+                observed_parent_status=observed_parent_status,
             )
         except StatusLockedError:
             raise

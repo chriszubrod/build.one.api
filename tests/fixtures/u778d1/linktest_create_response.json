@@ -1,0 +1,130 @@
+{
+ "Invoice": {
+  "AllowIPNPayment": false,
+  "AllowOnlinePayment": false,
+  "AllowOnlineCreditCardPayment": false,
+  "AllowOnlineACHPayment": false,
+  "AllowOnlinePayPalPayment": false,
+  "AllowOnlineAffirmPayment": false,
+  "domain": "QBO",
+  "sparse": false,
+  "Id": "78517",
+  "SyncToken": "0",
+  "MetaData": {
+   "CreateTime": "2026-11-06T09:10:50-08:00",
+   "LastModifiedByRef": {
+    "value": "9130353016965796"
+   },
+   "LastUpdatedTime": "2026-11-06T09:10:50-08:00"
+  },
+  "CustomField": [],
+  "DocNumber": "LINKTEST-1",
+  "TxnDate": "2026-11-06",
+  "CurrencyRef": {
+   "value": "USD",
+   "name": "United States Dollar"
+  },
+  "PrivateNote": "Build.One API linking test - created and deleted by Claude on Chris's approval. Not a real bill to the client.",
+  "LinkedTxn": [
+   {
+    "TxnId": "68056",
+    "TxnType": "ReimburseCharge"
+   }
+  ],
+  "Line": [
+   {
+    "Id": "1",
+    "LineNum": 1,
+    "Description": "We removed the wet insulation in the attic.",
+    "Amount": 32.5,
+    "LinkedTxn": [
+     {
+      "TxnId": "68056",
+      "TxnType": "ReimburseCharge",
+      "TxnLineId": "1"
+     }
+    ],
+    "DetailType": "SalesItemLineDetail",
+    "SalesItemLineDetail": {
+     "ServiceDate": "2026-01-31",
+     "ItemRef": {
+      "value": "537",
+      "name": "65 Miscellaneous:65.2 Miscellaneous Labor"
+     },
+     "UnitPrice": 32.5,
+     "MarkupInfo": {
+      "PercentBased": true,
+      "Value": 32.5,
+      "Percent": 50,
+      "MarkUpIncomeAccountRef": {
+       "value": "6",
+       "name": "42600 Construction Income"
+      }
+     },
+     "Qty": 1,
+     "ItemAccountRef": {
+      "value": "6",
+      "name": "42600 Construction Income"
+     },
+     "TaxCodeRef": {
+      "value": "NON"
+     }
+    },
+    "CustomExtensions": []
+   },
+   {
+    "Id": "2",
+    "LineNum": 2,
+    "Description": "50% markup for We removed the wet insulation in the attic.",
+    "Amount": 16.25,
+    "LinkedTxn": [
+     {
+      "TxnId": "68056",
+      "TxnType": "ReimburseCharge",
+      "TxnLineId": "2"
+     }
+    ],
+    "DetailType": "SalesItemLineDetail",
+    "SalesItemLineDetail": {
+     "ServiceDate": "2026-01-31",
+     "MarkupInfo": {
+      "PercentBased": true,
+      "Value": 16.25,
+      "Percent": 50,
+      "MarkUpIncomeAccountRef": {
+       "value": "162",
+       "name": "48997 Markup"
+      }
+     },
+     "ItemAccountRef": {
+      "value": "162",
+      "name": "48997 Markup"
+     },
+     "TaxCodeRef": {
+      "value": "NON"
+     }
+    },
+    "CustomExtensions": []
+   },
+   {
+    "Amount": 48.75,
+    "DetailType": "SubTotalLineDetail",
+    "SubTotalLineDetail": {}
+   }
+  ],
+  "ProjectRef": {
+   "value": "781822923"
+  },
+  "CustomerRef": {
+   "value": "1383"
+  },
+  "FreeFormAddress": true,
+  "DueDate": "2026-11-06",
+  "TotalAmt": 48.75,
+  "ApplyTaxAfterDiscount": false,
+  "PrintStatus": "NeedToPrint",
+  "EmailStatus": "NotSet",
+  "Balance": 48.75
+ },
+ "time": "2026-11-06T09:10:49.654-08:00"
+}

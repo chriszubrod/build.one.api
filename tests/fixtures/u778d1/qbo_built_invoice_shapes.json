@@ -1,0 +1,273 @@
+{
+ "Line": [
+  {
+   "Id": "1",
+   "LineNum": 1,
+   "Description": "Framing CREDIT",
+   "Amount": -15.34,
+   "LinkedTxn": [
+    {
+     "TxnId": "76757",
+     "TxnType": "ReimburseCharge",
+     "TxnLineId": "1"
+    }
+   ],
+   "DetailType": "SalesItemLineDetail",
+   "SalesItemLineDetail": {
+    "ServiceDate": "2026-03-25",
+    "ItemRef": {
+     "value": "172",
+     "name": "13 Framing:13.1 Lumber & Hardware"
+    },
+    "UnitPrice": 15.34,
+    "MarkupInfo": {
+     "PercentBased": false,
+     "Value": -15.34,
+     "MarkUpIncomeAccountRef": {
+      "value": "6",
+      "name": "42600 Construction Income"
+     }
+    },
+    "Qty": -1,
+    "ItemAccountRef": {
+     "value": "6",
+     "name": "42600 Construction Income"
+    },
+    "TaxCodeRef": {
+     "value": "NON"
+    }
+   }
+  },
+  {
+   "Id": "2",
+   "LineNum": 2,
+   "Description": "Lumber & Hardware CREDIT",
+   "Amount": -215.0,
+   "LinkedTxn": [
+    {
+     "TxnId": "76759",
+     "TxnType": "ReimburseCharge",
+     "TxnLineId": "1"
+    }
+   ],
+   "DetailType": "SalesItemLineDetail",
+   "SalesItemLineDetail": {
+    "ServiceDate": "2026-04-07",
+    "ItemRef": {
+     "value": "172",
+     "name": "13 Framing:13.1 Lumber & Hardware"
+    },
+    "UnitPrice": 215,
+    "MarkupInfo": {
+     "PercentBased": false,
+     "Value": -215.0,
+     "MarkUpIncomeAccountRef": {
+      "value": "6",
+      "name": "42600 Construction Income"
+     }
+    },
+    "Qty": -1,
+    "ItemAccountRef": {
+     "value": "6",
+     "name": "42600 Construction Income"
+    },
+    "TaxCodeRef": {
+     "value": "NON"
+    }
+   }
+  },
+  {
+   "Id": "3",
+   "LineNum": 3,
+   "Description": "Lumber & Hardware CREDIT",
+   "Amount": -1254.05,
+   "LinkedTxn": [
+    {
+     "TxnId": "76763",
+     "TxnType": "ReimburseCharge",
+     "TxnLineId": "1"
+    }
+   ],
+   "DetailType": "SalesItemLineDetail",
+   "SalesItemLineDetail": {
+    "ServiceDate": "2026-04-13",
+    "ItemRef": {
+     "value": "172",
+     "name": "13 Framing:13.1 Lumber & Hardware"
+    },
+    "UnitPrice": 1254.05,
+    "MarkupInfo": {
+     "PercentBased": false,
+     "Value": -1254.05,
+     "MarkUpIncomeAccountRef": {
+      "value": "6",
+      "name": "42600 Construction Income"
+     }
+    },
+    "Qty": -1,
+    "ItemAccountRef": {
+     "value": "6",
+     "name": "42600 Construction Income"
+    },
+    "TaxCodeRef": {
+     "value": "NON"
+    }
+   }
+  },
+  {
+   "Id": "4",
+   "LineNum": 4,
+   "Description": "Skimmer Cover",
+   "Amount": 300.0,
+   "LinkedTxn": [
+    {
+     "TxnId": "77280",
+     "TxnType": "ReimburseCharge",
+     "TxnLineId": "1"
+    }
+   ],
+   "DetailType": "SalesItemLineDetail",
+   "SalesItemLineDetail": {
+    "ServiceDate": "2026-08-11",
+    "ItemRef": {
+     "value": "469",
+     "name": "55 Driveway & Hardscapes:55.0 Driveway & Hardscapes"
+    },
+    "UnitPrice": 300,
+    "MarkupInfo": {
+     "PercentBased": false,
+     "Value": 300.0,
+     "MarkUpIncomeAccountRef": {
+      "value": "6",
+      "name": "42600 Construction Income"
+     }
+    },
+    "Qty": 1,
+    "ItemAccountRef": {
+     "value": "6",
+     "name": "42600 Construction Income"
+    },
+    "TaxCodeRef": {
+     "value": "NON"
+    }
+   }
+  },
+  {
+   "Id": "5",
+   "LineNum": 5,
+   "Description": "Equipment Delivery & Heat Pump Add On",
+   "Amount": 30825.0,
+   "LinkedTxn": [
+    {
+     "TxnId": "77189",
+     "TxnType": "ReimburseCharge",
+     "TxnLineId": "1"
+    }
+   ],
+   "DetailType": "SalesItemLineDetail",
+   "SalesItemLineDetail": {
+    "ServiceDate": "2026-08-12",
+    "ItemRef": {
+     "value": "506",
+     "name": "59 Swimming Pool:59.0 Swimming Pool"
+    },
+    "UnitPrice": 30825,
+    "MarkupInfo": {
+     "PercentBased": false,
+     "Value": 30825.0,
+     "MarkUpIncomeAccountRef": {
+      "value": "6",
+      "name": "42600 Construction Income"
+     }
+    },
+    "Qty": 1,
+    "ItemAccountRef": {
+     "value": "6",
+     "name": "42600 Construction Income"
+    },
+    "TaxCodeRef": {
+     "value": "NON"
+    }
+   }
+  },
+  {
+   "Id": "6",
+   "LineNum": 6,
+   "Description": "TubWrap",
+   "Amount": 66.7,
+   "LinkedTxn": [
+    {
+     "TxnId": "77285",
+     "TxnType": "ReimburseCharge",
+     "TxnLineId": "1"
+    }
+   ],
+   "DetailType": "SalesItemLineDetail",
+   "SalesItemLineDetail": {
+    "ServiceDate": "2026-08-14",
+    "ItemRef": {
+     "value": "143",
+     "name": "08 General Conditions:08.a10 Surface/Floor Protection"
+    },
+    "UnitPrice": 66.7,
+    "MarkupInfo": {
+     "PercentBased": false,
+     "Value": 66.7,
+     "MarkUpIncomeAccountRef": {
+      "value": "6",
+      "name": "42600 Construction Income"
+     }
+    },
+    "Qty": 1,
+    "ItemAccountRef": {
+     "value": "6",
+     "name": "42600 Construction Income"
+    },
+    "TaxCodeRef": {
+     "value": "NON"
+    }
+   }
+  },
+  {
+   "Amount": 401846.57,
+   "DetailType": "SubTotalLineDetail",
+   "SubTotalLineDetail": {}
+  }
+ ],
+ "TotalAmt": 401846.57,
+ "DocNumber": "SHAPE-HA",
+ "TxnDate": "2026-09-30",
+ "CustomerRef": {
+  "value": "1356"
+ },
+ "SalesTermRef": {
+  "value": "2",
+  "name": "Due on receipt"
+ },
+ "LinkedTxn": [
+  {
+   "TxnId": "77377",
+   "TxnType": "ReimburseCharge"
+  },
+  {
+   "TxnId": "77379",
+   "TxnType": "ReimburseCharge"
+  },
+  {
+   "TxnId": "77189",
+   "TxnType": "ReimburseCharge"
+  },
+  {
+   "TxnId": "77191",
+   "TxnType": "ReimburseCharge"
+  },
+  {
+   "TxnId": "77575",
+   "TxnType": "ReimburseCharge"
+  },
+  {
+   "TxnId": "77193",
+   "TxnType": "ReimburseCharge"
+  }
+ ]
+}

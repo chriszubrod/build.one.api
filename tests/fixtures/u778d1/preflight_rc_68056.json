@@ -1,0 +1,67 @@
+{
+ "CustomerRef": {
+  "value": "1383"
+ },
+ "HasBeenInvoiced": false,
+ "Amount": 48.75,
+ "domain": "QBO",
+ "sparse": false,
+ "Id": "68056",
+ "SyncToken": "0",
+ "MetaData": {
+  "CreateTime": "2026-03-24T08:04:50-07:00",
+  "LastUpdatedTime": "2026-03-24T08:04:50-07:00"
+ },
+ "TxnDate": "2026-01-31",
+ "CurrencyRef": {
+  "value": "USD",
+  "name": "United States Dollar"
+ },
+ "PrivateNote": "We removed the wet insulation in the attic.",
+ "Line": [
+  {
+   "Id": "1",
+   "LineNum": 1,
+   "Description": "We removed the wet insulation in the attic.",
+   "Amount": 32.5,
+   "DetailType": "ReimburseLineDetail",
+   "ReimburseLineDetail": {
+    "ItemRef": {
+     "value": "537",
+     "name": "65 Miscellaneous:65.2 Miscellaneous Labor"
+    },
+    "UnitPrice": 32.5,
+    "MarkupInfo": {
+     "Percent": 50
+    },
+    "Qty": 1,
+    "ItemAccountRef": {
+     "value": "6",
+     "name": "Construction Income"
+    },
+    "TaxCodeRef": {
+     "value": "NON"
+    }
+   }
+  },
+  {
+   "Id": "2",
+   "LineNum": 2,
+   "Description": "50% markup for We removed the wet insulation in the attic.",
+   "Amount": 16.25,
+   "DetailType": "ReimburseLineDetail",
+   "ReimburseLineDetail": {
+    "MarkupInfo": {
+     "Percent": 50
+    },
+    "ItemAccountRef": {
+     "value": "162",
+     "name": "Markup"
+    },
+    "TaxCodeRef": {
+     "value": "NON"
+    }
+   }
+  }
+ ]
+}

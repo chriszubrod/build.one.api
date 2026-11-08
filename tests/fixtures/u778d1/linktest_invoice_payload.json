@@ -1,0 +1,36 @@
+{
+  "CustomerRef": {"value": "1383"},
+  "TxnDate": "2026-11-06",
+  "DocNumber": "LINKTEST-1",
+  "PrivateNote": "Build.One API linking test - created and deleted by Claude on Chris's approval. Not a real bill to the client.",
+  "Line": [
+    {
+      "DetailType": "SalesItemLineDetail",
+      "Amount": 32.50,
+      "Description": "We removed the wet insulation in the attic.",
+      "LinkedTxn": [{"TxnId": "68056", "TxnType": "ReimburseCharge", "TxnLineId": "1"}],
+      "SalesItemLineDetail": {
+        "ServiceDate": "2026-01-31",
+        "ItemRef": {"value": "537"},
+        "Qty": 1,
+        "UnitPrice": 32.50,
+        "ItemAccountRef": {"value": "6"},
+        "TaxCodeRef": {"value": "NON"},
+        "MarkupInfo": {"PercentBased": true, "Percent": 50, "Value": 32.50, "MarkUpIncomeAccountRef": {"value": "6"}}
+      }
+    },
+    {
+      "DetailType": "SalesItemLineDetail",
+      "Amount": 16.25,
+      "Description": "50% markup for We removed the wet insulation in the attic.",
+      "LinkedTxn": [{"TxnId": "68056", "TxnType": "ReimburseCharge", "TxnLineId": "2"}],
+      "SalesItemLineDetail": {
+        "ServiceDate": "2026-01-31",
+        "ItemAccountRef": {"value": "162"},
+        "TaxCodeRef": {"value": "NON"},
+        "MarkupInfo": {"PercentBased": true, "Percent": 50, "Value": 16.25, "MarkUpIncomeAccountRef": {"value": "162"}}
+      }
+    }
+  ],
+  "LinkedTxn": [{"TxnId": "68056", "TxnType": "ReimburseCharge"}]
+}

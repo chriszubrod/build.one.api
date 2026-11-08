@@ -133,6 +133,7 @@ from integrations.intuit.qbo.purchase.api.router import router as qbo_purchase_a
 from integrations.intuit.qbo.vendorcredit.api.router import router as qbo_vendorcredit_api_router
 from integrations.intuit.qbo.bill.api.router import router as qbo_bill_api_router
 from integrations.intuit.qbo.invoice.api.router import router as qbo_invoice_api_router
+from integrations.intuit.qbo.invoice_push.api.router import router as qbo_invoice_push_api_router
 from integrations.intuit.qbo.customer.api.router import router as qbo_customer_api_router
 from integrations.intuit.qbo.item.api.router import router as qbo_item_api_router
 from integrations.intuit.qbo.report.api.router import router as qbo_report_api_router
@@ -268,6 +269,7 @@ app.include_router(qbo_purchase_api_router)
 app.include_router(qbo_vendorcredit_api_router)
 app.include_router(qbo_bill_api_router)
 app.include_router(qbo_invoice_api_router)
+app.include_router(qbo_invoice_push_api_router)
 app.include_router(qbo_customer_api_router)
 app.include_router(qbo_item_api_router)
 app.include_router(qbo_report_api_router)

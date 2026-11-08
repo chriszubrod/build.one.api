@@ -175,6 +175,23 @@ from U-778a's reviews and the U-778d design reviews — each needs an owner befo
 - [ ] **(defense in depth) the U-778a narrow writers take only `@Id`** — safe today (the only caller feeds ids from the
   realm-scoped read); adding `@RealmId` + a header join would make it a database guarantee (U-778a Pass 3 P3-2).
 
+**U-778d1 SHIPPED `61e9ba06` (2026-11-08)** — read-only invoice-push dry run + compare; flag `QBO_INVOICE_PUSH` ships off.
+Its deferred items:
+- [ ] **(U-778d1 Pass 3) the fact sprocs read any line by id** — `ReadInvoicePush{Bill,Expense,BillCredit}LineFacts` take
+  ids only; the project boundary is the service's `source_line_unavailable` check after the fetch. Adding `@ProjectId`
+  (filter in the sproc) would make it a database guarantee before the write path (U-778d2) reuses them.
+- [ ] **(U-778d1) `source_not_in_qbo` carries three meanings** — the line was never pushed (no QBO ids on its facts), its
+  facts row is missing, or QBO no longer has it live. Split the codes before U-778d2 so an operator can tell "push the
+  bill first" from "re-pull".
+- [ ] **(U-778d1) a header refusal does not short-circuit** — `unsupported_source_type`, `doc_number_invalid` and the
+  fee/term header reasons still let `_run` make every live QBO read before refusing (missing and other-project lines
+  already short-circuit). A few metered reads in a dry run; the write path must refuse first.
+- [ ] **(U-778d1 → U-778d2) move `QBO_INVOICE_PUSH` into `Settings`** — `invoice_push/business/mode.py` reads
+  `os.environ` per request. Do it in the write bite, which is the first to act on `on`.
+- [accepted residual, U-778d1 Pass 3] `doc_number_used_in_qbo` checks the DocNumber realm-wide (a yes/no, no ids
+  returned); with the flag off, auth and body validation still answer 401/403/422 before the 404; reason strings carry
+  the project's own realm id. All P3.
+
 ## U-757a follow-ups - shared SharePoint module-folder engine (booked 2026-11-05)
 
 - **[test-infra] Goldens to a JSON fixture with a regenerate switch (U-756 + U-757).** `tests/test_u757a_sharepoint_fanout_characterization.py` (~5.6k lines) and the U-756 Box file embed pprinted golden dicts inline and say "never edit by hand", but nothing regenerates them. The drift-fix units that change these exact messages would have to hand-edit them. Move them to `tests/fixtures/u75{6,7a}_*_goldens.json` (the `_ordered` output is already JSON-shaped) and add `UPDATE_GOLDENS=1`. Keep the scenario builders and the structural tests in Python. (Pass 2 #10.)

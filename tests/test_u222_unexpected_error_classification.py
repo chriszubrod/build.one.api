@@ -2,6 +2,8 @@
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from integrations.intuit.qbo.base.errors import (
     QboBudgetExceededError,
     QboValidationError,
@@ -11,6 +13,13 @@ from tests.test_u218b_bill_push_surface import _make_outbox_row, REALM_ID
 
 TRANSIENT_SQL_MESSAGE = "[08S01] Communication link failure"
 QUERY_TIMEOUT_MESSAGE = "query timeout expired"
+
+
+@pytest.fixture(autouse=True)
+def _no_qbo_dead_letter_escalation(monkeypatch):
+    """U-551b-f1 f4: a real worker dead-letter now escalates to a reconciliation issue
+    through a repository; stub it so these tests never open a DB connection."""
+    monkeypatch.setattr(QboOutboxWorker, "_escalate_dead_letter", lambda self, row, last_error: None)
 
 
 def _worker_with_failing_handler(repo, exc):

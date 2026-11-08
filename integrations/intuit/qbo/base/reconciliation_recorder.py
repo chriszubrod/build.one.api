@@ -28,6 +28,7 @@ _FIELD_LIMITS = {
     "action": 16,
 }
 _ACTION_DEFAULT = "manual_review"
+DRIFT_TYPE_MAX_LEN = _FIELD_LIMITS["drift_type"]  # qbo.ReconciliationIssue.DriftType NVARCHAR(32); shared with the outbox dead-letter escalation
 
 
 def _clamp_field(field_name: str, value: object, max_len: int) -> str:

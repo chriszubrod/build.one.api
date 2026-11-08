@@ -37,6 +37,10 @@ from shared.authz.context import system_authz
 
 logger = logging.getLogger(__name__)
 
+# Bounded Details dump for the dead-letter ReconciliationIssue (U-551b-f1 f4); the DriftType width
+# comes from the recorder (DRIFT_TYPE_MAX_LEN) so it cannot drift from the other QBO issue writers.
+_DEAD_LETTER_DETAILS_MAX_LEN = 1000
+
 
 # Chapter 5 decision: dead-letter after 5 failed attempts. `attempts` on
 # the row is incremented on each FailQboOutbox call; we check
@@ -577,6 +581,64 @@ class QboOutboxWorker:
                 "entity_type": row.entity_type,
                 "entity_public_id": row.entity_public_id,
                 "last_error": last_error,
+            },
+        )
+
+        # U-551b-f1 f4: the dead-letter mark above is already durable. Escalate to
+        # the reconciliation triage surface (mirrors the MS worker) so an operator
+        # sees it without reading logs; an escalation failure never un-marks the row.
+        try:
+            self._escalate_dead_letter(row, last_error)
+        except Exception:
+            logger.exception(
+                "qbo.outbox.dead_letter.escalation_failed",
+                extra={
+                    "event_name": "qbo.outbox.dead_letter.escalation_failed",
+                    "outbox_public_id": row.public_id,
+                },
+            )
+
+    def _escalate_dead_letter(self, row: QboOutbox, last_error: str) -> None:
+        """Record a qbo.ReconciliationIssue so a dead-letter isn't invisible."""
+        from integrations.intuit.qbo.base.reconciliation_recorder import DRIFT_TYPE_MAX_LEN
+        from integrations.intuit.qbo.reconciliation.persistence.repo import (
+            ReconciliationIssueRepository,
+        )
+
+        # qbo.ReconciliationIssue.DriftType is NVARCHAR(32). Severity 'high': a push that exhausted its
+        # retries is actionable but not a money discrepancy; QBO's other recorders reserve 'critical'
+        # for drift against money (bill / attachable / watermark) - keep the tiers distinct.
+        drift_type = f"{row.kind}_dead_letter"
+        if len(drift_type) > DRIFT_TYPE_MAX_LEN:
+            drift_type = "outbox_dead_letter"
+        severity = "high"
+        attempts = (row.attempts or 0) + 1
+        details = (
+            f"{row.kind} dead-lettered after {attempts} attempts "
+            f"(outbox {row.public_id}): {last_error}"
+        )[:_DEAD_LETTER_DETAILS_MAX_LEN]
+
+        ReconciliationIssueRepository().create(
+            drift_type=drift_type,
+            severity=severity,
+            action="flagged",
+            entity_type=row.entity_type,
+            entity_public_id=row.entity_public_id,
+            qbo_id=None,
+            realm_id=row.realm_id,
+            details=details,
+            reconcile_run_id=None,
+        )
+        logger.error(
+            "qbo.reconcile.dead_letter.flagged",
+            extra={
+                "event_name": "qbo.reconcile.dead_letter.flagged",
+                "drift_type": drift_type,
+                "severity": severity,
+                "kind": row.kind,
+                "outbox_public_id": row.public_id,
+                "entity_type": row.entity_type,
+                "entity_public_id": row.entity_public_id,
             },
         )
 

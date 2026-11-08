@@ -23,6 +23,13 @@ from scripts.reconcile_project import report_db_to_qbo_bills
 REALM_ID = "realm-test"
 
 
+@pytest.fixture(autouse=True)
+def _no_qbo_dead_letter_escalation(monkeypatch):
+    """U-551b-f1 f4: a real worker dead-letter now escalates to a reconciliation issue
+    through a repository; stub it so these tests never open a DB connection."""
+    monkeypatch.setattr(QboOutboxWorker, "_escalate_dead_letter", lambda self, row, last_error: None)
+
+
 def _make_outbox_row(attempts=0, last_error=None):
     return QboOutbox(
         id=1,

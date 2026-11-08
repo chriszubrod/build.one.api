@@ -250,6 +250,9 @@ def test_refresh_bill_conflict_raise_dead_letters_immediately_via_process_inner(
 
     worker = QboOutboxWorker(repo=_FakeOutboxRepo())
     worker._dispatch_table["sync_bill_to_qbo"] = fake_handler
+    # U-551b-f1 f4: the dead-letter escalation would add a second issue to the shared fake
+    # repo; this test pins the ONE identity-conflict issue, so stub the escalation.
+    worker._escalate_dead_letter = lambda row, last_error: None
 
     row = QboOutbox(
         id=1,

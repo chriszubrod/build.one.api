@@ -117,3 +117,65 @@ pull already wrote. Counters: `written`, `not_written` (already linked, or the r
 **Verify:** `SELECT COUNT(*) FROM qbo.BillLine WHERE BillableStatus IN ('Billable','HasBeenBilled') AND
 ReimburseChargeQboId IS NULL` (and the Purchase / VendorCredit twins) falls to roughly the `no_link_live` +
 `header_gone` counts.
+
+
+## Reverse billable flip: a deleted invoice un-bills its source lines (U-778b)
+
+QBO flips a source line (Bill / Purchase / VendorCredit line) back to `Billable` when the invoice that billed it is
+deleted, but does NOT bump the source document's `LastUpdatedTime`, so neither the pull nor the forward pass above
+revisits it. What does move is the line's ReimburseCharge: QBO sets `HasBeenInvoiced=false` and bumps the charge, so
+the hourly RC pull re-stages it. The hourly billable-status job therefore also runs a **reverse pass** per entity,
+reported under `result[<entity>]["reverse"]`.
+
+**What it does.** Candidates = staged line `HasBeenBilled` whose staged ReimburseCharge (same realm, via
+`ReimburseChargeQboId`) has `HasBeenInvoiced=0`. Each candidate's header is re-fetched live; it acts ONLY when the live
+line is `Billable` AND its ReimburseCharge id equals the staged one. Then, in this order: (1) dbo `IsBilled` 1→0 via the
+line service (BillCreditLineItem without `_via_internal_pipeline`), unless a `dbo.InvoiceLineItem` still uses the line;
+(2) staging CAS `HasBeenBilled`→`Billable` (skipped for a flagged or cap-deferred line). Any error in step 1 skips step 2, so the line stays a candidate and is
+retried next hour. `?dry_run=true` writes nothing and reports `dbo_would_unbill` / `dbo_would_flag`.
+
+### Symptom
+A line that is `Billable` in QBO (invoice deleted) still shows `IsBilled = 1` in the app and is missing from the
+billable list; or a `[qbo].[ReconciliationIssue]` with `DriftType = 'charge_uninvoiced_locally_billed'` is open.
+
+### Diagnosis
+```sql
+-- staged candidates the reverse pass will pick up (swap the table for Purchase / VendorCredit)
+EXEC dbo.ReadQboBillLinesWithUninvoicedChargeByRealmId @RealmId = N'<realm>';
+-- open local-invoice conflicts
+SELECT * FROM [qbo].[ReconciliationIssue]
+WHERE DriftType = 'charge_uninvoiced_locally_billed' AND [Status] <> 'resolved';
+```
+An issue means QBO un-invoiced the charge but a local `dbo.InvoiceLineItem` still points at the source line; its
+`QboId` is `<header qbo id>:<line qbo id>` and `Details` lists the charge id and the local invoice line / invoice ids.
+Counters worth watching: `reverse_charge_changed` (live line points at a different charge: left alone),
+`reverse_still_billed` (charge un-invoiced but the line is still HasBeenBilled live: left alone),
+`dbo_unbill_errors` (retried next run), `dbo_flag_deduped`.
+
+### Recovery
+For a flagged issue (QBO un-invoiced the charge, but a local invoice line still uses the source line): the flagged line
+is deliberately left `HasBeenBilled` in staging, so it stays a candidate and is re-checked every hour (one open issue,
+deduped). Remove the local invoice line, or the QBO-deleted dbo invoice itself (U-778c), as appropriate. The next
+hourly run then finds no `dbo.InvoiceLineItem` using the line, un-bills dbo `IsBilled` and flips staging to `Billable`
+automatically. Resolve the issue by hand afterwards.
+
+⚠️ **Caveat — a re-pull cancels the self-heal.** If the source Bill/Purchase/VendorCredit is edited in QBO while the
+line is flagged, the pull re-stages the line as `Billable` and it stops being a reverse candidate. A Purchase re-pull
+keeps `IsBilled = 1` while a local invoice line links it; a Bill re-pull writes `IsBilled` from the live status with no
+local-invoice guard (pre-existing, booked in TODO.md under U-778). So after removing the local invoice line, CHECK
+`IsBilled`: if it is still 1 and the line is `Billable` in QBO, reset it through the line service as a system caller,
+then resolve the issue.
+
+If the local invoice is actually right, re-invoice the charge in
+QBO instead. Never edit `IsBilled` by hand while a local invoice line uses the source. Deleting an invoice does not by
+itself un-bill its source lines (draft deletes leave sources unchanged, U-684a).
+
+A line counted `deferred_by_cap` exceeded `max_unbill_per_run` (50 per entity per run) and is retried next run. A
+`billable_refresh.<entity>.reverse_unmapped` WARNING means no local row matches that QBO header/line identity (staging
+is still flipped; investigate a mis-stamped local row).
+
+### Verification
+Re-run `POST /api/v1/admin/reconcile/qbo/billable-status?dry_run=true`: the candidate no longer appears
+(`candidate_lines` drops) or shows `dbo_would_flag` / `dbo_flag_deduped` for a still-flagged conflict (it keeps
+appearing until the local invoice line is gone); `dbo.*LineItem.IsBilled = 0` for an un-billed line and the staged line
+reads `Billable`.

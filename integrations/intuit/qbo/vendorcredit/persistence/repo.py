@@ -369,6 +369,7 @@ class QboVendorCreditRepository:
             billable_status=getattr(row, "BillableStatus", None),
             header_qbo_id=getattr(row, "HeaderQboId", None),
             realm_id=getattr(row, "RealmId", None),
+            charge_qbo_id=getattr(row, "ReimburseChargeQboId", None),
         )
 
     def read_by_billable_status_and_realm_id(
@@ -401,6 +402,33 @@ class QboVendorCreditRepository:
                 "Error during read qbo vendor credit lines by billable status and realm: %s", e
             )
             raise map_database_error(e)
+
+    def read_with_uninvoiced_charge_by_realm_id(
+        self,
+        realm_id: str,
+    ) -> List[StagedBillableQboLine]:
+        """Staged vendor credit lines still HasBeenBilled whose staged ReimburseCharge is un-invoiced (U-778b)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadQboVendorCreditLinesWithUninvoicedChargeByRealmId",
+                        params={"RealmId": realm_id},
+                    )
+                    rows = cursor.fetchall()
+                    return [self._staged_billable_from_db(row) for row in rows if row]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(
+                "Error during read qbo vendor credit lines with uninvoiced charge: %s", error
+            )
+            raise map_database_error(error)
 
     def update_billable_status_by_id(
         self,

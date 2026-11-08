@@ -782,3 +782,33 @@ BEGIN
       AND prov.[LinkedTxnId] = @LinkedTxnId;
 END;
 GO
+
+
+-- U-778b: which local invoice lines use this source line? Exactly one argument must be non-NULL;
+-- zero or several return nothing (the reverse billable flip must never guess).
+CREATE OR ALTER PROCEDURE ReadInvoiceLineItemIdsBySourceLineItem
+(
+    @BillLineItemId BIGINT = NULL,
+    @ExpenseLineItemId BIGINT = NULL,
+    @BillCreditLineItemId BIGINT = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF (CASE WHEN @BillLineItemId IS NULL THEN 0 ELSE 1 END
+      + CASE WHEN @ExpenseLineItemId IS NULL THEN 0 ELSE 1 END
+      + CASE WHEN @BillCreditLineItemId IS NULL THEN 0 ELSE 1 END) <> 1
+    BEGIN
+        SELECT TOP 0 CAST(NULL AS BIGINT) AS [Id], CAST(NULL AS BIGINT) AS [InvoiceId];
+        RETURN;
+    END;
+
+    SELECT ili.[Id], ili.[InvoiceId]
+    FROM dbo.[InvoiceLineItem] ili
+    WHERE (@BillLineItemId IS NOT NULL AND ili.[BillLineItemId] = @BillLineItemId)
+       OR (@ExpenseLineItemId IS NOT NULL AND ili.[ExpenseLineItemId] = @ExpenseLineItemId)
+       OR (@BillCreditLineItemId IS NOT NULL AND ili.[BillCreditLineItemId] = @BillCreditLineItemId)
+    ORDER BY ili.[Id];
+END;
+GO

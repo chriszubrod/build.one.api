@@ -430,6 +430,8 @@ def test_vendor_credit_flip_no_dbo_heal():
         bill_client=_EmptyEntityClient(),
         purchase_client=_EmptyEntityClient(),
         vendor_credit_client=_VCClient(),
+        # U-778b: vendor_credit now has a dbo heal; inject an empty header lookup (no DB in unit tests).
+        bill_credit_service_factory=lambda: SimpleNamespace(read_by_qbo_identity=lambda *a, **k: None),
     )
     dbo_heal_called = {"n": 0}
     svc._try_dbo_heal_bill = lambda **kw: dbo_heal_called.__setitem__("n", dbo_heal_called["n"] + 1)

@@ -130,7 +130,12 @@ DRIFT_ORPHAN_ELI_LINE_ITEM = "orphan_eli_line_item"
 DRIFT_ELI_LINE_READOPT_FAILED = "eli_line_readopt_failed"
 DRIFT_ELI_LINE_CREATE_FAILED = "eli_line_create_failed"
 
+# U-778b: QBO un-invoiced a charge whose dbo source line is still used by a local InvoiceLineItem (32 chars = the
+# [DriftType] NVARCHAR(32) width).
+DRIFT_CHARGE_UNINVOICED_LOCALLY_BILLED = "charge_uninvoiced_locally_billed"
+
 KNOWN_DRIFT_TYPES: FrozenSet[str] = frozenset({
+    DRIFT_CHARGE_UNINVOICED_LOCALLY_BILLED,
     DRIFT_QBO_MISSING_LOCALLY, DRIFT_LOCAL_MISSING_QBO, DRIFT_STALE_SYNC_TOKEN,
     DRIFT_MISSING_MAPPING, DRIFT_FIELD_MISMATCH, DRIFT_DUPLICATE_MAPPING,
     DRIFT_QBO_VOIDED, DRIFT_INVOICE_DRAW_MISMATCH, DRIFT_BILLABLE_STATUS_DRIFT,

@@ -14,3 +14,4 @@ class StagedBillableQboLine:
     billable_status: Optional[str]
     header_qbo_id: Optional[str]
     realm_id: Optional[str]
+    charge_qbo_id: Optional[str] = None  # U-778b: staged ReimburseCharge id (reverse pass only)

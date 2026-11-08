@@ -1023,3 +1023,35 @@ BEGIN
     ORDER BY TRY_CAST(header.[QboId] AS BIGINT), header.[QboId], line.[Id];
 END;
 GO
+
+
+CREATE OR ALTER PROCEDURE ReadQboBillLinesWithUninvoicedChargeByRealmId
+(
+    @RealmId NVARCHAR(50)
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- U-778b: staged lines still HasBeenBilled whose staged ReimburseCharge says HasBeenInvoiced = 0
+    -- (QBO un-invoiced the charge). Candidates for the reverse billable flip; same columns as
+    -- the ByBillableStatus read + the charge id.
+    SELECT
+        bl.[Id],
+        bl.[QboLineId],
+        bl.[Amount],
+        bl.[BillableStatus],
+        b.[QboId] AS [HeaderQboId],
+        b.[RealmId],
+        bl.[ReimburseChargeQboId]
+    FROM [qbo].[BillLine] bl
+    INNER JOIN [qbo].[Bill] b ON bl.[QboBillId] = b.[Id]
+    INNER JOIN [qbo].[ReimburseCharge] rc
+        ON rc.[QboId] = bl.[ReimburseChargeQboId]
+       AND rc.[RealmId] = @RealmId
+       AND rc.[HasBeenInvoiced] = 0
+    WHERE b.[RealmId] = @RealmId
+      AND bl.[BillableStatus] = N'HasBeenBilled'
+      AND bl.[ReimburseChargeQboId] IS NOT NULL;
+END;
+GO

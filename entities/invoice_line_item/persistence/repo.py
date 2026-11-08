@@ -177,6 +177,46 @@ class InvoiceLineItemRepository:
             logger.error(f"Error during read invoice line item by QBO identity: {error}")
             raise map_database_error(error)
 
+    def read_ids_by_source_line_item(
+        self,
+        *,
+        bill_line_item_id: Optional[int] = None,
+        expense_line_item_id: Optional[int] = None,
+        bill_credit_line_item_id: Optional[int] = None,
+    ) -> list[tuple[int, int]]:
+        """(InvoiceLineItem.Id, InvoiceId) of every local invoice line using one source line (U-778b)."""
+        given = [v for v in (bill_line_item_id, expense_line_item_id, bill_credit_line_item_id) if v is not None]
+        if len(given) != 1:
+            # Fail closed: the sproc returns nothing for zero/several args, which a caller would read as
+            # "no local invoice line".
+            raise ValueError(
+                "read_ids_by_source_line_item needs exactly one of bill_line_item_id / expense_line_item_id / "
+                f"bill_credit_line_item_id (got {len(given)})"
+            )
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadInvoiceLineItemIdsBySourceLineItem",
+                        params={
+                            "BillLineItemId": bill_line_item_id,
+                            "ExpenseLineItemId": expense_line_item_id,
+                            "BillCreditLineItemId": bill_credit_line_item_id,
+                        },
+                    )
+                    rows = cursor.fetchall()
+                    return [(int(row.Id), int(row.InvoiceId)) for row in rows if row]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read invoice line item ids by source line item: {error}")
+            raise map_database_error(error)
+
     def read_by_linked_txn(
         self, invoice_id: int, linked_txn_type: str, linked_txn_id: str
     ) -> List[LinkedTxnSibling]:

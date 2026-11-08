@@ -150,6 +150,29 @@ class InvoiceLineItemService:
         _assert_can_access_invoice(invoice_id)
         return self.repo.read_by_qbo_identity(invoice_id=invoice_id, qbo_id=qbo_id)
 
+    def read_ids_by_source_line_item(
+        self, source_type: str, source_line_item_id: int
+    ) -> list[tuple[int, int]]:
+        """
+        U-778b: (InvoiceLineItem.Id, InvoiceId) of every local invoice line whose source FK is this
+        line. System-path read (billable-status refresh): refused unless the caller is a system caller.
+        """
+        from shared.lifecycle.terminal_lock import is_system_caller
+        if not is_system_caller():
+            from shared.access import EntityNotAccessibleError
+            raise EntityNotAccessibleError("InvoiceLineItem source", source_line_item_id or 0)
+        kwarg = {
+            "BillLineItem": "bill_line_item_id",
+            "ExpenseLineItem": "expense_line_item_id",
+            "BillCreditLineItem": "bill_credit_line_item_id",
+        }.get(source_type)
+        if kwarg is None:
+            raise ValueError(f"unsupported source_type {source_type!r}")
+        if isinstance(source_line_item_id, bool) or not isinstance(source_line_item_id, int) or source_line_item_id <= 0:
+            # Fail closed: an empty result for an unusable id must never read as "no local invoice line".
+            raise ValueError(f"source_line_item_id must be a positive int, got {source_line_item_id!r}")
+        return self.repo.read_ids_by_source_line_item(**{kwarg: source_line_item_id})
+
     def read_by_linked_txn(
         self, invoice_id: int, linked_txn_type: str, linked_txn_id: str
     ) -> List[LinkedTxnSibling]:

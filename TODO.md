@@ -192,6 +192,39 @@ Its deferred items:
   returned); with the flag off, auth and body validation still answer 401/403/422 before the 404; reason strings carry
   the project's own realm id. All P3.
 
+**U-778b SHIPPED `fb9b3384` (2026-11-08)** — reverse billable flip (staged un-invoiced charge → live check → guarded dbo
+`IsBilled` 1→0), VendorCredit forward heal, credit un-bill fix. Live case at ship: ExpenseLineItem 13051 (SHT, $21.27,
+purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
+- [ ] **(pre-existing, U-778b re-review) the Bill pull writes dbo `IsBilled` from the live status with no local-invoice
+  guard** (`integrations/intuit/qbo/bill/connector/bill_line_item/business/service.py` ~:208/:289) — a Bill re-pull sets
+  1→0 even while a `dbo.InvoiceLineItem` uses the line. The Purchase pull keeps it (`recode_leftover.pull_is_billed`).
+  Give the Bill pull the same guard.
+- [ ] **(U-778b) a re-pull cancels a flagged line's self-heal** — editing the source in QBO re-stages the line `Billable`,
+  so it stops being a reverse candidate while dbo stays `IsBilled=1`. Extension: also treat staged `Billable` + dbo
+  `IsBilled=1` + an open `charge_uninvoiced_locally_billed` issue as candidates. Runbook caveat covers it until then.
+- [ ] **(U-778b Pass 3 P3-1, accepted) the "no local invoice line" check and the 1→0 write are not atomic** — adding an
+  ILI does not bump the source row_version. Needs a non-UI attach of an already-billed line inside a millisecond window.
+  Right-depth fix: one guarded SQL writer (`UPDATE … WHERE RowVersion=@rv AND NOT EXISTS (… InvoiceLineItem WITH
+  (UPDLOCK, HOLDLOCK) …)`).
+- [ ] **(U-778b R4 / P3-5, accepted) `unmapped` lines** (no dbo row by QBO identity) flip staging with a WARNING only — no
+  issue row, so a mis-stamped local row stays `IsBilled=1` silently. Consider a low-severity issue.
+- [ ] **(U-778b P3-4 / Pass 2 P10) candidates that never leave the set** (`reverse_still_billed`, `reverse_charge_changed`,
+  `reverse_other_status`, flagged) are re-fetched hourly — one QBO call per 100 headers per entity; watch the counters.
+  `ReadInvoiceLineItemIdsBySourceLineItem` uses a catch-all OR predicate — split into IF/ELSE branches (one sargable
+  seek each) the next time that file is applied.
+- [ ] **(U-778b leg A) the daily `billable_status_drift` detector has no VendorCredit branch.**
+- [ ] **(Pass 2 note) the unresolved-issue-key dedupe is copied four ways** (staging_delete, reconciliation service,
+  `reconciliation_recorder._record_deduped`, billable_refresh) with three failure behaviours; `_record_deduped` keys
+  un-normalized. Lift into one helper in its own unit.
+- [ ] **(not verified live) an invoice EDIT that drops a line, or a VOID,** is assumed to un-invoice the charge and bump it
+  the same way a delete does. Confirm on the next real case (watch `candidate_lines`).
+- [ ] **(data, Chris decides) 2 VendorCredit lines ($900.34, credits 2026-03-24 / 04-03)** are staged `HasBeenBilled`
+  with dbo `BillCreditLineItem.IsBilled = 0` — flipped before VendorCredit had a heal; the forward heal only reads staged
+  `Billable`, so nothing will fix them. One-off heal through the line service on Chris's go.
+- [ ] **(data, Chris decides) 4 bill lines ($1,230: BLIs 16386, 16393, 18003, 16985; 2025 bills)** are dbo `IsBilled = 1`
+  while QBO says `Billable`, no `InvoiceLineItem` uses them, all set billed in one batch on 2026-08-14 (looks deliberate).
+  U-778b does not touch them (staged `Billable`, not a reverse candidate).
+
 ## U-757a follow-ups - shared SharePoint module-folder engine (booked 2026-11-05)
 
 - **[test-infra] Goldens to a JSON fixture with a regenerate switch (U-756 + U-757).** `tests/test_u757a_sharepoint_fanout_characterization.py` (~5.6k lines) and the U-756 Box file embed pprinted golden dicts inline and say "never edit by hand", but nothing regenerates them. The drift-fix units that change these exact messages would have to hand-edit them. Move them to `tests/fixtures/u75{6,7a}_*_goldens.json` (the `_ordered` output is already JSON-shaped) and add `UPDATE_GOLDENS=1`. Keep the scenario builders and the structural tests in Python. (Pass 2 #10.)

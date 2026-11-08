@@ -137,6 +137,16 @@ before the lock and the read. Gate-off → `QboRecodeWritesDisabledError`, no re
 (During gate-off a retry of an already-terminal suggestion also parks instead of completing — that is
 the kill switch's meaning: touch nothing.)
 
+**M3b — refuse before recording (U-551b-f1-f10).** A dead-lettered recode outbox row makes `enqueue()`
+refuse, so confirm used to record a revision (ConfirmationSeq+1, Status confirmed) it could never enqueue, and
+the row stayed `confirmed` with no live outbox row until the dead letter was replayed. `_confirm_under_lock`
+now runs the SAME probe `enqueue()` uses — `QboOutboxService.find_coalesce_target_or_raise_dead_letter`
+(pending/failed row → coalesce target, no dead-letter read; else dead letter → raise; else None) — BEFORE
+`record_confirmation`, under the suggestion lock. Zero writes on refusal; the route answers the same 409 and
+releases a claim it took. `enqueue()` re-runs the probe itself, so the pre-check is advisory and the
+second read stays the hard guard. The cockpit route's generic 500 path also releases a claim taken by
+that request (it was the one refusal branch that did not).
+
 ### M4 — the no-op path fences on the live token (closes I4)
 
 New connector method `PurchaseExpenseConnector.verify_purchase_untouched(*, realm_id,

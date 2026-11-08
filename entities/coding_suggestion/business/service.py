@@ -32,6 +32,9 @@ from shared.access import (
 
 logger = logging.getLogger(__name__)
 
+# Outbox identity of the recode write for a coding suggestion (the (kind, entity_type) half of its coalesce key).
+_RECODE_OUTBOX_IDENTITY = {"kind": "recode_purchase_line", "entity_type": "CodingSuggestion"}
+
 # U-551b-f1 M1: the per-suggestion application lock. A confirm records a new revision and the QBO
 # drain writes one; neither may run inside the other (an approval recorded mid-drain would be fenced
 # out after the external write). The drain waits briefly (a confirm is short); a confirm waits longer
@@ -883,9 +886,9 @@ class CodingSuggestionService:
         suggestion enqueued fenced on ``expected_confirmation_seq``. ``False`` = the mark was fenced out."""
         from integrations.intuit.qbo.outbox.business.service import QboOutboxService
 
-        QboOutboxService().enqueue(
-            kind="recode_purchase_line",
-            entity_type="CodingSuggestion",
+        outbox = QboOutboxService()
+        outbox.enqueue(
+            **_RECODE_OUTBOX_IDENTITY,
             entity_public_id=public_id,
             realm_id=realm_id,
         )
@@ -1101,6 +1104,16 @@ class CodingSuggestionService:
                     error,
                 )
 
+        # U-551b-f1-f10: refuse a dead-lettered target BEFORE recording a revision enqueue() would refuse.
+        from integrations.intuit.qbo.outbox.business.service import QboOutboxService
+
+        outbox = QboOutboxService()
+        outbox.find_coalesce_target_or_raise_dead_letter(
+            **_RECODE_OUTBOX_IDENTITY,
+            entity_public_id=public_id,
+            realm_id=item.realm_id,
+        )
+
         recorded = self.record_confirmation(
             public_id=public_id,
             confirmed_project_id=project_id,
@@ -1136,11 +1149,8 @@ class CodingSuggestionService:
                 return {"status": "repoint_revision_lost"}
             return {"status": "not_recorded"}
 
-        from integrations.intuit.qbo.outbox.business.service import QboOutboxService
-
-        QboOutboxService().enqueue(
-            kind="recode_purchase_line",
-            entity_type="CodingSuggestion",
+        outbox.enqueue(
+            **_RECODE_OUTBOX_IDENTITY,
             entity_public_id=public_id,
             realm_id=item.realm_id,
         )

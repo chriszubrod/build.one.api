@@ -75,6 +75,56 @@ class QboOutboxService:
     def __init__(self, repo: Optional[QboOutboxRepository] = None):
         self.repo = repo or QboOutboxRepository()
 
+    def find_coalesce_target_or_raise_dead_letter(
+        self,
+        *,
+        kind: str,
+        entity_type: str,
+        entity_public_id: str,
+        realm_id: Optional[str] = None,
+    ) -> Optional[QboOutbox]:
+        """Single source of ``enqueue()``'s refusal contract, usable as a zero-write pre-check.
+
+        Reads the pending/failed row for ``(kind, entity_type, entity_public_id)`` FIRST: if one exists it is
+        the coalesce target and is returned WITHOUT reading dead letters (a dead-lettered sibling never blocks
+        coalescing into a live row). Only when there is no pending/failed row is the dead-letter read made: if
+        one exists, raise ``QboOutboxDeadLetterExistsError``; otherwise return ``None`` (enqueue creates fresh).
+        A caller can therefore refuse BEFORE recording a revision exactly when ``enqueue()`` would refuse.
+        ``realm_id`` is logging-only (it never affects the reads or the decision)."""
+        existing = self.repo.read_pending_by_entity(
+            entity_type=entity_type,
+            entity_public_id=entity_public_id,
+            kind=kind,
+        )
+        if existing:
+            return existing
+
+        dead_letter = self.repo.read_dead_letter_by_entity(
+            entity_type=entity_type,
+            entity_public_id=entity_public_id,
+            kind=kind,
+        )
+        if dead_letter:
+            logger.warning(
+                "qbo.outbox.enqueue.refused_dead_letter_exists",
+                extra={
+                    "event_name": "qbo.outbox.enqueue.refused_dead_letter_exists",
+                    "correlation_id": get_correlation_id(),
+                    "operation_name": kind,
+                    "realm_id": realm_id,
+                    "entity_type": entity_type,
+                    "entity_public_id": entity_public_id,
+                    "dead_letter_outbox_public_id": dead_letter.public_id,
+                },
+            )
+            raise QboOutboxDeadLetterExistsError(
+                entity_type=entity_type,
+                entity_public_id=entity_public_id,
+                kind=kind,
+                dead_letter_public_id=dead_letter.public_id,
+            )
+        return None
+
     def enqueue(
         self,
         *,
@@ -102,16 +152,20 @@ class QboOutboxService:
 
         Returns:
             The outbox row (either newly created or the coalesced existing one).
+
+        Raises:
+            QboOutboxDeadLetterExistsError: no pending/failed row to coalesce into and a dead-lettered one exists.
         """
         now = datetime.now(timezone.utc)
         ready_after = now + timedelta(seconds=debounce_seconds)
         correlation_id = get_correlation_id()
 
-        # Policy C: look for an existing pending/failed row for this entity+kind.
-        existing = self.repo.read_pending_by_entity(
+        # Policy C: coalesce target (pending/failed) first; dead-letter refusal only when there is none.
+        existing = self.find_coalesce_target_or_raise_dead_letter(
+            kind=kind,
             entity_type=entity_type,
             entity_public_id=entity_public_id,
-            kind=kind,
+            realm_id=realm_id,
         )
 
         if existing:
@@ -138,31 +192,6 @@ class QboOutboxService:
                 },
             )
             return updated or existing
-
-        dead_letter = self.repo.read_dead_letter_by_entity(
-            entity_type=entity_type,
-            entity_public_id=entity_public_id,
-            kind=kind,
-        )
-        if dead_letter:
-            logger.warning(
-                "qbo.outbox.enqueue.refused_dead_letter_exists",
-                extra={
-                    "event_name": "qbo.outbox.enqueue.refused_dead_letter_exists",
-                    "correlation_id": correlation_id,
-                    "operation_name": kind,
-                    "realm_id": realm_id,
-                    "entity_type": entity_type,
-                    "entity_public_id": entity_public_id,
-                    "dead_letter_outbox_public_id": dead_letter.public_id,
-                },
-            )
-            raise QboOutboxDeadLetterExistsError(
-                entity_type=entity_type,
-                entity_public_id=entity_public_id,
-                kind=kind,
-                dead_letter_public_id=dead_letter.public_id,
-            )
 
         # No existing row; create fresh.
         request_id = str(uuid.uuid4())

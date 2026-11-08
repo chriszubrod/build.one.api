@@ -456,6 +456,11 @@ problem when scoping.
 ## U-738 / U-740 follow-ups - expense <-> QBO coding (booked 2026-10-27)
 
 - [ ] **24 leftover expense lines need manual review** (U-738 RESULT CSV in Downloads): 12 leftover already in a SharePoint DETAILS workbook (workbook row cleanup + merge), 7 with no live replacement line (QBO line deleted?), 2 with different receipts on both lines, 2 ambiguous pairs, 1 amount mismatch.
+- [ ] 🔴 **MUST-FIX BEFORE THE NEXT INVOICE RUN on HA / OL / TB3 / OHR2-CHAPEL (booked 2026-11-08): 12 DETAILS rows double-count $4,337.79.** Each row's dbo line was deleted as an old duplicate; the workbook row stayed. Chris has no time to clear them by hand, and the session cannot write workbook cells (auto-mode denial + write gates) - so the invoice run's Phase 1 must surface these as decision items and hand the operator the exact rows, in BOTH copies (SharePoint and Box do not cross-propagate). Find each row by col Z public id; re-read both workbooks after. Source: `~/Downloads/U-738 workbook cleanup - 12 deleted leftover lines 2026-11-06.csv`.
+  HA $1,736.20 (DETAILS): 27242EF1-EB96-42AB-95ED-EE5ECD25A444 $306.20 · 99E4DE46-C989-4B90-8EBE-97D47C41CAB9 $715.00 · 881D5318-83FB-4203-A885-6AAB271133C4 $715.00.
+  OL $357.21 (DETAILS): DA4C097F-F326-4F19-BC5D-D765952B1DB8 $247.54 · 83AB1749-2EC6-4234-BA62-1CCB31A0A108 $109.67.
+  TB3 $1,272.56 (DETAIL): 924696EF-2E29-4365-B42E-22459992DAD0 $150.00 · F9C29277-178A-4482-B26F-49C54B71A30C $499.00 · B2A21BAA-D7DE-41B4-959C-EBCBD1C6D85F $134.00 · 0233AD58-DEB0-4608-9690-4CF7D8F7243D $373.50 · AD86B5A2-14BA-4008-B02B-D888D40B34B4 $116.06.
+  OHR2-CHAPEL $971.82 (DETAILS): 4027E66E-E83D-4165-B060-6F236822303C $475.05 · 78155BF6-E4DA-4C19-B641-B324CECF2EA0 $496.77.
 - [ ] **Expenses still on 58999 in QBO that need coding first**: 32294 + 32315 (a line on holding 00.02), 32059 (no project), 32302 + 32357 (no coding). Then complete / re-drive.
 - [ ] **68 QBO purchases still on 58999 have no local expense** (TxnDate 2022-05 .. 2026-08) - classify (old/excluded vs missed import).
 - [ ] **Staging AccountRefName stays "NEED TO CATEGORIZE" on lines that became item-based** (59 lines) - reports must use `AccountRefName LIKE ... AND ItemRefValue IS NULL`; consider clearing AccountRef on item-based lines at upsert.

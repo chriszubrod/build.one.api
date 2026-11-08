@@ -42,7 +42,6 @@ Sprocs
 """
 # Python Standard Library Imports
 import logging
-import re
 from collections import defaultdict
 from decimal import Decimal
 from typing import Any, List, Optional
@@ -58,6 +57,7 @@ from shared.lifecycle.terminal_lock import (
     reraise_if_sproc_holding_code,
 )
 from shared.lifecycle.completion_gate import CompletionRefused, HoldingCodeRefused, UnreviewedPrefillRefused
+from integrations.ms.base.paths import sharepoint_safe_name
 from entities.bill_line_item.business.prefill_guard import (
     UNREVIEWED_PREFILL_STATE,
     assert_no_unreviewed_prefill,
@@ -2316,7 +2316,7 @@ class BillService:
             ]
         filename_parts = [p for p in filename_parts if p]
         base_filename = " - ".join(filename_parts)
-        base_filename = re.sub(r'[<>:"/\\|?*]', '_', base_filename)
+        base_filename = sharepoint_safe_name(base_filename)
 
         # Extension resolution: file_extension → original_filename → content_type map
         file_extension = attachment.file_extension or ""

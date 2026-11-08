@@ -919,11 +919,13 @@ class MsOutboxWorker:
         import httpx
 
         from integrations.ms.base.client import MsGraphClient
-        from integrations.ms.base.paths import encode_path_segment
+        from integrations.ms.base.paths import encode_path_segment, graph_safe_name
 
         drive_id = payload["drive_id"]
         parent_item_id = payload["parent_item_id"]
-        filename = payload["filename"]
+        filename = graph_safe_name(
+            payload["filename"], operation="driveitem.create_upload_session", log=logger
+        )
 
         upload_url = payload.get("upload_session_url")
         completed_bytes = int(payload.get("completed_bytes") or 0)

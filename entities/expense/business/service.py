@@ -39,7 +39,6 @@ Sprocs
 # Python Standard Library Imports
 import json
 import logging
-import re
 from collections import defaultdict
 from decimal import Decimal
 from typing import Any, List, Optional
@@ -47,6 +46,7 @@ from typing import Any, List, Optional
 # Third-party Imports
 
 # Local Imports
+from integrations.ms.base.paths import sharepoint_safe_name
 from entities.expense.business.model import Expense
 from entities.expense.persistence.repo import ExpenseRepository
 from entities.attachment.business.service import AttachmentService
@@ -2288,7 +2288,7 @@ class ExpenseService:
                 filename_parts = [exp_prefix, project_identifier, vendor_abbreviation, ref_number, "Multiple See Image", amount_str, expense_date]
             else:
                 filename_parts = [exp_prefix, project_identifier, vendor_abbreviation, ref_number, description, sub_cost_code_number, price, expense_date]
-            base_filename = re.sub(r'[<>:"/\\|?*]', '_', " - ".join(p for p in filename_parts if p))
+            base_filename = sharepoint_safe_name(" - ".join(p for p in filename_parts if p))
             file_extension = attachment.file_extension or ""
             if not file_extension and attachment.original_filename and "." in attachment.original_filename:
                 file_extension = attachment.original_filename.rsplit(".", 1)[-1]
@@ -2519,7 +2519,7 @@ class ExpenseService:
                     else:
                         filename_parts = [exp_prefix, project_identifier, vendor_abbreviation, ref_number, description, sub_cost_code_number, price, expense_date_str]
 
-                    base_filename = re.sub(r'[<>:"/\\|?*]', '_', " - ".join(p for p in filename_parts if p))
+                    base_filename = sharepoint_safe_name(" - ".join(p for p in filename_parts if p))
 
                     file_extension = attachment.file_extension or ""
                     if not file_extension and attachment.original_filename and "." in attachment.original_filename:

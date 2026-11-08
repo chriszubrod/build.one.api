@@ -1,10 +1,10 @@
 # Python Standard Library Imports
-import re
 from typing import List, Optional
 
 # Third-party Imports
 
 # Local Imports
+from integrations.ms.base.paths import sharepoint_safe_name
 from integrations.box.base.client import BoxHttpClient
 from integrations.box.base.errors import BoxConflictError, BoxError
 from integrations.box.base.logger import get_box_logger
@@ -188,9 +188,11 @@ class BoxProjectFolderService:
         `read_or_create_folder` contract at
         `entities/invoice/business/service.py` around line 1023).
 
-        Sanitizes the folder name against the same character set SharePoint
-        strips (`<>:"/\\|?*`) so subfolder names match byte-for-byte across
-        both integrations. Returns `{"box_folder_id","name"}`.
+        Sanitizes the folder name with `sharepoint_safe_name` (control chars
+        removed, then `<>:"/\\|?*` -> `_`) so subfolder names match
+        byte-for-byte with the SharePoint invoice subfolder for the same input
+        (this side also strips surrounding whitespace; the SharePoint side does
+        not -- pre-existing). Returns `{"box_folder_id","name"}`.
 
         Strategy (create-first, not read-first):
           1. Call `create_folder`. This is the common success path when the
@@ -214,7 +216,7 @@ class BoxProjectFolderService:
         one-mapping-per-doc-class invariant `map_project` enforces at
         lines 92-104 above.
         """
-        sanitized = re.sub(r'[<>:"/\\|?*]', "_", folder_name.strip())
+        sanitized = sharepoint_safe_name(folder_name.strip())
         if not sanitized:
             raise ValueError(f"folder_name sanitized to empty: {folder_name!r}")
 

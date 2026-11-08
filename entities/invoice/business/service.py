@@ -39,6 +39,7 @@ from typing import Any, Optional
 # Third-party Imports
 
 # Local Imports
+from integrations.ms.base.paths import sharepoint_safe_name
 from entities.invoice.business.model import Invoice
 from entities.invoice.persistence.repo import InvoiceRepository
 from shared.access import assert_can_access_project
@@ -1768,7 +1769,7 @@ class InvoiceService:
             # name conflict. File uploads inside use replace semantics
             # (conflictBehavior:replace) so packet + supporting PDFs
             # overwrite cleanly on each run.
-            safe_folder_name = re.sub(r'[<>:"/\\|?*]', '_', invoice_number)
+            safe_folder_name = sharepoint_safe_name(invoice_number)
             folder_result = self.driveitem_service.read_or_create_folder(
                 drive_public_id=drive.public_id,
                 parent_item_id=folder_item_id,

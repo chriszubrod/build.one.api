@@ -1,6 +1,5 @@
 # Python Standard Library Imports
 import logging
-import re
 import time
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -9,6 +8,7 @@ from collections import defaultdict
 # Third-party Imports
 
 # Local Imports
+from integrations.ms.base.paths import sharepoint_safe_name
 from entities.bill_credit.business.service import BillCreditService
 from entities.bill_credit_line_item.business.service import BillCreditLineItemService
 from entities.bill_credit_line_item_attachment.business.service import BillCreditLineItemAttachmentService
@@ -406,7 +406,7 @@ class BillCreditCompleteService:
             ]
             filename_parts = [part for part in filename_parts if part]
             base_filename = " - ".join(filename_parts)
-            base_filename = re.sub(r'[<>:"/\\|?*]', '_', base_filename)
+            base_filename = sharepoint_safe_name(base_filename)
 
             # Get file extension - try multiple sources
             file_extension = attachment.file_extension or ""

@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 from integrations.ms.base.client import DEFAULT_BASE_URL, MsGraphClient
 from integrations.ms.base.errors import MsGraphError, build_error_envelope
 from integrations.ms.base.locking import ms_app_lock
-from integrations.ms.base.paths import encode_path_segment
+from integrations.ms.base.paths import encode_path_segment, graph_safe_name
 
 logger = logging.getLogger(__name__)
 
@@ -453,6 +453,7 @@ def upload_small_file(
     """
     Upload a small file (up to 4MB) to a folder in a drive via simple PUT.
     """
+    filename = graph_safe_name(filename, operation="driveitem.upload_small", log=logger)
     try:
         with MsGraphClient() as client:
             item = client.upload(
@@ -492,6 +493,7 @@ def upload_large_file(
     """
     import httpx
 
+    filename = graph_safe_name(filename, operation="driveitem.create_upload_session", log=logger)
     try:
         with MsGraphClient() as client:
             session = client.post(
@@ -604,6 +606,7 @@ def create_folder(drive_id: str, parent_item_id: str, folder_name: str) -> dict:
     Create a new folder in a drive. If a folder with the same name already
     exists (409), look it up by path and return its metadata.
     """
+    folder_name = graph_safe_name(folder_name, operation="driveitem.create_folder", log=logger)
     payload = {
         "name": folder_name,
         "folder": {},

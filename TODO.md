@@ -70,7 +70,7 @@ No SQL change. Tests: tests/test_u551b_expense_transactional_review_decision.py 
   **New f10 (P3, r2 twin/Codex):** a dead-letter raised by the enqueue AFTER record_confirmation leaves the row `confirmed` at seq+1 and every later
   confirm 409s until the dead-letter is cleared (claim now released, row unchanged — pairs with f3/f5); the route's generic `except Exception` (DB error)
   still keeps a claim this request took. · **f3 (P3)** a repoint marked `error`, or a first write that crashed between POST and mark
-  (`already_recoded` → `written` with an empty record), has no in-app recovery · **f4 (P3)** QBO outbox dead-letters raise no ReconciliationIssue ·
+  (`already_recoded` → `written` with an empty record), has no in-app recovery · **f4 ✅ SHIPPED `dd6a9504` 2026-11-07 (NOT DEPLOYED, image only)** — a QBO outbox dead-letter records a `[qbo].[ReconciliationIssue]` (`<kind>_dead_letter`, high, flagged; after the mark, failure-isolated), mirroring the MS worker; 10/10 mutants; full suite 11253/11253. Lesson: a conftest-level autouse stub that IMPORTS the outbox worker perturbs 14 Settings-sensitive tests — keep such stubs per-file ·
   **f5 (P3)** a stranded `confirmed` with no outbox row needs a sweeper · **f6** runbook · **f7 ✅ SHIPPED with f2 (`3afe5eb7`)** — probe failures are reported skips (`repoint_probe_failed`), every diverged suggestion
   is repointed per completion · **f8 (P3, Pass 3 notes)** a confirm's 10 s lock wait
   holds a pooled connection + a threadpool thread; a repoint whose local amount ≠ qty×rate drops the old Qty/UnitPrice (amount untouched).

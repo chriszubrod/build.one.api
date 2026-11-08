@@ -1,5 +1,35 @@
 # Session Notes
 
+## U-551b-f1 follow-up batch — six units in one day with the Codex leg dead (2026-11-08)
+
+Landed on master (none deployed): f9 `8fcd4c82`, f8 `cc82492d`, f10 `868c755b`, f12 `a0ca847a` (SQL),
+f5+f3a `8a2def91` + `57c88c1a` (SQL; scheduler `ecc9ece7`), f6 runbook `f62fca08`. f3b built, in review.
+
+- **The trivial Codex probe lies.** `codex exec … "PONG"` at low effort answered; every real review exited 1
+  with `Your workspace is out of credits`. Probe with a review-sized prompt or grep the log. Compensating
+  control that held: two independent Claude reviewers per unit (twin + adversarial second leg; P0 units
+  sliced by concern), the lens that found a finding re-reviews the fix delta, Pass 3 as a direct Agent, and
+  a re-anchored mutation battery on every FINAL tree. Three P2s were caught this way (f10 coexistence
+  refusal, f8 ownership-blind discard, f12 skip-advances-the-watermark) — all by the second leg, none by the
+  twin alone.
+- **Ledger pins only fire in the FULL suite.** f5 passed 274 targeted tests and its three reviewers, then
+  the full suite failed two ledgers: the U-494 sproc inventory (two new sprocs) and the U-652 static rule
+  that scoped SQL never mentions `ExpenseCodingItem` — the new sprocs matched that retired entity type "for
+  legacy rows". The fix removed a vocabulary asymmetry three reviewers had rated P3. Targeted runs are not a
+  gate; the full suite is.
+- **Stack branches to verify in parallel.** f10 → f12 → f5 were rebased onto each other and each full suite
+  ran on exactly the tree it would land as; one ff push landed all four. The stack only works when the files
+  are disjoint and the bottom unit is already proven.
+- **A GREEN mutant must be explained, not tallied.** Two survived: f10's recovery-tail pre-check (equivalent —
+  enqueue is zero-write to the same raise; Pass 2 removed the code) and f5's stale-seq enqueue (equivalent —
+  the seq equality re-check guarantees identity). Both are recorded as equivalent, not as kills.
+- **Reviewers see a stale diff when trunk moves.** Four reviewers reported U-779 "reverted" because the
+  branch base was two commits behind. Generate review diffs against the merge-base, not `origin/master`.
+
+Deploy order when Chris runs it: `dbo.expense_line_item.sql` and `dbo.coding_suggestion.sql` FIRST (census,
+whole-file apply; a new image against the old line sproc holds every purchase pull), then the image, then
+`func azure functionapp publish build-one-scheduler --python`.
+
 ## Vendor Agent session — five defects found by *using* the system, not reading it (2026-09-29 → 10-01)
 
 **The transferable lesson first: every defect below was invisible to its own success signal. A `201`,

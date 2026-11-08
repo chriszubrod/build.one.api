@@ -1071,6 +1071,10 @@ class PurchaseExpenseConnector:
         for carry_key in ("ClassRef", "TaxCodeRef", "MarkupInfo"):
             if old.get(carry_key) is not None:
                 item_detail[carry_key] = old[carry_key]
+        # A repoint keeps the Qty/UnitPrice the first write stamped; the reconcile test below may overwrite.
+        for carry_key in ("Qty", "UnitPrice"):
+            if old.get(carry_key) is not None:
+                item_detail[carry_key] = old[carry_key]
 
         from shared.api.money import round_money, to_decimal_or_none
 

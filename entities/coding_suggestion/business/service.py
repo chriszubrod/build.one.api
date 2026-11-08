@@ -1,6 +1,7 @@
 # Python Standard Library Imports
 import json
 import logging
+import threading
 import uuid
 from contextlib import contextmanager
 from decimal import Decimal
@@ -63,6 +64,13 @@ def coding_suggestion_lock_resource(public_id: str) -> str:
     return f"qbo_coding_suggestion:{_canonical_public_id(public_id)}"
 
 
+# U-551b-f1-f8: resources this process has a thread WAITING on inside ``qbo_app_lock``. Each waiter pins
+# a pooled connection and a threadpool thread inside sp_getapplock, so only ONE per resource may wait;
+# the SQL lock stays the cross-process truth.
+_LOCK_WAITERS: set[str] = set()
+_LOCK_WAITERS_GUARD = threading.Lock()
+
+
 @contextmanager
 def coding_suggestion_lock(public_id: str, *, timeout_ms: int):
     """Hold the suggestion's application lock; yields True when acquired, False on timeout.
@@ -70,9 +78,39 @@ def coding_suggestion_lock(public_id: str, *, timeout_ms: int):
     Looks ``qbo_app_lock`` up in this module's globals at CALL time so one patch site covers both
     holders (confirm and the outbox drain). Nothing inside the held region may take
     ``qbo_coding_suggestion:*`` or ``qbo_outbox_drain`` again (self-deadlock).
+
+    Bounded waiters: if another thread of this process is already waiting on the same resource, yield
+    False at once (the callers' existing "busy" signal: confirm -> 409 coding_suggestion_busy, the
+    drain parks) instead of pinning a second connection + thread in sp_getapplock.
+
+    Invariant: at most ONE thread of this process waits inside sp_getapplock per resource; the holder
+    is not counted. Each call discards only the registration IT made, and only once (the wait ending,
+    or ``finally`` if it never did) — never another thread's later registration.
     """
-    with qbo_app_lock(coding_suggestion_lock_resource(public_id), timeout_ms=timeout_ms) as acquired:
-        yield acquired
+    resource = coding_suggestion_lock_resource(public_id)
+    with _LOCK_WAITERS_GUARD:
+        if resource in _LOCK_WAITERS:
+            first_waiter = False
+        else:
+            _LOCK_WAITERS.add(resource)
+            first_waiter = True
+    if not first_waiter:
+        yield False
+        return
+    registered = True
+    try:
+        with qbo_app_lock(resource, timeout_ms=timeout_ms) as acquired:
+            # The wait is over (acquired or timed out): free the slot so the next waiter may queue
+            # behind the holder, who need not be counted as a waiter. Ownership flag: after this the
+            # slot may belong to ANOTHER thread, so ``finally`` must not discard it again.
+            with _LOCK_WAITERS_GUARD:
+                _LOCK_WAITERS.discard(resource)
+                registered = False
+            yield acquired
+    finally:
+        if registered:
+            with _LOCK_WAITERS_GUARD:
+                _LOCK_WAITERS.discard(resource)
 
 
 def _confidence_to_float(value: Optional[Decimal]) -> Optional[float]:

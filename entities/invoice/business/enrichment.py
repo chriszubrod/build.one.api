@@ -75,7 +75,12 @@ def enrich_line_items(line_items) -> list[dict]:
                        scc.Number AS SccNumber, scc.Name AS SccName,
                        cc.Number AS CcNumber, cc.Name AS CcName,
                        bli.Price AS BilledPrice,
-                       att_first.PublicId AS AttachmentPublicId
+                       -- U-166b: a line's own link wins (att_first). A line with no
+                       -- link of its own falls back to its bill's PDF ONLY when the
+                       -- bill's lines carry exactly one distinct AttachmentId
+                       -- (HAVING COUNT(DISTINCT) = 1). Two or more distinct PDFs on
+                       -- one bill is ambiguous, so the fallback stays NULL.
+                       COALESCE(att_first.PublicId, att_bill.PublicId) AS AttachmentPublicId
                 FROM dbo.BillLineItem bli
                 JOIN dbo.Bill b ON b.Id = bli.BillId
                 LEFT JOIN dbo.Vendor v ON v.Id = b.VendorId
@@ -88,6 +93,14 @@ def enrich_line_items(line_items) -> list[dict]:
                     WHERE blia.BillLineItemId = bli.Id
                     ORDER BY a.Id
                 ) att_first
+                OUTER APPLY (
+                    SELECT MIN(blia2.AttachmentId) AS AttachmentId
+                    FROM dbo.BillLineItemAttachment blia2
+                    JOIN dbo.BillLineItem bli2 ON bli2.Id = blia2.BillLineItemId
+                    WHERE bli2.BillId = b.Id
+                    HAVING COUNT(DISTINCT blia2.AttachmentId) = 1
+                ) att_bill_only
+                LEFT JOIN dbo.Attachment att_bill ON att_bill.Id = att_bill_only.AttachmentId
                 WHERE bli.Id IN ({placeholders})
             """, bill_ids)
             for row in cursor.fetchall():

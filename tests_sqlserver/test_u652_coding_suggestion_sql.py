@@ -428,7 +428,9 @@ def test_read_state_one_suggestion_two_lines_returns_one_row(conn):
     conn.commit()
 
 
-def test_read_state_by_expense_id_and_purchase_fallback(conn):
+def test_read_state_joins_by_expense_id_only_and_a_stamp_makes_the_row_visible(conn):
+    """U-652d5: the purchase-identity fallback is gone. An UNSTAMPED row (ExpenseId NULL) is not returned;
+    StampCodingSuggestionExpenseId stamps it, after which it is returned, and a second stamp is a no-op."""
     cur = conn.cursor()
     purchase_id, _, expense_id = _insert_expense_purchase(cur, qbo_purchase_qbo_id="P-200")
     pub_direct = uuid.uuid4()
@@ -442,26 +444,41 @@ def test_read_state_by_expense_id_and_purchase_fallback(conn):
     )
 
     purchase_id2, _, expense_id2 = _insert_expense_purchase(cur, qbo_purchase_qbo_id="P-201")
-    pub_fallback = uuid.uuid4()
+    pub_unstamped = uuid.uuid4()
     cur.execute(
         """
         INSERT INTO dbo.CodingSuggestion (
             PublicId, TargetKind, ExpenseId, QboPurchaseId, QboPurchaseQboId, RealmId, Status
         ) VALUES (?, N'expense', NULL, ?, N'P-201', N'realm-1', N'flagged');
         """,
-        (pub_fallback, purchase_id2),
+        (pub_unstamped, purchase_id2),
     )
     conn.commit()
 
-    cur.execute(
-        """
-        EXEC dbo.ReadCodingSuggestionStateByExpenseIds @ExpenseIds=?, @ActorIsSystemAdmin=1;
-        """,
-        (f"{expense_id},{expense_id2}",),
-    )
+    ids = f"{expense_id},{expense_id2}"
+    cur.execute("EXEC dbo.ReadCodingSuggestionStateByExpenseIds @ExpenseIds=?, @ActorIsSystemAdmin=1;", (ids,))
     rows = {r.ExpenseId: r for r in cur.fetchall()}
     assert str(rows[expense_id].CodingItemPublicId).lower() == str(pub_direct).lower()
-    assert str(rows[expense_id2].CodingItemPublicId).lower() == str(pub_fallback).lower()
+    assert expense_id2 not in rows
+    conn.commit()
+
+    cur.execute(
+        "EXEC dbo.StampCodingSuggestionExpenseId @RealmId=?, @QboPurchaseQboId=?, @ExpenseId=?;",
+        ("realm-1", "P-201", expense_id2),
+    )
+    assert cur.fetchone().Stamped == 1
+    conn.commit()
+
+    cur.execute("EXEC dbo.ReadCodingSuggestionStateByExpenseIds @ExpenseIds=?, @ActorIsSystemAdmin=1;", (ids,))
+    rows = {r.ExpenseId: r for r in cur.fetchall()}
+    assert str(rows[expense_id2].CodingItemPublicId).lower() == str(pub_unstamped).lower()
+    conn.commit()
+
+    cur.execute(
+        "EXEC dbo.StampCodingSuggestionExpenseId @RealmId=?, @QboPurchaseQboId=?, @ExpenseId=?;",
+        ("realm-1", "P-201", expense_id2),
+    )
+    assert cur.fetchone().Stamped == 0
     conn.commit()
 
 

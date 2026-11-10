@@ -1444,11 +1444,14 @@ BEGIN
             ON pl.[QboPurchaseId] = p.[Id]
            AND pl.[QboLineId]     = eli.[QboId]
            AND eli.[RealmId]      = p.[RealmId]
+        -- U-652d5: the join is by ExpenseId (stamped at write time). The RealmId / QboPurchaseQboId conjuncts are
+        -- KEPT on purpose as a consistency guard: a row can only match this expense if its purchase identity agrees
+        -- with the expense's purchase, so a mis-stamped ExpenseId cannot attach a foreign suggestion.
         LEFT JOIN dbo.[CodingSuggestion] cs
             ON cs.[TargetKind] = N'expense'
            AND cs.[RealmId] = p.[RealmId]
            AND cs.[QboPurchaseQboId] = p.[QboId]
-           AND (cs.[ExpenseId] = e.[Id] OR cs.[ExpenseId] IS NULL)
+           AND cs.[ExpenseId] = e.[Id]
         WHERE e.[Status] = N'completed'
           AND e.[StatusOrigin] = N'qbo_pull'
           AND pl.[IsUncodedPlaceholder] = 1

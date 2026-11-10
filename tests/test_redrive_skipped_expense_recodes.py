@@ -241,8 +241,10 @@ def test_candidate_sql_structure_and_parameterization():
     assert "EXISTS" in upper and "DBO.[REVIEW]" in upper.replace(" ", "")
     assert "NOT EXISTS" in upper
     assert "CODINGSUGGESTION" in upper.replace(" ", "").replace("_", "")
-    assert re.search(r"\[ExpenseId\]\s+IS\s+NULL", sql, re.IGNORECASE)
-    assert re.search(r"QBOPURCHASEQBOID", sql, re.IGNORECASE)
+    # U-652d5: the purchase-identity fallback (ExpenseId IS NULL) is gone; every arm joins by ExpenseId.
+    assert not re.search(r"\[ExpenseId\]\s+IS\s+NULL", sql, re.IGNORECASE)
+    assert re.search(r"cs\.\[ExpenseId\]\s*=\s*e\.\[Id\]", sql)
+    assert not re.search(r"QBOPURCHASEQBOID", sql, re.IGNORECASE)  # U-652d5: no purchase-identity fallback
     assert re.search(r"IsUncodedPlaceholder\]\s*=\s*1", sql, re.IGNORECASE)
     assert "%s" not in sql
     assert re.search(r":\w+", sql) is None, "named params not allowed"

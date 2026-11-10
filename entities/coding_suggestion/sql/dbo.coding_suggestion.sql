@@ -1188,17 +1188,7 @@ BEGIN
         cs.[ConfirmationSource]
     FROM dbo.[CodingSuggestion] cs
     INNER JOIN dbo.[Expense] e
-        ON (
-            cs.[ExpenseId] IS NOT NULL
-            AND e.[Id] = cs.[ExpenseId]
-        )
-        OR (
-            cs.[ExpenseId] IS NULL
-            AND cs.[QboPurchaseQboId] IS NOT NULL
-            AND cs.[RealmId] IS NOT NULL
-            AND e.[QboId] = cs.[QboPurchaseQboId]
-            AND e.[RealmId] = cs.[RealmId]
-        )
+        ON e.[Id] = cs.[ExpenseId]
     INNER JOIN STRING_SPLIT(ISNULL(@ExpenseIds, ''), ',') s
         ON s.value <> ''
        AND e.[Id] = TRY_CAST(LTRIM(RTRIM(s.value)) AS BIGINT)

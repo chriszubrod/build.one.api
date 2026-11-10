@@ -83,27 +83,13 @@ AND NOT EXISTS (
     FROM dbo.[CodingSuggestion] cs
     WHERE cs.[ExpenseId] = e.[Id]
 )
-AND NOT EXISTS (
-    SELECT 1
-    FROM dbo.[CodingSuggestion] cs
-    WHERE cs.[ExpenseId] IS NULL
-      AND cs.[QboPurchaseQboId] = e.[QboId]
-      AND cs.[RealmId] = e.[RealmId]
-)
 """
 
 _ARM_SEEDED_PREDICATE = f"""
 AND EXISTS (
     SELECT 1
     FROM dbo.[CodingSuggestion] cs
-    WHERE (
-        cs.[ExpenseId] = e.[Id]
-        OR (
-            cs.[ExpenseId] IS NULL
-            AND cs.[QboPurchaseQboId] = e.[QboId]
-            AND cs.[RealmId] = e.[RealmId]
-        )
-    )
+    WHERE cs.[ExpenseId] = e.[Id]
       AND cs.[Status] = N'pending'
       AND cs.[ConfirmedAt] IS NULL
       AND (
@@ -123,14 +109,7 @@ _ARM_UNCONFIRMED_PREDICATE = f"""
 AND EXISTS (
     SELECT 1
     FROM dbo.[CodingSuggestion] cs
-    WHERE (
-        cs.[ExpenseId] = e.[Id]
-        OR (
-            cs.[ExpenseId] IS NULL
-            AND cs.[QboPurchaseQboId] = e.[QboId]
-            AND cs.[RealmId] = e.[RealmId]
-        )
-    )
+    WHERE cs.[ExpenseId] = e.[Id]
       AND cs.[Status] IN (N'suggested', N'pending')
       AND cs.[ConfirmedAt] IS NULL
       AND (

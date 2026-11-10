@@ -2,13 +2,13 @@
 
 Pure source pins (no prod objects, no cross-schema view). Three shapes:
   A — 6 legs, expense-driven (payment-type SQL, ReadUncodedCompletedExpenseCandidates)
-  B — 7 legs, coding-item-driven (+ cs purchase identity on p.QboId / p.RealmId)
+  B — 7 legs, coding-item-driven (+ cs.ExpenseId = e.Id; U-652d5 dropped the purchase-identity fallback)
   C — worker two-hop dbo read_by_qbo_identity (no staging SQL joins)
 
 Site 4 legs are taken only from ReadCodingSuggestionStateByExpenseIds so unrelated
 edits elsewhere in dbo.expense_coding_item.sql do not affect extraction.
-If U-497b changes shape B's staging-PK entry leg (pl.Id = cs.QboPurchaseLineId),
-revisit SHAPE_B_ENTRY and test_shape_b_sites_carry_shared_six_plus_entry_leg.
+U-652d5: CodingSuggestion.ExpenseId is stamped by the purchase pull, so the coding-item join is by
+ExpenseId alone. The OR fallback on purchase identity is gone; any OR in an identity ON clause is rejected.
 """
 
 from __future__ import annotations
@@ -43,15 +43,9 @@ SHARED_SIX: frozenset[Leg] = frozenset(
     }
 )
 
-SHAPE_B_ENTRY: Leg = (("cs", "QboPurchaseQboId"), ("e", "QboId"))
-SHAPE_B_CS_EXPENSE_LEGS: frozenset[Leg] = frozenset(
-    {
-        (("cs", "ExpenseId"), ("e", "Id")),
-        (("cs", "RealmId"), ("e", "RealmId")),
-    }
-)
+SHAPE_B_CS_EXPENSE_LEG: Leg = (("cs", "ExpenseId"), ("e", "Id"))
 SHAPE_A_LEGS = SHARED_SIX
-SHAPE_B_LEGS = SHARED_SIX | {SHAPE_B_ENTRY} | SHAPE_B_CS_EXPENSE_LEGS
+SHAPE_B_LEGS = SHARED_SIX | {SHAPE_B_CS_EXPENSE_LEG}
 
 IDENTITY_ALIASES = frozenset({"e", "eli", "p", "pl", "cs"})
 
@@ -105,25 +99,11 @@ def _parse_simple_equality_leg(fragment: str) -> Leg | None:
     return tuple(sorted((left, right)))
 
 
-_CS_EXPENSE_OR = re.compile(
-    r"\(\s*"
-    r"cs\.\[ExpenseId\]\s+IS\s+NOT\s+NULL\s+AND\s+e\.\[Id\]\s*=\s*cs\.\[ExpenseId\]\s*"
-    r"\)\s+OR\s+\(\s*"
-    r"cs\.\[ExpenseId\]\s+IS\s+NULL\s+AND\s+cs\.\[QboPurchaseQboId\]\s+IS\s+NOT\s+NULL\s+AND\s+"
-    r"cs\.\[RealmId\]\s+IS\s+NOT\s+NULL\s+AND\s+e\.\[QboId\]\s*=\s*cs\.\[QboPurchaseQboId\]\s+AND\s+"
-    r"e\.\[RealmId\]\s*=\s*cs\.\[RealmId\]\s*"
-    r"\)",
-    re.IGNORECASE | re.DOTALL,
-)
-
-
 def _on_clause_or_is_permitted(on_clause: str, join_alias: str) -> bool:
-    """An ON clause with any OR is accepted ONLY when the whole clause is exactly the permitted
-    cs->e fallback (ExpenseId, else purchase identity). A substring match would let an extra
-    `OR <anything>` branch through and make the join non-restrictive (U-652 round 3)."""
-    if not re.search(r"\bor\b", on_clause, re.IGNORECASE):
-        return True
-    return join_alias.lower() == "e" and _CS_EXPENSE_OR.fullmatch(on_clause.strip()) is not None
+    """U-652d5: no identity ON clause may contain an OR. The cs->e purchase-identity fallback that
+    used to be the one permitted OR is gone (ExpenseId is stamped by the pull), so any OR here makes
+    the join non-restrictive and the whole site is rejected (U-652 round 3 rule, now without exception)."""
+    return re.search(r"\bor\b", on_clause, re.IGNORECASE) is None
 
 
 def _flatten_nested(block: str) -> str:
@@ -226,10 +206,6 @@ def extract_inner_identity_legs(sql: str) -> frozenset[Leg]:
         on_clause = rest[: end_match.start()] if end_match else rest
         if not _on_clause_or_is_permitted(on_clause, join_alias):
             return frozenset()
-        if join_alias.lower() == "e" and _CS_EXPENSE_OR.search(on_clause):
-            legs.add((("cs", "ExpenseId"), ("e", "Id")))
-            legs.add((("cs", "QboPurchaseQboId"), ("e", "QboId")))
-            legs.add((("cs", "RealmId"), ("e", "RealmId")))
         for fragment in _split_top_level_and(on_clause):
             leg = _parse_simple_equality_leg(fragment)
             if leg is None:
@@ -512,6 +488,13 @@ def test_mutation_spec4_worker_staging_pk_parent_scope_goes_red():
 _CS_E_JOIN_OK = (
     "FROM dbo.[CodingSuggestion] cs\n"
     "INNER JOIN dbo.[Expense] e\n"
+    "    ON e.[Id] = cs.[ExpenseId]\n"
+    "WHERE e.[Id] > 0\n"
+)
+
+_CS_E_JOIN_OR_FALLBACK = (
+    "FROM dbo.[CodingSuggestion] cs\n"
+    "INNER JOIN dbo.[Expense] e\n"
     "    ON (cs.[ExpenseId] IS NOT NULL AND e.[Id] = cs.[ExpenseId])\n"
     "    OR (cs.[ExpenseId] IS NULL AND cs.[QboPurchaseQboId] IS NOT NULL AND cs.[RealmId] IS NOT NULL\n"
     "        AND e.[QboId] = cs.[QboPurchaseQboId] AND e.[RealmId] = cs.[RealmId])\n"
@@ -519,13 +502,18 @@ _CS_E_JOIN_OK = (
 )
 
 
-def test_permitted_cs_expense_or_join_yields_its_legs():
+def test_expense_id_only_cs_join_yields_its_leg():
     legs = extract_inner_identity_legs(_CS_E_JOIN_OK)
-    assert (("cs", "ExpenseId"), ("e", "Id")) in legs
-    assert (("cs", "QboPurchaseQboId"), ("e", "QboId")) in legs
+    assert SHAPE_B_CS_EXPENSE_LEG in legs
 
 
-def test_permitted_or_join_with_an_extra_or_branch_is_rejected():
+def test_reintroduced_purchase_identity_fallback_join_is_rejected():
+    """U-652d5: the old OR fallback (ExpenseId, else purchase identity) must make the site carry no
+    legs at all, so a regression that brings the slow join back fails the shape pins."""
+    assert extract_inner_identity_legs(_CS_E_JOIN_OR_FALLBACK) == frozenset()
+
+
+def test_or_join_with_an_extra_or_branch_is_rejected():
     mutated = _CS_E_JOIN_OK.replace("WHERE e.[Id] > 0", "    OR 2=2\nWHERE e.[Id] > 0")
     assert extract_inner_identity_legs(mutated) == frozenset()
 
@@ -588,6 +576,14 @@ def _read_state_where_clause(body: str) -> str:
     end = re.search(r"\bEND\s*;?\s*$", tail, re.IGNORECASE)
     clause = tail[: end.start()] if end else tail
     return re.sub(r"\s+", " ", clause).strip()
+
+
+def test_read_state_joins_coding_items_by_expense_id_only():
+    """U-652d5: no purchase-identity fallback on the coding-item join. An unstamped row is not joined."""
+    head = _read_state_identity_sql().split("INNER JOIN STRING_SPLIT")[0]
+    assert "cs.[ExpenseId] IS NULL" not in head
+    assert "QboPurchaseQboId" not in head
+    assert re.search(r"INNER JOIN dbo\.\[Expense\] e\s+ON e\.\[Id\] = cs\.\[ExpenseId\]", head)
 
 
 def test_read_state_line_eligibility_where_is_pinned_exactly():

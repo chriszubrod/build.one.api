@@ -129,6 +129,55 @@ class CodingSuggestionRepository:
             )
             raise map_database_error(error)
 
+    def stamp_expense_id(
+        self,
+        *,
+        realm_id: str,
+        qbo_purchase_qbo_id: str,
+        expense_id: int,
+    ) -> int:
+        """U-652d5: stamp `expense_id` onto the purchase's expense-target suggestion (see
+        StampCodingSuggestionExpenseId). Returns the number of rows stamped (0 when none needed it)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="StampCodingSuggestionExpenseId",
+                    params={
+                        "RealmId": realm_id,
+                        "QboPurchaseQboId": qbo_purchase_qbo_id,
+                        "ExpenseId": expense_id,
+                    },
+                )
+                row = cursor.fetchone()
+                return int(getattr(row, "Stamped", 0) or 0)
+        except Exception as error:
+            logger.error(
+                "Error stamping ExpenseId %s onto coding suggestion for purchase %s: %s",
+                expense_id,
+                qbo_purchase_qbo_id,
+                type(error).__name__,
+            )
+            raise map_database_error(error)
+
+    def heal_expense_ids(self, *, limit: int = 500) -> int:
+        """U-652d5: one batch of HealCodingSuggestionExpenseIds (set-based, same guards as the stamp).
+        Returns the number of rows healed; call again until it returns 0 to drain a backlog."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="HealCodingSuggestionExpenseIds",
+                    params={"Limit": limit},
+                )
+                row = cursor.fetchone()
+                return int(getattr(row, "Healed", 0) or 0)
+        except Exception as error:
+            logger.error("Error healing coding suggestion ExpenseIds: %s", type(error).__name__)
+            raise map_database_error(error)
+
     def read_by_public_id(self, public_id: str) -> Optional[CodingSuggestion]:
         try:
             with get_connection() as conn:

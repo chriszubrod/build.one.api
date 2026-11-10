@@ -14,6 +14,7 @@ from integrations.intuit.qbo.purchase.placeholder import (
 from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
 from entities.expense.business.service import ExpenseService
 from entities.expense.business.model import Expense
+from entities.coding_suggestion.persistence.repo import CodingSuggestionRepository
 from entities.expense_line_item.business.service import ExpenseLineItemService
 from entities.vendor.business.service import VendorService
 from integrations.intuit.qbo.base.pull_race import guard_lines_present
@@ -234,9 +235,12 @@ class PurchaseExpenseConnector:
         sub_cost_code_service: Optional[SubCostCodeService] = None,
         vendor_on_demand_resolver=None,
         autocomplete_coded_drafts: bool = False,
+        coding_suggestion_repo: Optional[CodingSuggestionRepository] = None,
     ):
         """Initialize the PurchaseExpenseConnector."""
         self.expense_service = expense_service or ExpenseService()
+        # U-652d5: stamps CodingSuggestion.ExpenseId after an expense resolves (best-effort).
+        self.coding_suggestion_repo = coding_suggestion_repo or CodingSuggestionRepository()
         self.vendor_service = vendor_service or VendorService()
         # U-313: no longer read anywhere in this file (_get_vendor_public_id
         # moved fully dbo-only, no qbo.VendorVendor hop left). U-314 dropped
@@ -426,7 +430,30 @@ class PurchaseExpenseConnector:
                 f"Failed to resolve Expense for QboPurchase {qbo_purchase.id} "
                 f"(qbo_id={qbo_purchase.qbo_id}) via the dbo-only identity fast path"
             )
+        self._stamp_coding_suggestion_expense_id(outcome.entity, qbo_purchase)
         return outcome.entity
+
+    def _stamp_coding_suggestion_expense_id(self, expense: Expense, qbo_purchase: QboPurchase) -> None:
+        """U-652d5: stamp the resolved Expense's id onto the purchase's CodingSuggestion, so readers
+        join by ExpenseId and never fall back to purchase identity. Runs AFTER the expense is committed
+        (outside the create rollback). Best-effort: a failure is logged with ids and the exception class
+        only, and never fails the pull. The pull is incremental, so a missed stamp is NOT retried by a
+        later tick: UpsertCodingSuggestionForPurchase resolves ExpenseId at write time for new rows, and
+        HealCodingSuggestionExpenseIds (run by the stranded sweeper every 15 min) heals residuals."""
+        try:
+            self.coding_suggestion_repo.stamp_expense_id(
+                realm_id=qbo_purchase.realm_id,
+                qbo_purchase_qbo_id=qbo_purchase.qbo_id,
+                expense_id=coerce_id(expense.id),
+            )
+        except Exception as error:
+            logger.warning(
+                "CodingSuggestion ExpenseId stamp failed (purchase qbo_id=%s realm_id=%s expense_id=%s): %s",
+                qbo_purchase.qbo_id,
+                qbo_purchase.realm_id,
+                getattr(expense, "id", None),
+                type(error).__name__,
+            )
 
     def _create_expense(
         self,

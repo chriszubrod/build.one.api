@@ -39,6 +39,10 @@ PRE_U490_EXPENSE_CODING_SPROC_NAMES = frozenset(
         "ReadCodingSuggestionRecoveryCandidates",
         # U-551b-f1-f3b: the guarded adopt of a crash-gap first write's written record
         "AdoptCodingSuggestionWrittenRecord",
+        # U-652d5: the purchase pull stamps CodingSuggestion.ExpenseId (replaces the read-time fallback)
+        "StampCodingSuggestionExpenseId",
+        # U-652d5 round 1: residual heal, run by the stranded sweeper and the backfill
+        "HealCodingSuggestionExpenseIds",
     }
 )
 

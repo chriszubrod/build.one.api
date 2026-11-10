@@ -117,6 +117,17 @@ def _grant_coding_suggestion_lock():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _stub_purchase_connector_stamp_repo():
+    """U-652d5: PurchaseExpenseConnector stamps CodingSuggestion.ExpenseId after every resolved expense, and its
+    default repo would reach the blocked live connect. Stub the connector's default for every test. A test that
+    injects its own coding_suggestion_repo is unaffected, because the default is used only when none is passed."""
+    with patch(
+        "integrations.intuit.qbo.purchase.connector.expense.business.service.CodingSuggestionRepository",
+    ) as repo_cls:
+        yield repo_cls
+
+
 @pytest.fixture
 def grant_qbo_app_lock():
     """U-304: patches identity_fastpath.py's `qbo_app_lock` import to always

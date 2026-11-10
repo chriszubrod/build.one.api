@@ -863,6 +863,15 @@ class CodingSuggestionService:
             self._log_sweep(result)
             return result
 
+        if not dry_run:
+            # U-652d5: heal residual expense-target ExpenseIds (DB-only, after the zero-write gate above).
+            # Failure-isolated: a heal error must never break the re-enqueue sweep below.
+            try:
+                result["expense_id_healed"] = self.repo.heal_expense_ids()
+            except Exception as error:
+                result["expense_id_healed"] = None
+                result["expense_id_heal_error"] = type(error).__name__
+
         for candidate in candidates:
             public_id = candidate["public_id"]
             try:

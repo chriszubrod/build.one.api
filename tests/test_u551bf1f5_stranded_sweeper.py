@@ -138,6 +138,7 @@ def _svc(cands, items=None, recovery=()):
     svc.repo = MagicMock()
     svc.repo.read_stranded_confirmed.return_value = cands
     svc.repo.read_recovery_candidates.return_value = list(recovery)
+    svc.repo.heal_expense_ids.return_value = 0  # U-652d5: the real repo returns an int (JSON-safe)
     items = items if items is not None else {c["public_id"]: _item(seq=c["confirmation_seq"]) for c in cands}
     svc.read_by_public_id = MagicMock(side_effect=lambda pid: items[pid])
     svc._enqueue_recode_and_mark = MagicMock(return_value=True)

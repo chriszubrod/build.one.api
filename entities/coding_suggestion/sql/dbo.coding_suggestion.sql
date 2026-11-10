@@ -173,6 +173,17 @@ BEGIN
 
     DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
 
+    -- U-652d5: resolve the expense at write time. The pull is incremental, so a row seeded before its
+    -- expense existed is never revisited by a later tick. An explicit @ExpenseId wins; otherwise the
+    -- purchase's expense by identity. An id another row already holds is never taken (unique index).
+    DECLARE @ExpenseIdToStamp BIGINT = COALESCE(
+        @ExpenseId,
+        (SELECT TOP (1) e.[Id] FROM dbo.[Expense] e WHERE e.[QboId] = @QboPurchaseQboId AND e.[RealmId] = @RealmId)
+    );
+    IF @ExpenseIdToStamp IS NOT NULL
+       AND EXISTS (SELECT 1 FROM dbo.[CodingSuggestion] x WHERE x.[ExpenseId] = @ExpenseIdToStamp)
+        SET @ExpenseIdToStamp = NULL;
+
     MERGE dbo.[CodingSuggestion] WITH (HOLDLOCK) AS target
     USING (
         SELECT
@@ -186,14 +197,14 @@ BEGIN
         UPDATE SET
             [QboPurchaseId] = CASE WHEN @QboPurchaseId IS NOT NULL THEN @QboPurchaseId ELSE target.[QboPurchaseId] END,
             [VendorId] = CASE WHEN @VendorId IS NOT NULL THEN @VendorId ELSE target.[VendorId] END,
-            [ExpenseId] = CASE WHEN @ExpenseId IS NOT NULL AND target.[ExpenseId] IS NULL THEN @ExpenseId ELSE target.[ExpenseId] END,
+            [ExpenseId] = CASE WHEN @ExpenseIdToStamp IS NOT NULL AND target.[ExpenseId] IS NULL THEN @ExpenseIdToStamp ELSE target.[ExpenseId] END,
             [ModifiedDatetime] = @Now
     WHEN NOT MATCHED THEN
         INSERT
             ([TargetKind], [QboPurchaseId], [QboPurchaseQboId], [RealmId], [VendorId], [ExpenseId],
              [Status], [CreatedByUserId], [CreatedDatetime], [ModifiedDatetime])
         VALUES
-            (N'expense', @QboPurchaseId, @QboPurchaseQboId, @RealmId, @VendorId, @ExpenseId,
+            (N'expense', @QboPurchaseId, @QboPurchaseQboId, @RealmId, @VendorId, @ExpenseIdToStamp,
              N'pending', COALESCE(@CreatedByUserId, 17), @Now, @Now)
     OUTPUT
         INSERTED.[Id],
@@ -241,6 +252,83 @@ BEGIN
         CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime];
 
     COMMIT TRANSACTION;
+END;
+GO
+
+
+-- U-652d5: stamp the expense's ExpenseId onto its purchase's expense-target suggestion. Called from the
+-- QBO purchase pull after the Expense resolves (create, update, race paths), so a row seeded before the
+-- expense existed gets its ExpenseId without relying on a read-time fallback. Only rows with NO ExpenseId,
+-- or one pointing at a missing dbo.Expense (dangling), are written; never sets an id another row holds
+-- (UQ_CodingSuggestion_ExpenseId). Idempotent: a second call finds nothing to stamp and returns 0.
+-- Returns one row: Stamped = rows written.
+CREATE OR ALTER PROCEDURE StampCodingSuggestionExpenseId
+(
+    @RealmId NVARCHAR(50),
+    @QboPurchaseQboId NVARCHAR(50),
+    @ExpenseId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE cs
+    SET cs.[ExpenseId] = @ExpenseId
+    FROM dbo.[CodingSuggestion] cs
+    WHERE cs.[TargetKind] = N'expense'
+      AND cs.[RealmId] = @RealmId
+      AND cs.[QboPurchaseQboId] = @QboPurchaseQboId
+      AND (
+          cs.[ExpenseId] IS NULL
+          OR NOT EXISTS (
+              SELECT 1 FROM dbo.[Expense] e WHERE e.[Id] = cs.[ExpenseId]
+          )
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM dbo.[CodingSuggestion] x
+          WHERE x.[ExpenseId] = @ExpenseId
+            AND x.[Id] <> cs.[Id]
+      );
+
+    -- No ModifiedDatetime bump: it would restart the enqueued_stranded age clock.
+    SELECT @@ROWCOUNT AS [Stamped];
+END;
+GO
+
+
+-- U-652d5: set-based heal of residual expense-target rows whose ExpenseId is NULL or dangling, matched to
+-- dbo.Expense by purchase identity (QboId + RealmId). Same guards as the stamp: TargetKind = N'expense' only,
+-- and never an id another row holds (x.[ExpenseId] = e.[Id]). Batched by @Limit so one EXEC is short.
+-- Callers: the backfill script (loops until 0) and the stranded sweeper's apply run. No ModifiedDatetime bump.
+-- Returns one row: Healed = rows written.
+CREATE OR ALTER PROCEDURE HealCodingSuggestionExpenseIds
+(
+    @Limit INT = 500
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE TOP (@Limit) cs
+    SET cs.[ExpenseId] = e.[Id]
+    FROM dbo.[CodingSuggestion] cs
+    INNER JOIN dbo.[Expense] e
+        ON e.[QboId] = cs.[QboPurchaseQboId]
+       AND e.[RealmId] = cs.[RealmId]
+    WHERE cs.[TargetKind] = N'expense'
+      AND (
+          cs.[ExpenseId] IS NULL
+          OR NOT EXISTS (
+              SELECT 1 FROM dbo.[Expense] e0 WHERE e0.[Id] = cs.[ExpenseId]
+          )
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM dbo.[CodingSuggestion] x
+          WHERE x.[ExpenseId] = e.[Id]
+            AND x.[Id] <> cs.[Id]
+      );
+
+    SELECT @@ROWCOUNT AS [Healed];
 END;
 GO
 

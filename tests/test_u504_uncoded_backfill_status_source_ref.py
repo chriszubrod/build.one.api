@@ -30,7 +30,6 @@ BACKFILL_PROVENANCE_ITEM_KEYS = frozenset(
         "realm_id",
         "purchase_qbo_id",
         "qbo_line_id",
-        "qbo_purchase_line_id",
     }
 )
 

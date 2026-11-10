@@ -827,8 +827,6 @@ class QboPurchaseLineRepository:
             "txn_date": getattr(row, "TxnDate", None),
             "doc_number": getattr(row, "DocNumber", None),
             "private_note": getattr(row, "PrivateNote", None),
-            "qbo_purchase_line_id": getattr(row, "QboPurchaseLineId", None),
-            "qbo_line_id": getattr(row, "QboLineId", None),
             "line_num": getattr(row, "LineNum", None),
             "line_amount": Decimal(str(line_amount)) if line_amount is not None else None,
             "line_description": getattr(row, "LineDescription", None),

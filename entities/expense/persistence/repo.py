@@ -594,7 +594,6 @@ class ExpenseRepository:
                         "realm_id": getattr(row, "RealmId", None),
                         "purchase_qbo_id": getattr(row, "PurchaseQboId", None),
                         "qbo_line_id": getattr(row, "QboLineId", None),
-                        "qbo_purchase_line_id": getattr(row, "QboPurchaseLineId", None),
                         "coding_item_public_id": (
                             str(row.CodingItemPublicId)
                             if getattr(row, "CodingItemPublicId", None)

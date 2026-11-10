@@ -1176,28 +1176,7 @@ BEGIN
         cs.[PublicId],
         cs.[Id],
         cs.[Status],
-        cs.[QboPurchaseQboId],
-        -- Per-line QboLineId is legacy output: when the purchase has exactly one
-        -- uncategorized staging line, return that line's QboLineId; else NULL.
-        CASE
-            WHEN (
-                SELECT COUNT(*)
-                FROM [qbo].[Purchase] p
-                INNER JOIN [qbo].[PurchaseLine] pl ON pl.[QboPurchaseId] = p.[Id]
-                WHERE p.[QboId] = cs.[QboPurchaseQboId]
-                  AND p.[RealmId] = cs.[RealmId]
-                  AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
-            ) = 1
-            THEN (
-                SELECT TOP (1) pl.[QboLineId]
-                FROM [qbo].[Purchase] p
-                INNER JOIN [qbo].[PurchaseLine] pl ON pl.[QboPurchaseId] = p.[Id]
-                WHERE p.[QboId] = cs.[QboPurchaseQboId]
-                  AND p.[RealmId] = cs.[RealmId]
-                  AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
-            )
-            ELSE NULL
-        END AS [QboLineId]
+        cs.[QboPurchaseQboId]
     FROM dbo.[CodingSuggestion] cs
     WHERE cs.[TargetKind] = N'expense'
       AND cs.[QboPurchaseQboId] IS NOT NULL

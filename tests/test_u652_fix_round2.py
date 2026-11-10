@@ -391,10 +391,10 @@ def test_dominant_submit_tiebreak_orders_line_id_numerically():
     assert dominant["project_id"] == 2
 
 
-# --- P2-10 confirm/flag response legacy line keys ---
+# --- P2-10 confirm/flag response carries no legacy line keys (U-652d2) ---
 
 
-def test_confirm_response_keys_match_origin_master_plus_enqueued():
+def test_confirm_response_omits_legacy_line_keys():
     from entities.coding_suggestion.business.model import CodingSuggestion
     from entities.coding_suggestion.business.service import CodingSuggestionService
 
@@ -403,8 +403,6 @@ def test_confirm_response_keys_match_origin_master_plus_enqueued():
         "public_id",
         "row_version",
         "qbo_purchase_id",
-        "qbo_purchase_line_id",
-        "qbo_line_id",
         "qbo_purchase_qbo_id",
         "realm_id",
         "vendor_id",
@@ -481,15 +479,13 @@ def test_confirm_response_keys_match_origin_master_plus_enqueued():
         modified_datetime=None,
     )
     svc = CodingSuggestionService()
-    with patch.object(
-        svc, "legacy_single_line_ids", return_value=(55, "1")
-    ):
-        payload = svc.to_api_dict(item)
+    payload = svc.to_api_dict(item)
     payload["enqueued"] = True
     for key in origin_keys:
-        assert key in payload, f"missing legacy response key {key!r}"
-    assert payload["qbo_purchase_line_id"] == 55
-    assert payload["qbo_line_id"] == "1"
+        assert key in payload, f"missing response key {key!r}"
+    # U-652d2: the legacy line aliases are retired; their absence is pinned.
+    assert "qbo_purchase_line_id" not in payload
+    assert "qbo_line_id" not in payload
 
 
 # --- P2-11 OR 1=1 mutation rejected ---

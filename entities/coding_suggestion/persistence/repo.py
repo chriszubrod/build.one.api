@@ -104,10 +104,7 @@ class CodingSuggestionRepository:
         vendor_id: Optional[int] = None,
         expense_id: Optional[int] = None,
         created_by_user_id: Optional[int] = None,
-        qbo_purchase_line_id: Optional[int] = None,
-        qbo_line_id: Optional[str] = None,
     ) -> Optional[CodingSuggestion]:
-        del qbo_purchase_line_id, qbo_line_id
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -411,7 +408,6 @@ class CodingSuggestionRepository:
                         "id": getattr(row, "Id", None),
                         "status": getattr(row, "Status", None),
                         "qbo_purchase_qbo_id": getattr(row, "QboPurchaseQboId", None),
-                        "qbo_line_id": getattr(row, "QboLineId", None),
                     }
                     for row in cursor.fetchall()
                 ]

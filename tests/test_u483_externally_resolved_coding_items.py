@@ -186,7 +186,6 @@ def test_reconcile_externally_resolved_defaults_to_dry_run_without_marking():
             "id": 1,
             "status": "pending",
             "qbo_purchase_qbo_id": "123",
-            "qbo_line_id": "1",
         }
     ]
     svc = CodingSuggestionService()
@@ -208,14 +207,12 @@ def test_reconcile_externally_resolved_apply_calls_mark_for_each_candidate():
             "id": 1,
             "status": "suggested",
             "qbo_purchase_qbo_id": "123",
-            "qbo_line_id": "1",
         },
         {
             "public_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
             "id": 2,
             "status": "flagged",
             "qbo_purchase_qbo_id": "456",
-            "qbo_line_id": "2",
         },
     ]
     svc = CodingSuggestionService()

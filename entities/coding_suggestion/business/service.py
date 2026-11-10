@@ -1539,45 +1539,9 @@ class CodingSuggestionService:
             row = cursor.fetchone()
             return int(row[0]) if row and row[0] is not None else 0
 
-    def legacy_single_line_ids(
-        self, item: CodingSuggestion
-    ) -> tuple[Optional[int], Optional[str]]:
-        """Legacy response keys when exactly one uncategorized staging line exists."""
-        if not item.realm_id or not item.qbo_purchase_qbo_id:
-            return None, None
-        from shared.database import get_connection
-
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                SELECT pl.[Id], pl.[QboLineId]
-                FROM [qbo].[PurchaseLine] pl
-                INNER JOIN [qbo].[Purchase] p ON pl.[QboPurchaseId] = p.[Id]
-                WHERE p.[QboId] = ?
-                  AND p.[RealmId] = ?
-                  AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
-                ORDER BY pl.[QboLineId]
-                """,
-                item.qbo_purchase_qbo_id,
-                item.realm_id,
-            )
-            rows = cursor.fetchall()
-        if len(rows) != 1:
-            return None, None
-        line_pk = getattr(rows[0], "Id", rows[0][0])
-        line_qbo_id = getattr(rows[0], "QboLineId", rows[0][1])
-        return (
-            int(line_pk) if line_pk is not None else None,
-            str(line_qbo_id) if line_qbo_id is not None else None,
-        )
-
     def to_api_dict(self, item: CodingSuggestion) -> dict:
-        payload = item.to_dict()
-        line_pk, line_qbo_id = self.legacy_single_line_ids(item)
-        payload["qbo_purchase_line_id"] = line_pk
-        payload["qbo_line_id"] = line_qbo_id
-        return payload
+        # Plain row dict (legacy line-id aliases retired in U-652d2).
+        return item.to_dict()
 
     # One of FIVE near-identical dbo-first/legacy-fallback vendor-ref resolvers
     # (U-284v): this one, BillBillConnector._get_vendor_public_id (pull) +

@@ -184,8 +184,6 @@ def test_expense_coding_queue_row_mapper_keys():
         "txn_date",
         "doc_number",
         "private_note",
-        "qbo_purchase_line_id",
-        "qbo_line_id",
         "line_num",
         "line_amount",
         "line_description",

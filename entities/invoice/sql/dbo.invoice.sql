@@ -863,7 +863,9 @@ GO
 -- U-785: refuse the WRITE, not the no-op. Only a completed Bill AND a line with
 -- no project yet is refused; a line that already has one matches nothing below.
 -- Its caller (invoice reconciliation) runs as the user over HTTP. The Bill lock
--- is taken first and held, so the values read cannot change before the UPDATE.
+-- is taken first and held; the line's project is read after it as a locking
+-- read, so it cannot change before the UPDATE (every guarded writer to the line
+-- serializes on that Bill lock).
 CREATE OR ALTER PROCEDURE BackfillLinkedSourceProjectId
 (
     @SourceType NVARCHAR(50),
@@ -878,11 +880,19 @@ BEGIN
     IF @SourceType = N'BillLineItem'
     BEGIN
         DECLARE @ParentStatus NVARCHAR(20);
+        DECLARE @LockedBillId BIGINT;
         DECLARE @LineProjectId BIGINT;
-        SELECT @ParentStatus = b.[Status], @LineProjectId = li.[ProjectId]
+        SELECT @ParentStatus = b.[Status], @LockedBillId = b.[Id]
         FROM dbo.[BillLineItem] li
         INNER JOIN dbo.[Bill] b WITH (UPDLOCK, HOLDLOCK) ON b.[Id] = li.[BillId]
         WHERE li.[Id] = @Id;
+
+        -- Only once the Bill lock is held, and as a locking read: the database
+        -- runs READ_COMMITTED_SNAPSHOT, so reading the line in the statement above
+        -- could return a value from before a writer holding that lock committed.
+        SELECT @LineProjectId = [ProjectId]
+        FROM dbo.[BillLineItem] WITH (READCOMMITTEDLOCK)
+        WHERE [Id] = @Id;
 
         IF @AllowTerminalParent = 0 AND @ParentStatus = 'completed' AND @LineProjectId IS NULL
         BEGIN
@@ -890,10 +900,12 @@ BEGIN
             RETURN;
         END
 
+        -- Bound to the Bill that was locked and checked: a line moved to another
+        -- Bill since the locked read is not written.
         UPDATE dbo.[BillLineItem]
         SET [ProjectId] = @ProjectId,
             [ModifiedDatetime] = SYSUTCDATETIME()
-        WHERE [Id] = @Id AND [ProjectId] IS NULL;
+        WHERE [Id] = @Id AND [ProjectId] IS NULL AND [BillId] = @LockedBillId;
     END
     ELSE IF @SourceType = N'ExpenseLineItem'
     BEGIN

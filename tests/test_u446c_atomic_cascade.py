@@ -594,37 +594,58 @@ def test_the_project_backfill_refuses_only_a_call_that_would_write():
     UPDATE would have matched nothing (MR2-MAIN-11, 2026-11-10).
 
     The refusal has to be exactly the case the one-way UPDATE would write: not
-    exempt, AND a completed parent, AND no project on the line yet. Its inputs are
-    read after the Bill lock is taken (HOLDLOCK keeps it to the end of the
-    transaction), so they cannot be stale when the UPDATE runs — every guarded
-    writer to that line serializes on the same Bill lock."""
+    exempt, AND a completed parent, AND no project on the line yet. The line's
+    project is read in a separate locking read AFTER the Bill lock is held
+    (HOLDLOCK keeps it to the end of the transaction). Under READ_COMMITTED_SNAPSHOT
+    a read in the same statement as the lock could predate a writer that held it
+    (U-785 Pass 3) — every guarded writer to that line serializes on the Bill lock."""
     body = _body("entities/invoice/sql/dbo.invoice.sql", "BackfillLinkedSourceProjectId")
     bill_branch = body.split("N'BillLineItem'", 1)[1].split("ELSE IF", 1)[0]
 
     refusals = [ln for ln in bill_branch.splitlines() if "@AllowTerminalParent = 0" in ln]
     assert len(refusals) == 1, refusals
-    refusal = refusals[0]
-    assert "@ParentStatus = 'completed'" in refusal, (
-        "a non-completed parent is never refused"
-    )
-    assert "@LineProjectId IS NULL" in refusal, (
-        "a line that already has its project is a no-op write and must not be "
-        "refused — that refusal is what broke push-draw over HTTP"
+    # The whole condition, not its pieces: an OR or a NOT in the wrong place keeps
+    # every substring and inverts or widens the refusal (U-785 Pass 1).
+    assert " ".join(refusals[0].split()) == (
+        "IF @AllowTerminalParent = 0 AND @ParentStatus = 'completed' "
+        "AND @LineProjectId IS NULL"
+    ), (
+        "refuse exactly a non-exempt call on a completed parent whose line has no "
+        "project yet; a line that already has one is a no-op write, and refusing "
+        "it is what broke push-draw over HTTP"
     )
 
-    locked_read = bill_branch[: bill_branch.index("@AllowTerminalParent = 0")]
-    assert "WITH (UPDLOCK, HOLDLOCK)" in locked_read
-    assert "@LineProjectId = li.[ProjectId]" in locked_read, (
-        "the line's project must be read after the Bill lock is taken, before "
+    before_refusal = bill_branch[: bill_branch.index("@AllowTerminalParent = 0")]
+    lock_at = before_refusal.index("WITH (UPDLOCK, HOLDLOCK)")
+    locking_stmt_end = before_refusal.index(";", lock_at)
+    locking_stmt = before_refusal[:locking_stmt_end]
+    after_lock = before_refusal[locking_stmt_end:]
+    assert "@ParentStatus = b.[Status]" in locking_stmt, (
+        "the parent's status is read into a variable under the Bill lock and "
+        "tested in the refusal (DeleteBillById's shape)"
+    )
+    assert "[ProjectId]" not in locking_stmt, (
+        "the database runs READ_COMMITTED_SNAPSHOT: a line read in the same "
+        "statement as the Bill lock can be older than a writer that held that "
+        "lock — read the line's project in a later statement"
+    )
+    assert "@LineProjectId = [ProjectId]" in after_lock, (
+        "the line's project must be read after the Bill lock is held, before "
         "the refusal consults it"
     )
-    assert "@ParentStatus = b.[Status]" in locked_read, (
-        "the parent's status is read into a variable and tested in the "
-        "refusal (DeleteBillById's shape)"
+    assert "WITH (READCOMMITTEDLOCK)" in after_lock, (
+        "a locking read, so a statement snapshot cannot hand back a stale project"
     )
 
-    assert "WHERE [Id] = @Id AND [ProjectId] IS NULL" in bill_branch, (
-        "the refusal and the write must agree on what a write is"
+    assert "@LockedBillId = b.[Id]" in locking_stmt, (
+        "capture the Bill that was locked and checked"
+    )
+    assert (
+        "WHERE [Id] = @Id AND [ProjectId] IS NULL AND [BillId] = @LockedBillId"
+        in " ".join(bill_branch.split())
+    ), (
+        "the write fills only a NULL (what the refusal is about) and only while "
+        "the line is still on the Bill that was locked and checked"
     )
 
 

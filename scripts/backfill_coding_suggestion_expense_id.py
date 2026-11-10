@@ -8,8 +8,9 @@ Runs the same guards as StampCodingSuggestionExpenseId, across ALL rows in one s
 
 Safety:
   - Dry-run by default: SELECTs only, prints the counts.
-  - --apply EXECs dbo.HealCodingSuggestionExpenseIds in batches until it heals 0, capped at 20 batches
-    (single source of the write; the script carries no UPDATE text), re-prints the counts, and exits 1 when
+  - --apply EXECs dbo.HealCodingSuggestionExpenseIds in batches until it heals 0, capped at 20 batches.
+    Each batch commits in its own get_connection() block (no lock held across the loop). The script carries
+    no UPDATE text. Re-prints the counts, and exits 1 when
     NULL rows whose purchase has an expense OR healable dangling ExpenseIds (a matching expense exists) remain.
     Dangling ids with no matching expense are reported and do not fail the run.
   - Prod data write: run at Gate 2 only, after reviewing the dry-run.
@@ -98,34 +99,40 @@ def _print_report(title: str, report: dict) -> None:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Backfill CodingSuggestion.ExpenseId (U-652d5).")
-    parser.add_argument("--apply", action="store_true", help="run the UPDATE (default: dry-run)")
+    parser.add_argument("--apply", action="store_true", help="run the heal (default: dry-run)")
     args = parser.parse_args(argv)
 
+    # House pattern (shared/database.py::get_connection): the context manager commits on clean exit and
+    # rolls back on error. One `with` block per unit of work, so each heal batch is its own transaction and
+    # no row lock is held across the whole loop.
     with get_connection() as conn:
-        cursor = conn.cursor()
-        before = count_report(cursor)
-        if not args.apply:
-            _print_report("DRY RUN (no writes). Counts before:", before)
-            return 0
+        before = count_report(conn.cursor())
+    if not args.apply:
+        _print_report("DRY RUN (no writes). Counts before:", before)
+        return 0
 
-        _print_report("Counts before apply:", before)
-        healed_total = 0
-        batches = 0
-        cap_hit = False
-        while True:
+    _print_report("Counts before apply:", before)
+    healed_total = 0
+    batches = 0
+    cap_hit = False
+    while True:
+        with get_connection() as conn:
+            cursor = conn.cursor()
             cursor.execute("EXEC dbo.HealCodingSuggestionExpenseIds @Limit=?", (HEAL_BATCH,))
-            batches += 1
             healed = int(cursor.fetchone().Healed)
-            healed_total += healed
-            if healed == 0:
-                break
-            if batches >= HEAL_BATCH_CAP:
-                cap_hit = True
-                break
-        print(f"Healed {healed_total} row(s) in {batches} batch(es) via dbo.HealCodingSuggestionExpenseIds.")
-        if cap_hit:
-            print(f"CAP: stopped at {HEAL_BATCH_CAP} batches with rows still healing. Re-run --apply to continue.")
-        after = count_report(cursor)
+        batches += 1
+        healed_total += healed
+        if healed == 0:
+            break
+        if batches >= HEAL_BATCH_CAP:
+            cap_hit = True
+            break
+    print(f"Healed {healed_total} row(s) in {batches} batch(es) via dbo.HealCodingSuggestionExpenseIds.")
+    if cap_hit:
+        print(f"CAP: stopped at {HEAL_BATCH_CAP} batches with rows still healing. Re-run --apply to continue.")
+
+    with get_connection() as conn:
+        after = count_report(conn.cursor())
 
     _print_report("Counts after apply:", after)
     failed = after["null_with_expense"] > 0 or after["dangling_with_expense"] > 0

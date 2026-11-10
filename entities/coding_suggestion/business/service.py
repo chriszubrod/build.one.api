@@ -823,7 +823,9 @@ class CodingSuggestionService:
         enqueued_older_than_seconds: int = 300,
     ) -> dict:
         """Re-enqueue ``confirmed`` rows whose enqueue was lost (the approval was given; only the enqueue
-        step died). Gated like confirm: gate off + apply = ZERO writes. NEVER touches an ``error`` row
+        step died). Gated like confirm: gate off + apply = zero QBO-path writes (no enqueue, no status write).
+        On apply the ExpenseId heal still runs even with the gate closed: it is DB-local and never writes to QBO.
+        NEVER touches an ``error`` row
         (a deterministic error would loop every tick) - those are only REPORTED under ``recovery``.
         Each row is re-read under the suggestion lock and re-checked (status 'confirmed', seq unchanged)
         before ``_enqueue_recode_and_mark``; a dead letter blocks it."""
@@ -858,19 +860,20 @@ class CodingSuggestionService:
                 ],
             },
         }
-        if gate is not None and not dry_run:
-            result.update({"status": "skipped", "reason": gate})
-            self._log_sweep(result)
-            return result
-
         if not dry_run:
-            # U-652d5: heal residual expense-target ExpenseIds (DB-only, after the zero-write gate above).
-            # Failure-isolated: a heal error must never break the re-enqueue sweep below.
+            # U-652d5: heal residual expense-target ExpenseIds. DB-local, never writes to QBO, so it runs even
+            # when the recode write gate is closed (the gate guards the QBO writes only). Failure-isolated: a heal
+            # error must never break the re-enqueue sweep below.
             try:
                 result["expense_id_healed"] = self.repo.heal_expense_ids()
             except Exception as error:
                 result["expense_id_healed"] = None
                 result["expense_id_heal_error"] = type(error).__name__
+
+        if gate is not None and not dry_run:
+            result.update({"status": "skipped", "reason": gate})
+            self._log_sweep(result)
+            return result
 
         for candidate in candidates:
             public_id = candidate["public_id"]

@@ -1,7 +1,8 @@
 """U-652d5 — the stranded sweeper heals residual CodingSuggestion.ExpenseIds on apply runs only.
 
-The heal is DB-only, so it runs AFTER the zero-write gate (gate on + apply = no writes at all) and is
-failure-isolated: a heal error must not break the re-enqueue sweep.
+The heal is DB-local (it never writes to QBO), so it runs on apply EVEN WHEN the recode write gate is closed.
+The gate guards the QBO-path writes only: gate closed + apply = no enqueue and no status write. Dry-run never
+heals. A heal error is failure-isolated and must not break the re-enqueue sweep.
 """
 
 from __future__ import annotations
@@ -48,13 +49,17 @@ def test_apply_with_gate_open_heals_and_reports_the_count():
     assert result["enqueued"] == 1
 
 
-def test_gate_closed_apply_is_zero_writes_and_never_heals():
-    svc = _svc()
+def test_gate_closed_apply_heals_but_makes_no_qbo_path_writes():
+    svc = _svc(heal=3)
     with patch(GATE, return_value="qbo_writes_disabled"), patch(LOCK, _granted):
         result = svc.sweep_stranded_confirmed(dry_run=False)
-    svc.repo.heal_expense_ids.assert_not_called()
+    svc.repo.heal_expense_ids.assert_called_once_with()
+    assert result["expense_id_healed"] == 3
     assert result["status"] == "skipped"
-    assert "expense_id_healed" not in result
+    assert result["enqueued"] == 0
+    svc._enqueue_recode_and_mark.assert_not_called()
+    svc.repo.mark_enqueued.assert_not_called()
+    svc.repo.mark_error.assert_not_called()
 
 
 def test_dry_run_never_heals():

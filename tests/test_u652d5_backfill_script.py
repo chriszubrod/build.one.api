@@ -97,19 +97,39 @@ def test_dry_run_issues_only_selects_and_reports_counts(capsys):
 
 
 def _apply_conn(before, heals, after):
-    cm, conn, cursor = _conn(counts=[])
+    """get_connection() is entered once per unit of work (the before-count, each heal batch, the after-count).
+    Each context commits on clean exit, as shared/database.py::get_connection does. `log` records the opens and
+    the commits so a test can prove every batch is its own committed transaction."""
+    cursor = MagicMock()
     cursor.fetchone.side_effect = (
         [SimpleNamespace(N=n) for n in before]
         + [SimpleNamespace(Healed=h) for h in heals]
         + [SimpleNamespace(N=n) for n in after]
     )
-    return cm, conn, cursor
+    log = {"opens": 0, "commits": 0}
+
+    def _open(*_a, **_k):
+        conn = MagicMock()
+        conn.cursor.return_value = cursor
+        cm = MagicMock()
+        cm.__enter__.return_value = conn
+
+        def _exit(exc_type, *_rest):
+            if exc_type is None:
+                log["commits"] += 1
+            return False
+
+        cm.__exit__.side_effect = _exit
+        log["opens"] += 1
+        return cm
+
+    return MagicMock(side_effect=_open), cursor, log
 
 
 def test_apply_drains_the_heal_proc_until_zero_and_passes(capsys):
     m = _mod()
-    cm, conn, cursor = _apply_conn(before=[1, 1, 0, 0], heals=[1, 0], after=[0, 0, 0, 0])
-    with patch(f"{SCRIPT}.get_connection", return_value=cm):
+    gc, cursor, log = _apply_conn(before=[1, 1, 0, 0], heals=[1, 0], after=[0, 0, 0, 0])
+    with patch(f"{SCRIPT}.get_connection", gc):
         rc = m.main(["--apply"])
     assert rc == 0
     heal_calls = [s for s in _executed(cursor) if "HealCodingSuggestionExpenseIds" in s]
@@ -117,10 +137,20 @@ def test_apply_drains_the_heal_proc_until_zero_and_passes(capsys):
     assert "Healed 1 row(s) in 2 batch(es)" in capsys.readouterr().out
 
 
+def test_each_heal_batch_commits_in_its_own_connection():
+    """Before-count + 2 heal batches + after-count = 4 units of work, each opened and committed."""
+    m = _mod()
+    gc, cursor, log = _apply_conn(before=[1, 1, 0, 0], heals=[1, 1, 0], after=[0, 0, 0, 0])
+    with patch(f"{SCRIPT}.get_connection", gc):
+        m.main(["--apply"])
+    assert log["opens"] == 5
+    assert log["commits"] == 5, "every batch commits on its own, not one commit at the end"
+
+
 def test_apply_caps_the_loop_at_twenty_batches_and_says_so(capsys):
     m = _mod()
-    cm, conn, cursor = _apply_conn(before=[0, 0, 0, 0], heals=[1] * 20, after=[0, 0, 0, 0])
-    with patch(f"{SCRIPT}.get_connection", return_value=cm):
+    gc, cursor, log = _apply_conn(before=[0, 0, 0, 0], heals=[1] * 20, after=[0, 0, 0, 0])
+    with patch(f"{SCRIPT}.get_connection", gc):
         m.main(["--apply"])
     heal_calls = [s for s in _executed(cursor) if "HealCodingSuggestionExpenseIds" in s]
     assert len(heal_calls) == 20
@@ -129,22 +159,22 @@ def test_apply_caps_the_loop_at_twenty_batches_and_says_so(capsys):
 
 def test_apply_exits_non_zero_when_a_null_row_with_an_expense_remains():
     m = _mod()
-    cm, conn, cursor = _apply_conn(before=[3, 3, 0, 0], heals=[0], after=[1, 2, 0, 0])
-    with patch(f"{SCRIPT}.get_connection", return_value=cm):
+    gc, cursor, log = _apply_conn(before=[3, 3, 0, 0], heals=[0], after=[1, 2, 0, 0])
+    with patch(f"{SCRIPT}.get_connection", gc):
         assert m.main(["--apply"]) != 0
 
 
 def test_apply_exits_non_zero_when_a_healable_dangling_id_remains():
     m = _mod()
-    cm, conn, cursor = _apply_conn(before=[0, 0, 0, 1], heals=[0], after=[0, 0, 0, 1])
-    with patch(f"{SCRIPT}.get_connection", return_value=cm):
+    gc, cursor, log = _apply_conn(before=[0, 0, 0, 1], heals=[0], after=[0, 0, 0, 1])
+    with patch(f"{SCRIPT}.get_connection", gc):
         assert m.main(["--apply"]) != 0
 
 
 def test_apply_passes_with_dangling_ids_that_have_no_matching_expense(capsys):
     m = _mod()
-    cm, conn, cursor = _apply_conn(before=[0, 0, 2, 0], heals=[0], after=[0, 0, 2, 0])
-    with patch(f"{SCRIPT}.get_connection", return_value=cm):
+    gc, cursor, log = _apply_conn(before=[0, 0, 2, 0], heals=[0], after=[0, 0, 2, 0])
+    with patch(f"{SCRIPT}.get_connection", gc):
         rc = m.main(["--apply"])
     assert rc == 0
     assert "NOTE: 2 dangling" in capsys.readouterr().out

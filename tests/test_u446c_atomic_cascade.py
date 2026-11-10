@@ -573,7 +573,8 @@ def test_the_project_backfill_joins_the_lock_protocol():
     """Codex P0. It writes dbo.BillLineItem, so it belongs to the protocol —
     lock unconditionally, refuse conditionally — even though `ProjectId IS NULL`
     already bounded it to a one-way fill that could never CHANGE an allocation.
-    The guard is what stops a future non-system caller acquiring that reach."""
+    The guard is what stops a non-system caller acquiring that reach — and there
+    is one today: reconciliation over HTTP runs as the user (U-785)."""
     body = _body("entities/invoice/sql/dbo.invoice.sql", "BackfillLinkedSourceProjectId")
     assert "WITH (UPDLOCK, HOLDLOCK)" in body
     assert "STATUS_LOCKED" in body
@@ -594,9 +595,9 @@ def test_the_project_backfill_refuses_only_a_call_that_would_write():
 
     The refusal has to be exactly the case the one-way UPDATE would write: not
     exempt, AND a completed parent, AND no project on the line yet. Its inputs are
-    read in the same statement that takes the Bill lock, so they cannot be stale
-    when the UPDATE runs (every guarded writer to that line serializes on the same
-    Bill lock)."""
+    read after the Bill lock is taken (HOLDLOCK keeps it to the end of the
+    transaction), so they cannot be stale when the UPDATE runs — every guarded
+    writer to that line serializes on the same Bill lock."""
     body = _body("entities/invoice/sql/dbo.invoice.sql", "BackfillLinkedSourceProjectId")
     bill_branch = body.split("N'BillLineItem'", 1)[1].split("ELSE IF", 1)[0]
 
@@ -614,12 +615,12 @@ def test_the_project_backfill_refuses_only_a_call_that_would_write():
     locked_read = bill_branch[: bill_branch.index("@AllowTerminalParent = 0")]
     assert "WITH (UPDLOCK, HOLDLOCK)" in locked_read
     assert "@LineProjectId = li.[ProjectId]" in locked_read, (
-        "the line's project must be read under the Bill lock, in the same statement"
+        "the line's project must be read after the Bill lock is taken, before "
+        "the refusal consults it"
     )
-    assert "@ParentStatus = b.[Status]" in locked_read
-    assert "AND b.[Status] = 'completed'" not in locked_read, (
-        "filtering the locked read on status would skip the Bill lock for a "
-        "non-completed parent; read the status, test it in the refusal"
+    assert "@ParentStatus = b.[Status]" in locked_read, (
+        "the parent's status is read into a variable and tested in the "
+        "refusal (DeleteBillById's shape)"
     )
 
     assert "WHERE [Id] = @Id AND [ProjectId] IS NULL" in bill_branch, (

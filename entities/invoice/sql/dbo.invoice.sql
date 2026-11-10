@@ -860,16 +860,10 @@ GO
 -- that was missing. That is repair, which the lock's contract permits — but it
 -- permits it EXPLICITLY, not by omission.
 --
--- U-785: it refuses only a call that would actually WRITE — a completed Bill
--- AND a line with no project yet. A line that already carries a project is a
--- no-op (the UPDATE below matches nothing), and refusing it was the bug: the
--- invoice reconciliation that calls this runs as the logged-in user over
--- `POST /reconcile/invoice/{id}/push-draw` and `/link`, not as the system, so
--- every completed-bill source halted the link step (MR2-MAIN-11, 2026-11-10).
--- The Bill lock is still taken first and unconditionally; the line's project is
--- read in the same locked statement, and every guarded writer to that line
--- serializes on the same Bill lock, so the value cannot change before the
--- UPDATE. A real NULL fill on a completed Bill still needs the exemption.
+-- U-785: refuse the WRITE, not the no-op. Only a completed Bill AND a line with
+-- no project yet is refused; a line that already has one matches nothing below.
+-- Its caller (invoice reconciliation) runs as the user over HTTP. The Bill lock
+-- is taken first and held, so the values read cannot change before the UPDATE.
 CREATE OR ALTER PROCEDURE BackfillLinkedSourceProjectId
 (
     @SourceType NVARCHAR(50),

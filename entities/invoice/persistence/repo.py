@@ -809,9 +809,11 @@ class InvoiceRepository:
                         "SourceType": source_type,
                         "Id": source_line_item_id,
                         "ProjectId": project_id,
-                        # U-446c: reconciliation runs under system context, so
-                        # this is exempt — named explicitly rather than relying
-                        # on the sproc default, per the standing rule.
+                        # U-446c: named explicitly rather than relying on the
+                        # sproc default, per the standing rule. is_exempt() is
+                        # true only under system context; over HTTP (push-draw,
+                        # /link) the caller is the user, and the sproc refuses
+                        # only a real NULL fill on a completed Bill (U-785).
                         "AllowTerminalParent": 1 if is_exempt() else 0,
                     },
                 )

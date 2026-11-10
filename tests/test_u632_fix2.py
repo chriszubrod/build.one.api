@@ -623,3 +623,6 @@ def test_r3_expense_line_pull_create_on_approved_parent_lands_uncoded_and_record
     created = [c.kwargs for c in recon.create.call_args_list]
     assert [c["drift_type"] for c in created] == [DRIFT_HOLDING_CODE_ON_APPROVED]
     assert created[0]["entity_type"] == "Expense"
+
+
+from tests._coding_access_open import coding_access_open  # noqa: F401  (U-652d4 autouse fixture)

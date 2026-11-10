@@ -14,6 +14,7 @@ from integrations.intuit.qbo.base.cost_code_resolver import (
     resolve_qbo_item_ref as _default_resolve_qbo_item_ref,
 )
 from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
+from shared.access import can_access_expense, resolve_accessible_project_ids
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +233,15 @@ class CodingSuggestionEngine:
             only_from_pending_like=only_from_pending_like,
         )
 
+    def _actor_can_see_queue_row(self, row: dict) -> bool:
+        """Row access for one queue row, for a NON-admin actor: reads the coding item for its expense. A row
+        with no expense yet is refused (fail closed). Queue rows do not carry expense_id."""
+        item = self.coding_item_service.read_by_public_id(row["coding_item_public_id"])
+        expense_id = item.expense_id if item is not None else None
+        if expense_id is None:
+            return False
+        return can_access_expense(expense_id)
+
     def suggest_pending(
         self,
         realm_id: Optional[str] = None,
@@ -246,9 +256,20 @@ class CodingSuggestionEngine:
             and row.get("coding_item_public_id") is not None
             and row.get("suggestion_source") is None
         ]
-
-        to_process = eligible[:max_items]
-        remaining = max(len(eligible) - len(to_process), 0)
+        # U-652d4 item 14 (round 4): a non-admin actor gets the queue rows they can see, filtered LAZILY so the
+        # cap counts accessible rows and the walk stops at max_items (no access check past the cap). Skips,
+        # never raises. None = system / admin: every row.
+        accessible_only = resolve_accessible_project_ids() is not None
+        to_process: list = []
+        examined = 0
+        for row in eligible:
+            if len(to_process) >= max_items:
+                break
+            examined += 1
+            if accessible_only and not self._actor_can_see_queue_row(row):
+                continue
+            to_process.append(row)
+        remaining = max(len(eligible) - examined, 0)
         if remaining > 0:
             logger.info(
                 "Expense coding suggestion batch capped at %s; %s pending items remain.",

@@ -568,3 +568,6 @@ def test_empty_revision_still_reported_when_every_written_line_has_a_coded_local
     kw = confirm.call_args.kwargs
     assert kw["repoint_targets"] == [] and kw["repoint_targets_token"] == "6"
     assert out["enqueued"] == 1 and out["repoint"] is True
+
+
+from tests._coding_access_open import coding_access_open  # noqa: F401  (U-652d4 autouse fixture)

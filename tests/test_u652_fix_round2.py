@@ -510,3 +510,6 @@ def test_mutation_or_1_1_in_join_on_clause_goes_red():
     ok, msg = _leg_check_result(READ_UNCODED_SPROC, legs, expected=SHAPE_A_LEGS)
     assert not ok, "expected RED when OR 1=1 injected into identity join"
     assert READ_UNCODED_SPROC in msg
+
+
+from tests._coding_access_open import coding_access_open  # noqa: F401  (U-652d4 autouse fixture)

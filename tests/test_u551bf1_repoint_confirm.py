@@ -948,3 +948,6 @@ def test_cockpit_router_busy_does_not_release_a_claim_it_did_not_take():
     assert err.status_code == 409 and err.detail == "coding_suggestion_busy"
     service.claim.assert_not_called()
     service.release.assert_not_called()
+
+
+from tests._coding_access_open import coding_access_open  # noqa: F401  (U-652d4 autouse fixture)

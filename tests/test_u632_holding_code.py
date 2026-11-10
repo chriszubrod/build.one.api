@@ -500,3 +500,6 @@ def test_purchase_initial_status_draft_for_holding_line():
     )
     line = SimpleNamespace(item_ref_value="x", account_ref_name="Materials")
     assert connector._initial_status_for_purchase_lines([line], "r1") == "draft"
+
+
+from tests._coding_access_open import coding_access_open  # noqa: F401  (U-652d4 autouse fixture)

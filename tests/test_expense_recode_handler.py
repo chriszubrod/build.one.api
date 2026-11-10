@@ -264,3 +264,6 @@ def test_handle_recode_skips_when_not_enqueued(mock_svc_cls, mock_connector_cls)
     svc.mark_written.assert_not_called()
     svc.mark_changed_in_qbo.assert_not_called()
     svc.mark_error.assert_not_called()
+
+
+from tests._coding_access_open import coding_access_open  # noqa: F401  (U-652d4 autouse fixture)

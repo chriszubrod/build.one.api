@@ -26,6 +26,7 @@ from integrations.intuit.qbo.base.locking import qbo_app_lock
 from shared.access import (
     EntityNotAccessibleError,
     assert_can_access_bill,
+    assert_can_access_expense,
     assert_can_access_project,
     can_access_project,
 )
@@ -293,6 +294,13 @@ def _map_stored_item_to_contract(item: "CodingSuggestion") -> dict[str, Any]:
         "project": project,
         "confidence": overall,
     }
+
+
+def _coding_suggestion_scope_project_id(suggestion) -> Optional[int]:
+    """Project used to scope a suggestion without an ExpenseId (matches read model)."""
+    # Direct attribute access fails closed on a rename; mirrors COALESCE(Confirmed, Suggested).
+    confirmed = suggestion.confirmed_project_id
+    return confirmed if confirmed is not None else suggestion.suggested_project_id
 
 
 class CodingSuggestionService:
@@ -609,6 +617,16 @@ class CodingSuggestionService:
     def read_by_public_id(self, public_id: str) -> Optional[CodingSuggestion]:
         return self.repo.read_by_public_id(public_id)
 
+    def assert_accessible(self, item: CodingSuggestion) -> None:
+        """U-652d4: row-level access for a coding suggestion, the same scope as
+        ReadCodingSuggestionStateByExpenseIds. Raises EntityNotAccessibleError; system / admin callers
+        bypass inside the shared access helpers."""
+        expense_id = item.expense_id  # direct: a renamed attribute fails closed, never reads as "no expense"
+        if expense_id is not None:
+            assert_can_access_expense(expense_id)
+        else:
+            assert_can_access_project(_coding_suggestion_scope_project_id(item))
+
     def record_suggestion(
         self,
         *,
@@ -622,6 +640,9 @@ class CodingSuggestionService:
         sync_token_at_suggest: Optional[str] = None,
         status: Optional[str] = None,
     ) -> Optional[CodingSuggestion]:
+        item = self.read_by_public_id(public_id)
+        if item is not None:
+            self.assert_accessible(item)  # U-652d4 item 14: a non-router caller gets no row check otherwise
         return self.repo.record_suggestion(
             public_id=public_id,
             suggested_project_id=suggested_project_id,
@@ -641,6 +662,9 @@ class CodingSuggestionService:
         modified_by_user_id: Optional[int] = None,
         only_from_pending_like: bool = False,
     ) -> Optional[CodingSuggestion]:
+        item = self.read_by_public_id(public_id)
+        if item is not None:
+            self.assert_accessible(item)  # U-652d4 item 14: checked here, not only in the router
         return self.repo.record_flag(
             public_id=public_id,
             reason=reason,
@@ -796,6 +820,7 @@ class CodingSuggestionService:
         older_than_seconds: int = 300,
         limit: int = 100,
         record_required_since=None,
+        enqueued_older_than_seconds: int = 300,
     ) -> dict:
         """Re-enqueue ``confirmed`` rows whose enqueue was lost (the approval was given; only the enqueue
         step died). Gated like confirm: gate off + apply = ZERO writes. NEVER touches an ``error`` row
@@ -807,7 +832,11 @@ class CodingSuggestionService:
 
         gate = recode_write_gate_reason()
         candidates = self.repo.read_stranded_confirmed(older_than_seconds=older_than_seconds, limit=limit)
-        recovery_rows = self.repo.read_recovery_candidates(record_required_since=record_required_since, limit=limit)
+        recovery_rows = self.repo.read_recovery_candidates(
+            record_required_since=record_required_since,
+            limit=limit,
+            enqueued_older_than_seconds=enqueued_older_than_seconds,
+        )
         result: dict[str, Any] = {
             "gate": gate,
             "candidates": len(candidates),
@@ -821,6 +850,11 @@ class CodingSuggestionService:
                 "error_repoint": [r["public_id"] for r in recovery_rows if r.get("category") == "error_repoint"],
                 "written_without_record": [
                     r["public_id"] for r in recovery_rows if r.get("category") == "written_without_record"
+                ],
+                # U-652d4: `enqueued` rows with no live outbox row. REPORT ONLY: a re-enqueue could re-send
+                # a write QBO already applied (old outbox rows pruned), so nothing below ever enqueues these.
+                "enqueued_stranded": [
+                    r["public_id"] for r in recovery_rows if r.get("category") == "enqueued_stranded"
                 ],
             },
         }
@@ -873,12 +907,14 @@ class CodingSuggestionService:
         )
         message = (
             "coding_suggestion.sweep_stranded status=%s gate=%s candidates=%d enqueued=%d would_enqueue=%s "
-            "dead_letter_pending=%s busy=%s moved=%s errors=%s error_repoint=%s written_without_record=%s"
+            "dead_letter_pending=%s busy=%s moved=%s errors=%s error_repoint=%s written_without_record=%s "
+            "enqueued_stranded=%s"
         )
         args = (
             result.get("status"), result["gate"], result["candidates"], result["enqueued"],
             result["would_enqueue"], result["dead_letter_pending"], result["busy"], result["moved"],
             result["errors"], recovery["error_repoint"], recovery["written_without_record"],
+            recovery["enqueued_stranded"],
         )
         (logger.warning if flagged else logger.info)(message, *args)
 
@@ -1279,6 +1315,7 @@ class CodingSuggestionService:
         item = self.read_by_public_id(public_id)
         if item is None:
             return {"status": "not_found"}
+        self.assert_accessible(item)  # U-652d4 item 14: refuse before any resolver call or write
 
         if not repoint:
             # U-551b-f2: a NON-repoint confirm is only a first confirm / re-review / recovery. Any other

@@ -260,8 +260,36 @@ class QboOutboxWorker:
                         "stale_after_seconds": stale_seconds,
                     },
                 )
+                if row["status"] == "dead_letter":
+                    self._escalate_reclaimed_dead_letter(row)
         except Exception:
             logger.exception("qbo.outbox.reclaim.failed")
+
+    def _escalate_reclaimed_dead_letter(self, row: dict) -> None:
+        """U-652d4: the SQL-side reclaim flip to dead_letter raised no ReconciliationIssue. Record the same
+        one the worker's own dead-letter path records. The reclaim proc already counted this attempt
+        (``Attempts`` is post-increment), so it is passed as-is. The realm comes from the existing
+        ``read_by_id`` (``RealmId`` is NOT NULL on the issue table; the reclaim proc does not return it).
+        Failure-isolated: a read or record error never aborts the reclaim loop or un-marks the row."""
+        def _escalate() -> None:
+            outbox = self.repo.read_by_id(row["id"])
+            if outbox is None or not outbox.realm_id:
+                logger.error(
+                    "qbo.outbox.dead_letter.realm_unresolved",
+                    extra={"event_name": "qbo.outbox.dead_letter.realm_unresolved", "outbox_public_id": row["public_id"]},
+                )
+                return
+            self._record_dead_letter_issue(
+                kind=row["kind"],
+                attempts=row["attempts"],
+                public_id=row["public_id"],
+                entity_type=row["entity_type"],
+                entity_public_id=row["entity_public_id"],
+                realm_id=outbox.realm_id,
+                last_error="reclaimed from in_progress after a crash with attempts exhausted",
+            )
+
+        self._isolated_escalation(row["public_id"], _escalate)
 
     # ------------------------------------------------------------------ #
     # Per-row processing
@@ -588,19 +616,47 @@ class QboOutboxWorker:
         # U-551b-f1 f4: the dead-letter mark above is already durable. Escalate to
         # the reconciliation triage surface (mirrors the MS worker) so an operator
         # sees it without reading logs; an escalation failure never un-marks the row.
+        self._isolated_escalation(row.public_id, lambda: self._escalate_dead_letter(row, last_error))
+
+    def _isolated_escalation(self, outbox_public_id: str, escalate) -> None:
+        """The ONE failure-isolation point for dead-letter escalation (worker path and reclaim path). The
+        dead-letter mark is already durable; an escalation error is logged and never un-marks or aborts."""
         try:
-            self._escalate_dead_letter(row, last_error)
+            escalate()
         except Exception:
             logger.exception(
                 "qbo.outbox.dead_letter.escalation_failed",
                 extra={
                     "event_name": "qbo.outbox.dead_letter.escalation_failed",
-                    "outbox_public_id": row.public_id,
+                    "outbox_public_id": outbox_public_id,
                 },
             )
 
     def _escalate_dead_letter(self, row: QboOutbox, last_error: str) -> None:
         """Record a qbo.ReconciliationIssue so a dead-letter isn't invisible."""
+        self._record_dead_letter_issue(
+            kind=row.kind,
+            attempts=(row.attempts or 0) + 1,  # the row was read before this attempt's failure
+            public_id=row.public_id,
+            entity_type=row.entity_type,
+            entity_public_id=row.entity_public_id,
+            realm_id=row.realm_id,
+            last_error=last_error,
+        )
+
+    def _record_dead_letter_issue(
+        self,
+        *,
+        kind: str,
+        attempts: int,
+        public_id: str,
+        entity_type: str,
+        entity_public_id: str,
+        realm_id,
+        last_error: str,
+    ) -> None:
+        """The ONE dead-letter ReconciliationIssue shape. Shared by the worker's own dead-letter path and
+        the reclaim path (U-652d4), so both record the same drift_type / severity / details."""
         from integrations.intuit.qbo.base.reconciliation_recorder import DRIFT_TYPE_MAX_LEN
         from integrations.intuit.qbo.reconciliation.persistence.repo import (
             ReconciliationIssueRepository,
@@ -609,24 +665,23 @@ class QboOutboxWorker:
         # qbo.ReconciliationIssue.DriftType is NVARCHAR(32). Severity 'high': a push that exhausted its
         # retries is actionable but not a money discrepancy; QBO's other recorders reserve 'critical'
         # for drift against money (bill / attachable / watermark) - keep the tiers distinct.
-        drift_type = f"{row.kind}_dead_letter"
+        drift_type = f"{kind}_dead_letter"
         if len(drift_type) > DRIFT_TYPE_MAX_LEN:
             drift_type = "outbox_dead_letter"
         severity = "high"
-        attempts = (row.attempts or 0) + 1
         details = (
-            f"{row.kind} dead-lettered after {attempts} attempts "
-            f"(outbox {row.public_id}): {last_error}"
+            f"{kind} dead-lettered after {attempts} attempts "
+            f"(outbox {public_id}): {last_error}"
         )[:_DEAD_LETTER_DETAILS_MAX_LEN]
 
         ReconciliationIssueRepository().create(
             drift_type=drift_type,
             severity=severity,
             action="flagged",
-            entity_type=row.entity_type,
-            entity_public_id=row.entity_public_id,
+            entity_type=entity_type,
+            entity_public_id=entity_public_id,
             qbo_id=None,
-            realm_id=row.realm_id,
+            realm_id=realm_id,
             details=details,
             reconcile_run_id=None,
         )
@@ -636,10 +691,10 @@ class QboOutboxWorker:
                 "event_name": "qbo.reconcile.dead_letter.flagged",
                 "drift_type": drift_type,
                 "severity": severity,
-                "kind": row.kind,
-                "outbox_public_id": row.public_id,
-                "entity_type": row.entity_type,
-                "entity_public_id": row.entity_public_id,
+                "kind": kind,
+                "outbox_public_id": public_id,
+                "entity_type": entity_type,
+                "entity_public_id": entity_public_id,
             },
         )
 

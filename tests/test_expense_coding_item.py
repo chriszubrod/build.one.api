@@ -354,3 +354,6 @@ def test_recode_write_gate_reason_truth_table(monkeypatch):
             lambda r=recode_writes_allowed: r,
         )
         assert recode_write_gate_reason() == expected
+
+
+from tests._coding_access_open import coding_access_open  # noqa: F401  (U-652d4 autouse fixture)

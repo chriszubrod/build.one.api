@@ -153,6 +153,7 @@ def test_confirm_router_refuses_multi_line_before_claim():
     with patch("entities.coding_suggestion.api.router.CodingSuggestionService", return_value=service), \
          patch("entities.coding_suggestion.api.router.current_user_id") as uid, \
          patch("entities.coding_suggestion.api.router._assert_can_access_coding_suggestion"), \
+         patch("entities.coding_suggestion.api.router.recode_write_gate_reason", return_value=None), \
          patch("entities.coding_suggestion.api.router.assert_can_access_project"), \
          patch("entities.project.business.service.ProjectService") as ps, \
          patch("entities.sub_cost_code.business.service.SubCostCodeService") as scs:
@@ -179,6 +180,7 @@ def _route_with(service):
     with patch("entities.coding_suggestion.api.router.CodingSuggestionService", return_value=service), \
          patch("entities.coding_suggestion.api.router.current_user_id") as uid, \
          patch("entities.coding_suggestion.api.router._assert_can_access_coding_suggestion"), \
+         patch("entities.coding_suggestion.api.router.recode_write_gate_reason", return_value=None), \
          patch("entities.coding_suggestion.api.router.assert_can_access_project"), \
          patch("entities.project.business.service.ProjectService") as ps, \
          patch("entities.sub_cost_code.business.service.SubCostCodeService") as scs:
@@ -300,3 +302,6 @@ def test_scope_change_guard_miss_does_not_reread_or_reapply(_gate):
     assert svc.read_by_public_id.call_count == 1
     conn_cls.return_value.recode_purchase_lines.assert_not_called()
     assert log_info.called
+
+
+from tests._coding_access_open import coding_access_open  # noqa: F401  (U-652d4 shared fixture)

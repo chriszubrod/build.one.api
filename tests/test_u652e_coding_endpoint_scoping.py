@@ -28,6 +28,19 @@ _CONFIRM_BODY = ConfirmCodingSuggestionRequest(
 _FLAG_BODY = FlagCodingSuggestionRequest(reason="needs follow-up")
 
 
+def _svc_mock():
+    """A spec'd service mock whose assert_accessible is the REAL method (U-652d4), so the access helpers it
+    calls (patched per test at the service module) are actually exercised."""
+    from entities.coding_suggestion.business.service import CodingSuggestionService as _Real
+
+    svc = MagicMock(spec=_Real)
+    svc.assert_accessible.side_effect = lambda item: _Real.assert_accessible(svc, item)
+    # U-652d4 (round 5): the flag route no longer checks access itself; record_flag does, so it runs for real too.
+    svc.repo = MagicMock()
+    svc.record_flag.side_effect = lambda **kw: _Real.record_flag(svc, **kw)
+    return svc
+
+
 def _suggestion(**overrides):
     base = dict(
         expense_id=None,
@@ -51,12 +64,12 @@ def _expect_coding_not_found(callable_fn, detail="Expense coding item not found"
 
 
 def test_flag_inaccessible_expense_returns_404_without_write():
-    service = MagicMock()
+    service = _svc_mock()
     service.read_by_public_id.return_value = _suggestion(expense_id=99)
     with patch("entities.coding_suggestion.api.router.CodingSuggestionService", return_value=service), patch(
         "entities.coding_suggestion.api.router.current_user_id"
     ) as uid, patch(
-        "entities.coding_suggestion.api.router.assert_can_access_expense",
+        "entities.coding_suggestion.business.service.assert_can_access_expense",
         side_effect=EntityNotAccessibleError("Expense", 99),
     ) as ace, patch(
         "entities.coding_suggestion.api.router.assert_can_access_project"
@@ -69,7 +82,7 @@ def test_flag_inaccessible_expense_returns_404_without_write():
         )
     ace.assert_called_once_with(99)
     acp.assert_not_called()
-    service.record_flag.assert_not_called()
+    service.repo.record_flag.assert_not_called()  # the write point (U-652d4 round 5)
 
 
 @pytest.mark.parametrize(
@@ -79,7 +92,7 @@ def test_flag_inaccessible_expense_returns_404_without_write():
 def test_flag_inaccessible_project_returns_404_without_write(
     confirmed_project_id, suggested_project_id, expected_project
 ):
-    service = MagicMock()
+    service = _svc_mock()
     service.read_by_public_id.return_value = _suggestion(
         confirmed_project_id=confirmed_project_id,
         suggested_project_id=suggested_project_id,
@@ -87,7 +100,7 @@ def test_flag_inaccessible_project_returns_404_without_write(
     with patch("entities.coding_suggestion.api.router.CodingSuggestionService", return_value=service), patch(
         "entities.coding_suggestion.api.router.current_user_id"
     ) as uid, patch(
-        "entities.coding_suggestion.api.router.assert_can_access_expense"
+        "entities.coding_suggestion.business.service.assert_can_access_expense"
     ) as ace, patch(
         "entities.coding_suggestion.api.router.assert_can_access_project",
         side_effect=EntityNotAccessibleError("Project", expected_project),
@@ -100,11 +113,11 @@ def test_flag_inaccessible_project_returns_404_without_write(
         )
     ace.assert_not_called()
     acp.assert_called_once_with(expected_project)
-    service.record_flag.assert_not_called()
+    service.repo.record_flag.assert_not_called()  # the write point (U-652d4 round 5)
 
 
 def test_flag_unscoped_suggestion_without_project_is_allowed():
-    service = MagicMock()
+    service = _svc_mock()
     item = _suggestion()
     service.read_by_public_id.return_value = item
     flagged = SimpleNamespace(public_id=PUBLIC_ID)
@@ -114,7 +127,7 @@ def test_flag_unscoped_suggestion_without_project_is_allowed():
     with patch("entities.coding_suggestion.api.router.CodingSuggestionService", return_value=service), patch(
         "entities.coding_suggestion.api.router.current_user_id"
     ) as uid, patch(
-        "entities.coding_suggestion.api.router.assert_can_access_expense"
+        "entities.coding_suggestion.business.service.assert_can_access_expense"
     ) as ace, patch(
         "entities.coding_suggestion.api.router.assert_can_access_project"
     ) as acp:
@@ -130,7 +143,7 @@ def test_flag_unscoped_suggestion_without_project_is_allowed():
 
 
 def test_flag_accessible_expense_proceeds():
-    service = MagicMock()
+    service = _svc_mock()
     item = _suggestion(expense_id=55)
     service.read_by_public_id.return_value = item
     service.record_flag.return_value = item
@@ -139,7 +152,7 @@ def test_flag_accessible_expense_proceeds():
     with patch("entities.coding_suggestion.api.router.CodingSuggestionService", return_value=service), patch(
         "entities.coding_suggestion.api.router.current_user_id"
     ) as uid, patch(
-        "entities.coding_suggestion.api.router.assert_can_access_expense"
+        "entities.coding_suggestion.business.service.assert_can_access_expense"
     ) as ace, patch(
         "entities.coding_suggestion.api.router.assert_can_access_project"
     ) as acp:
@@ -154,7 +167,7 @@ def test_flag_accessible_expense_proceeds():
 
 
 def test_flag_system_admin_bypasses_expense_gate():
-    service = MagicMock()
+    service = _svc_mock()
     item = _suggestion(expense_id=99)
     service.read_by_public_id.return_value = item
     service.record_flag.return_value = item
@@ -178,14 +191,14 @@ def test_flag_system_admin_bypasses_expense_gate():
 
 
 def test_confirm_inaccessible_expense_returns_404_without_claim_or_confirm():
-    service = MagicMock()
+    service = _svc_mock()
     service.read_by_public_id.return_value = _suggestion(expense_id=99, claimed_by_user_id=None)
     service.is_multi_line_purchase.return_value = False
 
     with patch("entities.coding_suggestion.api.router.CodingSuggestionService", return_value=service), patch(
         "entities.coding_suggestion.api.router.current_user_id"
     ) as uid, patch(
-        "entities.coding_suggestion.api.router.assert_can_access_expense",
+        "entities.coding_suggestion.business.service.assert_can_access_expense",
         side_effect=EntityNotAccessibleError("Expense", 99),
     ), patch(
         "entities.coding_suggestion.api.router.assert_can_access_project"
@@ -205,7 +218,7 @@ def test_confirm_inaccessible_expense_returns_404_without_claim_or_confirm():
 
 
 def test_confirm_inaccessible_suggestion_project_returns_404_without_claim():
-    service = MagicMock()
+    service = _svc_mock()
     service.read_by_public_id.return_value = _suggestion(
         suggested_project_id=8, claimed_by_user_id=None
     )
@@ -214,7 +227,7 @@ def test_confirm_inaccessible_suggestion_project_returns_404_without_claim():
     with patch("entities.coding_suggestion.api.router.CodingSuggestionService", return_value=service), patch(
         "entities.coding_suggestion.api.router.current_user_id"
     ) as uid, patch(
-        "entities.coding_suggestion.api.router.assert_can_access_expense"
+        "entities.coding_suggestion.business.service.assert_can_access_expense"
     ) as ace, patch(
         "entities.coding_suggestion.api.router.assert_can_access_project",
         side_effect=EntityNotAccessibleError("Project", 8),
@@ -235,7 +248,7 @@ def test_confirm_inaccessible_suggestion_project_returns_404_without_claim():
 
 
 def test_confirm_unscoped_suggestion_without_project_is_allowed():
-    service = MagicMock()
+    service = _svc_mock()
     existing = _suggestion(claimed_by_user_id=USER_ID)
     service.read_by_public_id.side_effect = [existing, existing]
     service.is_multi_line_purchase.return_value = False
@@ -245,7 +258,7 @@ def test_confirm_unscoped_suggestion_without_project_is_allowed():
     with patch("entities.coding_suggestion.api.router.CodingSuggestionService", return_value=service), patch(
         "entities.coding_suggestion.api.router.current_user_id"
     ) as uid, patch(
-        "entities.coding_suggestion.api.router.assert_can_access_expense"
+        "entities.coding_suggestion.business.service.assert_can_access_expense"
     ) as ace, patch(
         "entities.coding_suggestion.api.router.assert_can_access_project"
     ) as acp, patch(
@@ -268,7 +281,7 @@ def test_confirm_unscoped_suggestion_without_project_is_allowed():
 
 
 def test_confirm_inaccessible_target_project_returns_404_without_claim_or_confirm():
-    service = MagicMock()
+    service = _svc_mock()
     service.read_by_public_id.return_value = _suggestion(expense_id=1, claimed_by_user_id=USER_ID)
     service.is_multi_line_purchase.return_value = False
 
@@ -279,7 +292,7 @@ def test_confirm_inaccessible_target_project_returns_404_without_claim_or_confir
     with patch("entities.coding_suggestion.api.router.CodingSuggestionService", return_value=service), patch(
         "entities.coding_suggestion.api.router.current_user_id"
     ) as uid, patch(
-        "entities.coding_suggestion.api.router.assert_can_access_expense"
+        "entities.coding_suggestion.business.service.assert_can_access_expense"
     ), patch(
         "entities.coding_suggestion.api.router.assert_can_access_project",
         side_effect=project_gate,
@@ -303,7 +316,7 @@ def test_confirm_inaccessible_target_project_returns_404_without_claim_or_confir
 
 
 def test_confirm_accessible_proceeds_as_before():
-    service = MagicMock()
+    service = _svc_mock()
     existing = _suggestion(expense_id=5, claimed_by_user_id=USER_ID)
     service.read_by_public_id.side_effect = [existing, existing]
     service.is_multi_line_purchase.return_value = False
@@ -313,7 +326,7 @@ def test_confirm_accessible_proceeds_as_before():
     with patch("entities.coding_suggestion.api.router.CodingSuggestionService", return_value=service), patch(
         "entities.coding_suggestion.api.router.current_user_id"
     ) as uid, patch(
-        "entities.coding_suggestion.api.router.assert_can_access_expense"
+        "entities.coding_suggestion.business.service.assert_can_access_expense"
     ) as ace, patch(
         "entities.coding_suggestion.api.router.assert_can_access_project"
     ) as acp, patch(
@@ -334,7 +347,7 @@ def test_confirm_accessible_proceeds_as_before():
 
 
 def test_confirm_system_admin_bypasses_suggestion_expense_gate():
-    service = MagicMock()
+    service = _svc_mock()
     existing = _suggestion(expense_id=99, claimed_by_user_id=USER_ID)
     service.read_by_public_id.side_effect = [existing, existing]
     service.is_multi_line_purchase.return_value = False
@@ -359,3 +372,21 @@ def test_confirm_system_admin_bypasses_suggestion_expense_gate():
         current_is_system_admin.reset(admin_token)
 
     service.confirm.assert_called_once()
+
+
+import pytest  # noqa: E402  (fixtures below; the pins above assert the router's call order)
+
+
+@pytest.fixture(autouse=True)
+def _u652d4_service_project_check_follows_router():
+    # U-652d4: the suggestion-scope project check moved from the router into CodingSuggestionService.
+    # Route the service's call through the router's name so the per-test patch on the router still
+    # observes the same calls in the same order these pins were written against.
+    import entities.coding_suggestion.api.router as router_module
+    import entities.coding_suggestion.business.service as service_module
+
+    with patch.object(
+        service_module, "assert_can_access_project",
+        side_effect=lambda project_id: router_module.assert_can_access_project(project_id),
+    ), patch("entities.coding_suggestion.api.router.recode_write_gate_reason", return_value=None):
+        yield

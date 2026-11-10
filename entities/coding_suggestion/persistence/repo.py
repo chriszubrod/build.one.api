@@ -441,16 +441,21 @@ class CodingSuggestionRepository:
             raise map_database_error(error)
 
     def read_recovery_candidates(
-        self, record_required_since=None, limit: int = 100
+        self, record_required_since=None, limit: int = 100, enqueued_older_than_seconds: int = 300
     ) -> list[dict]:
-        """U-551b-f1-f5: report-only ``error`` repoints and ``written`` rows with no written record."""
+        """U-551b-f1-f5 / U-652d4: report-only ``error`` repoints, ``written`` rows with no written record,
+        and ``enqueued`` rows with no live outbox row (``enqueued_stranded``)."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="ReadCodingSuggestionRecoveryCandidates",
-                    params={"RecordRequiredSince": record_required_since, "Limit": limit},
+                    params={
+                        "RecordRequiredSince": record_required_since,
+                        "Limit": limit,
+                        "EnqueuedOlderThanSeconds": enqueued_older_than_seconds,
+                    },
                 )
                 return [
                     {

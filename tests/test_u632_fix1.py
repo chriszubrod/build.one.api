@@ -253,3 +253,6 @@ def test_coding_confirm_multi_line_refuses_when_any_expense_line_is_holding():
                 allow_multi_line=True,
             )
     svc.record_confirmation.assert_not_called()
+
+
+from tests._coding_access_open import coding_access_open  # noqa: F401  (U-652d4 autouse fixture)

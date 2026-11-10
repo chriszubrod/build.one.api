@@ -409,3 +409,6 @@ def _recode_gate_open():
     """U-551b-f1 R5: the drain rechecks the recode kill switch; these tests exercise the open path."""
     with patch("integrations.intuit.qbo.base.client.recode_write_gate_reason", return_value=None):
         yield
+
+
+from tests._coding_access_open import coding_access_open  # noqa: F401  (U-652d4 autouse fixture)

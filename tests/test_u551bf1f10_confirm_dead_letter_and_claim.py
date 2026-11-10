@@ -260,3 +260,6 @@ def test_happy_path_each_probe_reads_pending_and_dead_letter_exactly_once(_gate)
     solo = _repo()
     QboOutboxService(repo=solo).enqueue(realm_id="realm-1", **KEY)
     assert solo.read_pending_by_entity.call_count == 1 and solo.read_dead_letter_by_entity.call_count == 1
+
+
+from tests._coding_access_open import coding_access_open  # noqa: F401  (U-652d4 autouse fixture)

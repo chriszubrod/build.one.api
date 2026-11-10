@@ -384,3 +384,6 @@ def test_complete_recode_real_skip_logs_warning_with_expense_id(caplog):
         == "expense.complete.recode_enqueue_skipped expense_id=902 reason=holding_code_on_line"
         for r in caplog.records
     )
+
+
+from tests._coding_access_open import coding_access_open  # noqa: F401  (U-652d4 autouse fixture)

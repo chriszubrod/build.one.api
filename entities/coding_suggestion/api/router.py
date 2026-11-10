@@ -17,7 +17,6 @@ from integrations.intuit.qbo.outbox.business.service import QboOutboxDeadLetterE
 from integrations.intuit.qbo.purchase.business.service import QboPurchaseService
 from shared.access import (
     EntityNotAccessibleError,
-    assert_can_access_expense,
     assert_can_access_project,
 )
 from shared.api.errors import ApiError, ErrorCode
@@ -32,21 +31,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["api", "expense-coding"])
 
 
-def _coding_suggestion_scope_project_id(suggestion) -> Optional[int]:
-    """Project used to scope a suggestion without an ExpenseId (matches read model)."""
-    # Direct attribute access fails closed on a rename; mirrors COALESCE(Confirmed, Suggested).
-    confirmed = suggestion.confirmed_project_id
-    return confirmed if confirmed is not None else suggestion.suggested_project_id
-
-
-def _assert_can_access_coding_suggestion(suggestion) -> None:
-    """Enforce the same scope as ReadCodingSuggestionStateByExpenseIds."""
+def _assert_can_access_coding_suggestion(service: CodingSuggestionService, suggestion) -> None:
+    """U-652d4: the row-level check lives in CodingSuggestionService.assert_accessible (the service is the
+    gate for every caller). The router only maps a refusal to 404 so the URL does not confirm existence."""
     try:
-        expense_id = suggestion.expense_id
-        if expense_id is not None:
-            assert_can_access_expense(expense_id)
-        else:
-            assert_can_access_project(_coding_suggestion_scope_project_id(suggestion))
+        service.assert_accessible(suggestion)
     except EntityNotAccessibleError:
         raise_not_found("Expense coding item")
 
@@ -131,11 +120,6 @@ def flag_expense_coding_item_router(
         raise HTTPException(status_code=401, detail="Authenticated user required.")
 
     service = CodingSuggestionService()
-    existing = service.read_by_public_id(public_id)
-    if existing is None:
-        raise_not_found("Expense coding item")
-
-    _assert_can_access_coding_suggestion(existing)
 
     try:
         flagged = service.record_flag(
@@ -143,6 +127,8 @@ def flag_expense_coding_item_router(
             reason=body.reason,
             modified_by_user_id=user_id,
         )
+    except EntityNotAccessibleError:
+        raise_not_found("Expense coding item")
     except Exception as error:
         logger.exception("Failed to flag coding suggestion %s.", public_id)
         raise_database_error(error)
@@ -174,7 +160,7 @@ def confirm_expense_coding_item_router(
     if existing is None:
         raise_not_found("Expense coding item")
 
-    _assert_can_access_coding_suggestion(existing)
+    _assert_can_access_coding_suggestion(service, existing)
 
     from entities.project.business.service import ProjectService
     from entities.sub_cost_code.business.service import SubCostCodeService
@@ -205,6 +191,13 @@ def confirm_expense_coding_item_router(
             status_code=status.HTTP_409_CONFLICT,
             detail="multi_line_purchase_confirm_unsupported",
         )
+
+    # U-652d4 item 10: the write gate is checked BEFORE the claim (a claim is a durable write). A closed
+    # gate is the same 422 confirm() returns, with zero claim/confirm calls. The in-service check stays
+    # as the backstop.
+    gate_reason = recode_write_gate_reason()
+    if gate_reason is not None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=gate_reason)
 
     claimed_here = False
     if existing.claimed_by_user_id != user_id:
@@ -242,6 +235,10 @@ def confirm_expense_coding_item_router(
     except QboOutboxDeadLetterExistsError as error:
         _release_if_claimed()
         raise HTTPException(status_code=409, detail=str(error)) from error
+    except EntityNotAccessibleError:
+        # U-652d4 item 14: the service refused a row the actor cannot see (a race past the router check).
+        _release_if_claimed()
+        raise_not_found("Expense coding item")
     except HoldingCodeRefused:
         _release_if_claimed()
         raise

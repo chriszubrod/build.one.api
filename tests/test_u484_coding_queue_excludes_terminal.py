@@ -374,7 +374,9 @@ def test_suggest_pending_eligibility_triple():
         return_value={"status": "flagged", "reason": "ineligible fixture"}
     )
 
-    svc.suggest_pending(realm_id="R1", max_items=10)
+    with patch("entities.coding_suggestion.business.suggestion_service.resolve_accessible_project_ids",
+               return_value=None):  # eligibility under system context; access is tested in u652d4
+        svc.suggest_pending(realm_id="R1", max_items=10)
 
     assert svc.suggest_for_item.call_count == 1
     called_item = svc.suggest_for_item.call_args[0][0]

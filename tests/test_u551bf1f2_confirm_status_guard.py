@@ -15,6 +15,7 @@ from entities.expense.business.service import ExpenseService
 from integrations.intuit.qbo.outbox.business.service import QboOutboxDeadLetterExistsError
 
 PUBLIC_ID = "11111111-1111-1111-1111-111111111111"
+
 GATE = "integrations.intuit.qbo.base.client.recode_write_gate_reason"
 RESOLVER = "integrations.intuit.qbo.base.cost_code_resolver.resolve_qbo_item_ref"
 OUTBOX = "integrations.intuit.qbo.outbox.business.service.QboOutboxService"
@@ -256,7 +257,7 @@ def test_repoint_confirm_is_not_subject_to_the_non_repoint_guard(_gate):
 
 # ---- router ---------------------------------------------------------------------------------------
 
-def _route(service):
+def _route(service, gate=None):
     """Run the cockpit confirm route; returns (response_or_None, HTTPException_or_None)."""
     from entities.coding_suggestion.api.router import confirm_expense_coding_item_router
     from entities.coding_suggestion.api.schemas import ConfirmCodingSuggestionRequest
@@ -269,6 +270,7 @@ def _route(service):
     with patch("entities.coding_suggestion.api.router.CodingSuggestionService", return_value=service), \
             patch("entities.coding_suggestion.api.router.current_user_id") as uid, \
             patch("entities.coding_suggestion.api.router._assert_can_access_coding_suggestion"), \
+            patch("entities.coding_suggestion.api.router.recode_write_gate_reason", return_value=gate), \
             patch("entities.coding_suggestion.api.router.assert_can_access_project"), \
             patch("entities.project.business.service.ProjectService") as ps, \
             patch("entities.sub_cost_code.business.service.SubCostCodeService") as scs:
@@ -490,3 +492,6 @@ def test_submit_loop_real_confirm_records_a_fenced_new_revision_when_the_dominan
     kw = svc.record_confirmation.call_args.kwargs
     assert kw["expected_confirmation_seq"] == 7 and kw["confirmed_sub_cost_code_id"] == 101
     svc.mark_enqueued.assert_called_once_with(PUBLIC_ID, expected_confirmation_seq=8)
+
+
+from tests._coding_access_open import coding_access_open  # noqa: F401  (U-652d4 shared fixture)

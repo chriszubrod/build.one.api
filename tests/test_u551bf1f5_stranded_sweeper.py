@@ -118,7 +118,7 @@ def test_repo_read_recovery_passes_params_and_maps_rows():
             patch.object(repo_module, "call_procedure") as call:
         out = CodingSuggestionRepository().read_recovery_candidates(record_required_since="SINCE", limit=5)
     assert call.call_args.kwargs["name"] == "ReadCodingSuggestionRecoveryCandidates"
-    assert call.call_args.kwargs["params"] == {"RecordRequiredSince": "SINCE", "Limit": 5}
+    assert call.call_args.kwargs["params"] == {"RecordRequiredSince": "SINCE", "Limit": 5, "EnqueuedOlderThanSeconds": 300}
     assert out[0]["category"] == "error_repoint" and out[0]["write_error"] == "boom"
 
 
@@ -258,9 +258,10 @@ def test_recovery_lists_populated_and_error_rows_never_redriven(_gate):
     rec = [{"public_id": P1, "category": "error_repoint"}, {"public_id": P2, "category": "written_without_record"}]
     svc = _svc([], recovery=rec)
     out = svc.sweep_stranded_confirmed(dry_run=False, older_than_seconds=600, limit=5, record_required_since=since)
-    assert out["recovery"] == {"error_repoint": [P1], "written_without_record": [P2]}
+    assert out["recovery"] == {"error_repoint": [P1], "written_without_record": [P2], "enqueued_stranded": []}
     svc.repo.read_stranded_confirmed.assert_called_once_with(older_than_seconds=600, limit=5)
-    svc.repo.read_recovery_candidates.assert_called_once_with(record_required_since=since, limit=5)
+    svc.repo.read_recovery_candidates.assert_called_once_with(
+        record_required_since=since, limit=5, enqueued_older_than_seconds=300)
     svc._enqueue_recode_and_mark.assert_not_called()
     svc.record_confirmation.assert_not_called()
 

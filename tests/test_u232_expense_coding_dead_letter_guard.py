@@ -45,6 +45,10 @@ def test_confirm_expense_coding_router_refuses_with_409_when_dead_letter_exists(
         ) as project_svc_cls, patch(
             "entities.sub_cost_code.business.service.SubCostCodeService"
         ) as scc_svc_cls:
+            # U-652d4: a spec'd mock, so the router's service.assert_accessible resolves (a bare MagicMock
+            # refuses attribute names that start with 'assert').
+            from entities.coding_suggestion.business.service import CodingSuggestionService as _Svc
+            service_cls.return_value = MagicMock(spec=_Svc)
             service_cls.return_value.read_by_public_id.return_value = existing
             service_cls.return_value.confirm.side_effect = dead_letter_error
             service_cls.return_value.is_multi_line_purchase.return_value = False
@@ -63,3 +67,6 @@ def test_confirm_expense_coding_router_refuses_with_409_when_dead_letter_exists(
     assert exc_info.value.status_code == 409
     assert "retry_qbo_outbox_dead_letters.py" in exc_info.value.detail
     assert "dead-letter-outbox-9" in exc_info.value.detail
+
+
+from tests._coding_access_open import coding_access_open  # noqa: F401  (U-652d4 autouse fixture)

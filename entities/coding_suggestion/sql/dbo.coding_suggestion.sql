@@ -1322,47 +1322,84 @@ GO
 -- U-551b-f1-f5: report-only recovery visibility. (a) `error` repoints (admin redrive); (b) `written` rows
 -- with no written record (adoption is f3b, open). Legacy pre-record rows are excluded by the caller's
 -- @RecordRequiredSince.
+-- U-652d4: (c) `enqueued_stranded` - an `enqueued` row older than @EnqueuedOlderThanSeconds (ModifiedDatetime)
+-- with NO live outbox row (pending / failed / in_progress). A dead-lettered row has no live row, so it is
+-- listed here too. REPORT ONLY: the sweeper never enqueues this category (a re-enqueue could re-send a write
+-- QBO already applied). Outbox EntityType matches 'CodingSuggestion', as in the stranded arm.
 CREATE OR ALTER PROCEDURE ReadCodingSuggestionRecoveryCandidates
 (
     @RecordRequiredSince DATETIME2(3) = NULL,
-    @Limit INT = 100
+    @Limit INT = 100,
+    @EnqueuedOlderThanSeconds INT = 300
 )
 AS
 BEGIN
     SET NOCOUNT ON;
 
-    SELECT TOP (@Limit)
+    -- U-652d4 (round 4): each arm carries its OWN TOP (@Limit) and ORDER BY, so one category cannot crowd out
+    -- another (a single TOP over the UNION let enqueued_stranded rows displace error_repoint / written rows).
+    SELECT
         u.[PublicId],
         u.[RealmId],
         u.[ConfirmationSeq],
         u.[Category],
         u.[WriteError]
     FROM (
-        SELECT
-            cs.[PublicId],
-            cs.[RealmId],
-            cs.[ConfirmationSeq],
-            N'error_repoint' AS [Category],
-            cs.[WriteError] AS [WriteError],
-            cs.[ModifiedDatetime] AS [SortAt]
-        FROM dbo.[CodingSuggestion] cs
-        WHERE cs.[Status] = N'error'
-          AND cs.[ConfirmationSource] = N'complete_repoint'
+        SELECT e.* FROM (
+            SELECT TOP (@Limit)
+                cs.[PublicId],
+                cs.[RealmId],
+                cs.[ConfirmationSeq],
+                N'error_repoint' AS [Category],
+                cs.[WriteError] AS [WriteError],
+                cs.[ModifiedDatetime] AS [SortAt]
+            FROM dbo.[CodingSuggestion] cs
+            WHERE cs.[Status] = N'error'
+              AND cs.[ConfirmationSource] = N'complete_repoint'
+            ORDER BY cs.[ModifiedDatetime]
+        ) e
 
         UNION ALL
 
-        SELECT
-            cs.[PublicId],
-            cs.[RealmId],
-            cs.[ConfirmationSeq],
-            N'written_without_record' AS [Category],
-            cs.[WriteError] AS [WriteError],
-            cs.[ModifiedDatetime] AS [SortAt]
-        FROM dbo.[CodingSuggestion] cs
-        WHERE cs.[Status] = N'written'
-          AND cs.[WrittenSyncToken] IS NULL
-          AND cs.[WrittenLinesJson] IS NULL
-          AND (@RecordRequiredSince IS NULL OR cs.[WrittenAt] >= @RecordRequiredSince)
+        SELECT w.* FROM (
+            SELECT TOP (@Limit)
+                cs.[PublicId],
+                cs.[RealmId],
+                cs.[ConfirmationSeq],
+                N'written_without_record' AS [Category],
+                cs.[WriteError] AS [WriteError],
+                cs.[ModifiedDatetime] AS [SortAt]
+            FROM dbo.[CodingSuggestion] cs
+            WHERE cs.[Status] = N'written'
+              AND cs.[WrittenSyncToken] IS NULL
+              AND cs.[WrittenLinesJson] IS NULL
+              AND (@RecordRequiredSince IS NULL OR cs.[WrittenAt] >= @RecordRequiredSince)
+            ORDER BY cs.[ModifiedDatetime]
+        ) w
+
+        UNION ALL
+
+        SELECT n.* FROM (
+            SELECT TOP (@Limit)
+                cs.[PublicId],
+                cs.[RealmId],
+                cs.[ConfirmationSeq],
+                N'enqueued_stranded' AS [Category],
+                cs.[WriteError] AS [WriteError],
+                cs.[ModifiedDatetime] AS [SortAt]
+            FROM dbo.[CodingSuggestion] cs
+            WHERE cs.[Status] = N'enqueued'
+              AND cs.[ModifiedDatetime] <= DATEADD(SECOND, -@EnqueuedOlderThanSeconds, SYSUTCDATETIME())
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM [qbo].[Outbox] o
+                  WHERE o.[Kind] = N'recode_purchase_line'
+                    AND o.[EntityType] = N'CodingSuggestion'
+                    AND o.[EntityPublicId] = cs.[PublicId]
+                    AND o.[Status] IN (N'pending', N'failed', N'in_progress')
+              )
+            ORDER BY cs.[ModifiedDatetime]
+        ) n
     ) u
     ORDER BY u.[SortAt];
 END;

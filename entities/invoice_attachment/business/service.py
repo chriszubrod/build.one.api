@@ -20,6 +20,21 @@ class InvoiceAttachmentService:
         self.repo = repo or InvoiceAttachmentRepository()
 
     def create(self, *, invoice_id: int, attachment_id: int) -> InvoiceAttachment:
+        """Link an attachment to an invoice.
+
+        U-166c fix round 2. Defense in depth: the route is system-admin only, and
+        the packet generator is the only internal caller. Both sides resolve
+        through their gated reads, so a link can never grant read of an attachment
+        the actor could not already open. A denial raises EntityNotAccessibleError
+        and nothing is written.
+        """
+        from entities.invoice.business.service import InvoiceService
+        from entities.attachment.business.service import AttachmentService
+
+        if InvoiceService().read_by_id(invoice_id) is None:
+            raise ValueError(f"Invoice {invoice_id} not found")
+        if AttachmentService().read_by_id(id=attachment_id) is None:
+            raise ValueError(f"Attachment {attachment_id} not found")
         return self.repo.create(invoice_id=invoice_id, attachment_id=attachment_id)
 
     def read_all(self) -> list[InvoiceAttachment]:

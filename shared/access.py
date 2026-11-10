@@ -137,6 +137,7 @@ _ALLOWED_UDFS = frozenset({
     "UserCanAccessBillCredit",
     "UserCanAccessExpense",
     "UserCanAccessProject",
+    "UserCanAccessAttachment",
 })
 
 
@@ -235,6 +236,19 @@ def assert_can_access_expense(expense_id: Optional[int]) -> None:
         return
     if not _check("UserCanAccessExpense", expense_id):
         raise EntityNotAccessibleError("Expense", expense_id)
+
+
+def can_access_attachment(attachment_id: Optional[int]) -> bool:
+    return _can_access("UserCanAccessAttachment", "attachment", attachment_id)
+
+
+def assert_can_access_attachment(attachment_id: Optional[int]) -> None:
+    """U-166c. Uploader, linked-record access, or Owner/Controller on a
+    project-less attachment. See dbo.UserCanAccessAttachment."""
+    if attachment_id is None or _should_bypass():
+        return
+    if not _check("UserCanAccessAttachment", attachment_id):
+        raise EntityNotAccessibleError("Attachment", attachment_id)
 
 
 def can_access_project(project_id: Optional[int]) -> bool:

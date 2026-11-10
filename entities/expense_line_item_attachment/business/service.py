@@ -9,6 +9,7 @@ from entities.expense_line_item_attachment.business.model import ExpenseLineItem
 from entities.expense_line_item_attachment.persistence.repo import ExpenseLineItemAttachmentRepository
 from entities.expense_line_item.business.service import ExpenseLineItemService
 from entities.attachment.business.service import AttachmentService
+from shared.api.responses import ATTACHMENT_LINK_CONFLICT_PREFIX
 from shared.authz import current_user_id, current_is_system_admin
 from shared.lifecycle.terminal_lock import is_exempt
 
@@ -29,8 +30,11 @@ class ExpenseLineItemAttachmentService:
         Create a new expense line item attachment link.
         
         Ensures 1-1 relationship: Each ExpenseLineItem can have only ONE attachment.
-        If a link already exists for this ExpenseLineItem, returns the existing record
-        instead of creating a duplicate.
+        If a link already exists for this ExpenseLineItem and points at the SAME
+        attachment, returns the existing record (idempotent). If it points at a
+        DIFFERENT attachment, raises instead of silently returning the other link
+        (U-166c): the caller must delete the current link first. shared/api/responses.py maps
+        that refusal to 409.
         
         Args:
             expense_line_item_public_id: Public ID of the expense line item
@@ -40,7 +44,8 @@ class ExpenseLineItemAttachmentService:
             ExpenseLineItemAttachment: The existing record if duplicate, or newly created record
             
         Raises:
-            ValueError: If expense line item or attachment not found
+            ValueError: If expense line item or attachment not found, or the line
+                already holds a different attachment (ATTACHMENT_LINK_CONFLICT_PREFIX)
         """
         # TODO: In Phase 10, use tenant_id for tenant isolation
         # Resolve public IDs to internal IDs
@@ -66,14 +71,22 @@ class ExpenseLineItemAttachmentService:
         # Check if an ExpenseLineItemAttachment already exists for this ExpenseLineItem (1-1 relationship)
         existing = self.repo.read_by_expense_line_item_id(expense_line_item_id=expense_line_item_id)
         if existing:
-            if existing.attachment_id != attachment_id:
+            if int(existing.attachment_id) != attachment_id:
+                # U-166c. Previously returned the other link silently, which left a
+                # stale blob attached while the caller believed its file was linked.
                 logger.warning(
-                    "ExpenseLineItemAttachment already exists for ELI %s pointing to attachment %s, "
-                    "but caller requested attachment %s — returning existing (stale blob risk)",
+                    "ExpenseLineItemAttachment for ELI %s already points to attachment %s; "
+                    "refused link to attachment %s",
                     expense_line_item_public_id,
                     existing.attachment_id,
                     attachment_id,
                 )
+                raise ValueError(
+                    f"{ATTACHMENT_LINK_CONFLICT_PREFIX}ExpenseLineItem "
+                    f"'{expense_line_item_public_id}' keeps its existing attachment; "
+                    "delete that link before linking another."
+                )
+            # Same attachment already linked: return it (idempotent)
             return existing
         
         # No existing attachment for this ExpenseLineItem - safe to create

@@ -91,15 +91,22 @@ def entry_lock_prefix(entry_status: str) -> str:
     return ENTRY_APPROVED_PREFIX if entry_status == "approved" else ENTRY_LOCKED_PREFIX
 
 
-_WORKFLOW_STATUS_BY_PREFIX: tuple[tuple[str, int, str], ...] = (
+# U-166c. A BLIA / ELIA create that asks for a different attachment than the line
+# already holds. Deliberately 409 (the design's answer): the link is refused, not
+# silently replaced. Its code is None: the conflict is the status, not a client-
+# recoverable code, and iOS's 409 handling sees it as a concurrency conflict.
+ATTACHMENT_LINK_CONFLICT_PREFIX = "This line already has a different attachment linked: "
+
+_WORKFLOW_STATUS_BY_PREFIX: tuple[tuple[str, int, str | None], ...] = (
     (ENTRY_APPROVED_PREFIX, status.HTTP_422_UNPROCESSABLE_CONTENT, ErrorCode.ENTRY_APPROVED),
     (ENTRY_LOCKED_PREFIX, status.HTTP_422_UNPROCESSABLE_CONTENT, ErrorCode.ENTRY_LOCKED),
     (REVIEW_STATUS_SHAPE_PREFIX, status.HTTP_422_UNPROCESSABLE_CONTENT, ErrorCode.REVIEW_STATUS_SHAPE),
     (STATUS_LOCKED_PREFIX, status.HTTP_422_UNPROCESSABLE_CONTENT, ErrorCode.STATUS_LOCKED),
+    (ATTACHMENT_LINK_CONFLICT_PREFIX, status.HTTP_409_CONFLICT, None),
 )
 
 
-def _status_and_code_for_prefix(err: str) -> tuple[int, str] | None:
+def _status_and_code_for_prefix(err: str) -> tuple[int, str | None] | None:
     """422 + code for a business-rule rejection the engine flattened to a string."""
     return next(
         ((st, code) for prefix, st, code in _WORKFLOW_STATUS_BY_PREFIX if err.startswith(prefix)),

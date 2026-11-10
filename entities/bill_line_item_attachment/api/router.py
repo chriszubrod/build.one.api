@@ -6,6 +6,8 @@ from fastapi import APIRouter, Depends
 # Local Imports
 from entities.bill_line_item_attachment.api.schemas import BillLineItemAttachmentCreate
 from entities.bill_line_item_attachment.business.service import BillLineItemAttachmentService
+from entities.bill_line_item.business.service import BillLineItemService
+from entities.attachment.business.service import AttachmentService
 from shared.rbac import require_module_api
 from shared.rbac_constants import Modules
 from core.workflow.api.process_engine import ProcessEngine, TriggerContext, EventType, Channel
@@ -35,6 +37,12 @@ def create_bill_line_item_attachment_router(
         body.bill_line_item_public_id, "bill_line_item_public_id"
     )
     attachment_public_id = parse_public_id(body.attachment_public_id, "attachment_public_id")
+
+    # U-166c: both sides resolve through their gated readers before the workflow.
+    # instant.py re-raises EntityNotAccessibleError (404); the pre-read keeps a denied
+    # attempt from leaving a failed workflow row.
+    BillLineItemService().read_by_public_id(public_id=bill_line_item_public_id)
+    AttachmentService().read_by_public_id(public_id=attachment_public_id)
 
     context = TriggerContext(
         trigger_type=EventType.API_CALL,
@@ -119,6 +127,9 @@ def delete_bill_line_item_attachment_by_public_id_router(
     Routes through the workflow engine for audit logging and state tracking.
     """
     public_id = parse_public_id(public_id, "public_id")
+    # U-166c: gated read first. instant.py re-raises the denial as 404; this keeps a
+    # denied attempt from leaving a failed workflow row.
+    service.read_by_public_id(public_id=public_id)
 
     context = TriggerContext(
         trigger_type=EventType.API_CALL,

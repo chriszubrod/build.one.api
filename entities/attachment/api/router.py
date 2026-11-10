@@ -18,8 +18,9 @@ from entities.attachment.business.text_fingerprint_service import (
     persist_text_fingerprint_failure_isolated,
 )
 from shared.api.responses import list_response, item_response, raise_not_found, raise_workflow_error
+from shared.access import EntityNotAccessibleError
 from shared.lifecycle.terminal_lock import StatusLockedError
-from shared.rbac import require_module_api
+from shared.rbac import require_module_api, require_system_admin
 from shared.rbac_constants import Modules
 from shared.storage import AzureBlobStorage, AzureBlobStorageError
 from shared.pdf_utils import compact_pdf
@@ -54,10 +55,13 @@ def get_attachments_router(
     category: Optional[str] = None,
     is_archived: Optional[bool] = None,
     status: Optional[str] = None,
-    current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS)),
+    current_user: dict = Depends(require_system_admin()),
 ):
     """
     Read all attachments with optional filters.
+
+    System administrators only (U-166c): this lists every attachment and its
+    BlobUrl, which no per-user rule can scope. No web or iOS client calls it.
     """
     try:
         if category:
@@ -86,7 +90,7 @@ def get_attachment_by_public_id_router(public_id: str, current_user: dict = Depe
         if not attachment:
             raise_not_found("Attachment")
         return item_response(attachment.to_dict())
-    except HTTPException:
+    except (HTTPException, EntityNotAccessibleError):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -102,16 +106,16 @@ def get_attachment_by_id_router(id: int, current_user: dict = Depends(require_mo
         if not attachment:
             raise_not_found("Attachment")
         return item_response(attachment.to_dict())
-    except HTTPException:
+    except (HTTPException, EntityNotAccessibleError):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/get/attachments/by-category/{category}")
-def get_attachments_by_category_router(category: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
+def get_attachments_by_category_router(category: str, current_user: dict = Depends(require_system_admin())):
     """
-    List attachments by category.
+    List attachments by category. System administrators only (U-166c).
     """
     try:
         attachments = service.read_by_category(category)
@@ -121,9 +125,9 @@ def get_attachments_by_category_router(category: str, current_user: dict = Depen
 
 
 @router.get("/get/attachments/by-hash/{hash}")
-def get_attachment_by_hash_router(hash: str, current_user: dict = Depends(require_module_api(Modules.ATTACHMENTS))):
+def get_attachment_by_hash_router(hash: str, current_user: dict = Depends(require_system_admin())):
     """
-    Find duplicate attachments by hash.
+    Find duplicate attachments by hash. System administrators only (U-166c).
     """
     try:
         attachment = service.read_by_hash(hash)
@@ -145,6 +149,11 @@ def update_attachment_by_public_id_router(
     
     Routes through the workflow engine for audit logging and state tracking.
     """
+    # U-166c: resolve through the gated reader before the workflow. instant.py re-raises
+    # EntityNotAccessibleError (404); this keeps a denied attempt from leaving a failed
+    # workflow row.
+    service.read_by_public_id(public_id=public_id)
+
     context = TriggerContext(
         trigger_type=EventType.API_CALL,
         trigger_source=Channel.API,
@@ -200,6 +209,8 @@ def archive_attachment_router(public_id: str, current_user: dict = Depends(requi
         raise
     except StatusLockedError as locked:
         raise_workflow_error(str(locked), "Failed to archive attachment")
+    except EntityNotAccessibleError:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -218,6 +229,8 @@ def unarchive_attachment_router(public_id: str, current_user: dict = Depends(req
         raise
     except StatusLockedError as locked:
         raise_workflow_error(str(locked), "Failed to unarchive attachment")
+    except EntityNotAccessibleError:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -261,6 +274,8 @@ def delete_attachment_by_public_id_router(public_id: str, current_user: dict = D
         raise
     except StatusLockedError as locked:
         raise_workflow_error(str(locked), "Failed to delete attachment")
+    except EntityNotAccessibleError:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -498,6 +513,8 @@ def view_attachment_router(public_id: str, current_user: dict = Depends(require_
     except AzureBlobStorageError as e:
         logger.error(f"Error viewing blob: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to view from blob storage: {str(e)}")
+    except EntityNotAccessibleError:
+        raise
     except Exception as e:
         logger.error(f"Error viewing attachment: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -541,6 +558,8 @@ def download_attachment_router(public_id: str, current_user: dict = Depends(requ
     except AzureBlobStorageError as e:
         logger.error(f"Error downloading blob: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to download from blob storage: {str(e)}")
+    except EntityNotAccessibleError:
+        raise
     except Exception as e:
         logger.error(f"Error downloading attachment: {e}")
         raise HTTPException(status_code=500, detail=str(e))

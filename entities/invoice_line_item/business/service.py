@@ -292,7 +292,9 @@ class InvoiceLineItemService:
             if att:
                 removed = None
                 try:
-                    removed = attachment_service.delete_by_public_id(public_id=att.public_id)
+                    # U-166c F1: att was read while its join row existed; delete it
+                    # without re-gating (the join row is already gone).
+                    removed = attachment_service.delete_authorized(att)
                 except StatusLockedError:
                     logger.info(
                         "Kept attachment %s: it is evidence for a completed Bill",

@@ -2,7 +2,7 @@
 
 ## Single source of truth
 
-`dbo.access_udfs.sql` is the **single canonical source** for all five
+`dbo.access_udfs.sql` is the **single canonical source** for all six
 `dbo.UserCanAccess*` UDFs:
 
 - `UserCanAccessTimeEntry`
@@ -10,6 +10,7 @@
 - `UserCanAccessBill`
 - `UserCanAccessBillCredit`
 - `UserCanAccessExpense`
+- `UserCanAccessAttachment` (U-166c — deliberately NOT schemabound; see the UDF's own comment)
 
 No migration and no entity base file may redefine them — change this file and
 apply it. Enforced by `tests/test_sproc_single_source.py`.

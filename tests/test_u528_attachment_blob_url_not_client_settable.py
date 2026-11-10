@@ -79,7 +79,9 @@ def test_update_attachment_does_not_forward_client_blob_url(
     client, clear_dependency_overrides
 ):
     _rbac_override_for(attachment_router.update_attachment_by_public_id_router)
-    with patch.object(
+    # U-166c: the update route pre-checks through the gated reader; stub it so
+    # the test does not reach the DB.
+    with patch.object(attachment_router.service, "read_by_public_id", return_value=MagicMock(id=5)), patch.object(
         ProcessEngine,
         "execute_synchronous",
         return_value={"success": True, "data": {}},

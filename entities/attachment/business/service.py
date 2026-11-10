@@ -1,3 +1,23 @@
+"""Entity contract — Attachment (partial; U-166c access rule).
+
+Owns
+  dbo.Attachment — file metadata and the Azure blob pointer for every uploaded document.
+Invariants
+  Access (U-166c, design docs/design/u166c-attachment-access.md): read_by_id and
+  read_by_public_id return the row only when dbo.UserCanAccessAttachment passes for
+  the current actor (uploader, admin, access to a linked bill / bill credit /
+  expense / project, or Owner/Controller on a project-less attachment). A denial
+  raises EntityNotAccessibleError, which the API returns as 404. System context and
+  system admins bypass. A not-found id returns None without an access check.
+  The list reads (read_all, read_by_category, read_by_hash) are NOT gated here
+  because internal pipelines use them; their routes are system-admin only.
+  The link services (BLIA / ELIA) also refuse to link a second, different
+  attachment onto a line that already has one (ATTACHMENT_LINK_CONFLICT_PREFIX).
+External writes
+  Azure Blob delete happens in the router, after the row delete; see the router.
+Sprocs
+  (see persistence/repo.py)
+"""
 # Python Standard Library Imports
 import hashlib
 import logging
@@ -9,11 +29,13 @@ from typing import Optional
 # Local Imports
 from entities.attachment.business.model import Attachment
 from entities.attachment.persistence.repo import AttachmentRepository
+from shared.access import assert_can_access_attachment
 from shared.authz import current_user_id
 
 from shared.lifecycle.terminal_lock import StatusLockedError, is_exempt, is_system_caller
 
 logger = logging.getLogger(__name__)
+
 
 
 class AttachmentService:
@@ -148,7 +170,10 @@ class AttachmentService:
         """
         Read an attachment by ID.
         """
-        return self.repo.read_by_id(id)
+        attachment = self.repo.read_by_id(id)
+        if attachment is not None:
+            assert_can_access_attachment(attachment.id)
+        return attachment
 
     def read_by_ids(self, ids: list[int]) -> list[Attachment]:
         """
@@ -162,7 +187,10 @@ class AttachmentService:
         """
         Read an attachment by public ID.
         """
-        return self.repo.read_by_public_id(public_id)
+        attachment = self.repo.read_by_public_id(public_id)
+        if attachment is not None:
+            assert_can_access_attachment(attachment.id)
+        return attachment
 
     def read_by_category(self, category: str) -> list[Attachment]:
         """
@@ -362,21 +390,35 @@ class AttachmentService:
             existing, allow_terminal_parent=is_exempt(_via_internal_pipeline)
         )
 
+    def delete_authorized(self, attachment: Attachment, *, _via_internal_pipeline: bool = False) -> Optional[Attachment]:
+        """U-166c F1. Delete an Attachment the caller has ALREADY authorized.
+
+        Callers unlink the attachment's link row first (FK). Unlinking removes
+        the very access path the gated read depends on, so a gated re-read after
+        the unlink refuses every non-uploader and leaves the row and blob behind.
+        The caller therefore reads the Attachment while the link still exists and
+        hands that object here. The completed-parent guard still applies; the
+        access gate does not run again.
+        """
+        if attachment is None or attachment.id is None:
+            return None
+        self._assert_not_evidence_for_a_completed_parent(
+            attachment,
+            what="its attachments cannot be deleted",
+            exempt=_via_internal_pipeline,
+        )
+        return self.repo.delete_by_id(
+            attachment.id, allow_terminal_parent=is_exempt(_via_internal_pipeline)
+        )
+
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None, _via_internal_pipeline: bool = False) -> Optional[Attachment]:
         """
-        Delete an attachment by public ID.
+        Delete an attachment by public ID (access-gated: the HTTP route's delete).
         """
         # TODO: In Phase 10, validate tenant_id matches record's tenant
         existing = self.read_by_public_id(public_id=public_id)
         if existing:
-            self._assert_not_evidence_for_a_completed_parent(
-                existing,
-                what="its attachments cannot be deleted",
-                exempt=_via_internal_pipeline,
-            )
-            return self.repo.delete_by_id(
-                existing.id, allow_terminal_parent=is_exempt(_via_internal_pipeline)
-            )
+            return self.delete_authorized(existing, _via_internal_pipeline=_via_internal_pipeline)
         return None
 
     def increment_download_count(self, public_id: str) -> Optional[Attachment]:

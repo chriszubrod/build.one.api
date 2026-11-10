@@ -6,6 +6,7 @@ import re
 
 # Local Imports
 from entities.attachment.business.service import AttachmentService
+from shared.access import EntityNotAccessibleError
 from entities.certificate_of_insurance.business.service import CertificateOfInsuranceService
 from entities.vendor.business.service import VendorService
 from entities.vendor_compliance.business.read_helpers import (
@@ -142,7 +143,12 @@ class VendorCompliancePacketService:
         doc_summary_rows = []
 
         if cert and cert.attachment_id:
-            attachment = att_service.read_by_id(int(cert.attachment_id))
+            try:
+                attachment = att_service.read_by_id(int(cert.attachment_id))
+            except EntityNotAccessibleError:
+                # U-166c F2. A VENDORS reader who cannot see this COI gets the packet
+                # without it, as the BL / CL / W-9 helpers do. Not a 500.
+                attachment = None
             if attachment and attachment.blob_url:
                 blob_urls.append(attachment.blob_url)
                 doc_summary_rows.append({

@@ -1595,6 +1595,24 @@ def _ast_of(rel):
     return ast.parse((REPO_ROOT / rel).read_text(encoding="utf-8"))
 
 
+def _attachment_row_deletes_in(tree):
+    """The Attachment-row delete in a cascade: the gated `delete_by_public_id`
+    (keyword public_id) or, since U-166c F1, `delete_authorized` (already
+    authorized object, read while the link still exists)."""
+    import ast
+
+    return [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and (
+            n.func.attr == "delete_authorized"
+            or (n.func.attr == "delete_by_public_id"
+                and any(kw.arg == "public_id" for kw in n.keywords))
+        )
+    ]
+
+
 def _calls_in(tree, attr):
     import ast
 
@@ -1832,10 +1850,7 @@ def test_every_cascade_removes_the_row_BEFORE_it_destroys_the_blob(rel, func):
         "or restore the guarded blob path"
     )
 
-    removes = [
-        n.lineno for n in _calls_in(target, "delete_by_public_id")
-        if any(kw.arg == "public_id" for kw in n.keywords)
-    ]
+    removes = [n.lineno for n in _attachment_row_deletes_in(target)]
     assert removes, f"{rel}:{func} destroys blobs without ever deleting the row"
     assert min(removes) < min(destroys), (
         f"{rel}:{func} deletes the blob before the guarded row delete has "
@@ -2085,10 +2100,7 @@ def test_the_join_row_goes_before_the_attachment_it_points_at(rel, func):
         n.lineno for n in _calls_in(target, "delete_by_id")
         if "attachment" in ast.dump(n.func.value).lower()
     ]
-    rows = [
-        n.lineno for n in _calls_in(target, "delete_by_public_id")
-        if any(kw.arg == "public_id" for kw in n.keywords)
-    ]
+    rows = [n.lineno for n in _attachment_row_deletes_in(target)]
     blobs = [n.lineno for n in _calls_in(target, "delete_file")]
     assert links and rows, f"{rel}:{func} — expected both a link and a row delete"
     assert min(links) < min(rows), (
@@ -2194,7 +2206,7 @@ def test_the_expense_line_item_cascade_orders_its_deletes_for_real():
         )
         MockLinkRepo.return_value.delete_by_id.side_effect = lambda **_: order.append("link")
         MockAtt.return_value.read_by_id.return_value = att
-        MockAtt.return_value.delete_by_public_id.side_effect = lambda **_: (
+        MockAtt.return_value.delete_authorized.side_effect = lambda *_a, **_k: (
             order.append("row"), att
         )[1]
         MockStorage.return_value.delete_file.side_effect = lambda *_: order.append("blob")
@@ -2231,7 +2243,7 @@ def test_the_expense_line_item_cascade_keeps_frozen_evidence():
         MockAtt.return_value.read_by_id.return_value = SimpleNamespace(
             id=9, public_id="att-9", blob_url="https://b/x.pdf"
         )
-        MockAtt.return_value.delete_by_public_id.side_effect = StatusLockedError(
+        MockAtt.return_value.delete_authorized.side_effect = StatusLockedError(
             "its attachments cannot be deleted"
         )
         svc.delete_by_public_id("eli-3")

@@ -4,6 +4,8 @@ Owns
   dbo.BillLineItemAttachment — 1:1 link from BillLineItem to Attachment evidence.
 Invariants
   Each BillLineItem has at most one attachment link (UQ on BillLineItemId).
+  Create on a line that already has a link: the same attachment returns the
+  existing link; a different attachment is refused (U-166c, 409 at the router).
 External writes
   None.
 Sprocs
@@ -19,6 +21,7 @@ from entities.bill_line_item_attachment.business.model import BillLineItemAttach
 from entities.bill_line_item_attachment.persistence.repo import BillLineItemAttachmentRepository
 from entities.bill_line_item.business.service import BillLineItemService
 from entities.attachment.business.service import AttachmentService
+from shared.api.responses import ATTACHMENT_LINK_CONFLICT_PREFIX
 from shared.authz import current_user_id, current_is_system_admin
 from shared.lifecycle.terminal_lock import is_exempt
 
@@ -37,8 +40,11 @@ class BillLineItemAttachmentService:
         Create a new bill line item attachment link.
         
         Ensures 1-1 relationship: Each BillLineItem can have only ONE attachment.
-        If a link already exists for this BillLineItem, returns the existing record
-        instead of creating a duplicate.
+        If a link already exists for this BillLineItem and points at the SAME
+        attachment, returns the existing record (idempotent). If it points at a
+        DIFFERENT attachment, raises instead of silently returning the other link
+        (U-166c): the caller must delete the current link first. shared/api/responses.py maps
+        that refusal to 409.
         
         Args:
             bill_line_item_public_id: Public ID of the bill line item
@@ -48,7 +54,8 @@ class BillLineItemAttachmentService:
             BillLineItemAttachment: The existing record if duplicate, or newly created record
             
         Raises:
-            ValueError: If bill line item or attachment not found
+            ValueError: If bill line item or attachment not found, or the line
+                already holds a different attachment (ATTACHMENT_LINK_CONFLICT_PREFIX)
         """
         # TODO: In Phase 10, use tenant_id for tenant isolation
         # Resolve public IDs to internal IDs
@@ -74,8 +81,13 @@ class BillLineItemAttachmentService:
         # Check if a BillLineItemAttachment already exists for this BillLineItem (1-1 relationship)
         existing = self.repo.read_by_bill_line_item_id(bill_line_item_id=bill_line_item_id)
         if existing:
-            # A record already exists for this BillLineItem
-            # Return the existing record instead of creating a duplicate
+            if int(existing.attachment_id) != attachment_id:
+                raise ValueError(
+                    f"{ATTACHMENT_LINK_CONFLICT_PREFIX}BillLineItem "
+                    f"'{bill_line_item_public_id}' keeps its existing attachment; "
+                    "delete that link before linking another."
+                )
+            # Same attachment already linked: return it (idempotent)
             return existing
         
         # No existing attachment for this BillLineItem - safe to create

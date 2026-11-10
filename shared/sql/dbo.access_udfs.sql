@@ -211,3 +211,123 @@ BEGIN
     );
 END;
 GO
+
+-- ----------------------------------------------------------------------------
+-- UDF: dbo.UserCanAccessAttachment (U-166c, 2026-11-10)
+--
+-- Design: docs/design/u166c-attachment-access.md (authoritative).
+--
+-- Deliberately NOT WITH SCHEMABINDING. It reads nine link tables owned by
+-- other entity packages, and schemabinding would block every future ALTER of
+-- those tables. It calls the schemabound UserCanAccess{Bill,BillCredit,Expense,
+-- Project} UDFs, which is allowed: a non-schemabound function may call
+-- schemabound ones.
+--
+-- Returns 1 when any of these holds:
+--   1. the actor is a system admin;
+--   2. the actor uploaded it (Attachment.CreatedByUserId);
+--   3. it is linked to a record the actor can access:
+--        BillLineItemAttachment       -> BillLineItem.BillId        -> UserCanAccessBill
+--        BillCreditLineItemAttachment -> BillCreditLineItem.BillCreditId -> UserCanAccessBillCredit
+--        ExpenseLineItemAttachment    -> ExpenseLineItem.ExpenseId  -> UserCanAccessExpense
+--        InvoiceAttachment            -> Invoice.ProjectId          -> UserCanAccessProject
+--        InvoiceLineItemAttachment    -> InvoiceLineItem.InvoiceId -> Invoice.ProjectId -> UserCanAccessProject
+--   4. the actor holds the company role Owner or Controller AND the attachment
+--      is either linked to a project-less record (Taxpayer, BusinessLicense,
+--      ContractorsLicense, Asset) or linked to nothing at all.
+--      The role does NOT open project-linked attachments.
+--
+-- Fails closed on a NULL actor: every clause compares to @ActorUserId, and a
+-- NULL comparison is never true.
+-- ----------------------------------------------------------------------------
+CREATE OR ALTER FUNCTION dbo.UserCanAccessAttachment
+(
+    @ActorUserId BIGINT,
+    @ActorIsSystemAdmin BIT,
+    @AttachmentId BIGINT
+)
+RETURNS BIT
+AS
+BEGIN
+    RETURN (
+        SELECT CASE
+            WHEN @ActorIsSystemAdmin = 1 THEN CONVERT(BIT, 1)
+            WHEN EXISTS (
+                SELECT 1
+                FROM dbo.[Attachment] a
+                WHERE a.[Id] = @AttachmentId
+                  AND a.[CreatedByUserId] = @ActorUserId
+            ) THEN CONVERT(BIT, 1)
+            WHEN EXISTS (
+                SELECT 1
+                FROM dbo.[BillLineItemAttachment] blia
+                INNER JOIN dbo.[BillLineItem] bli
+                    ON bli.[Id] = blia.[BillLineItemId]
+                WHERE blia.[AttachmentId] = @AttachmentId
+                  AND dbo.UserCanAccessBill(@ActorUserId, 0, bli.[BillId]) = 1
+            ) THEN CONVERT(BIT, 1)
+            WHEN EXISTS (
+                SELECT 1
+                FROM dbo.[BillCreditLineItemAttachment] bcla
+                INNER JOIN dbo.[BillCreditLineItem] bcli
+                    ON bcli.[Id] = bcla.[BillCreditLineItemId]
+                WHERE bcla.[AttachmentId] = @AttachmentId
+                  AND dbo.UserCanAccessBillCredit(@ActorUserId, 0, bcli.[BillCreditId]) = 1
+            ) THEN CONVERT(BIT, 1)
+            WHEN EXISTS (
+                SELECT 1
+                FROM dbo.[ExpenseLineItemAttachment] elia
+                INNER JOIN dbo.[ExpenseLineItem] eli
+                    ON eli.[Id] = elia.[ExpenseLineItemId]
+                WHERE elia.[AttachmentId] = @AttachmentId
+                  AND dbo.UserCanAccessExpense(@ActorUserId, 0, eli.[ExpenseId]) = 1
+            ) THEN CONVERT(BIT, 1)
+            WHEN EXISTS (
+                SELECT 1
+                FROM dbo.[InvoiceAttachment] ia
+                INNER JOIN dbo.[Invoice] inv
+                    ON inv.[Id] = ia.[InvoiceId]
+                WHERE ia.[AttachmentId] = @AttachmentId
+                  AND dbo.UserCanAccessProject(@ActorUserId, 0, inv.[ProjectId]) = 1
+            ) THEN CONVERT(BIT, 1)
+            WHEN EXISTS (
+                SELECT 1
+                FROM dbo.[InvoiceLineItemAttachment] ilia
+                INNER JOIN dbo.[InvoiceLineItem] ili
+                    ON ili.[Id] = ilia.[InvoiceLineItemId]
+                INNER JOIN dbo.[Invoice] inv
+                    ON inv.[Id] = ili.[InvoiceId]
+                WHERE ilia.[AttachmentId] = @AttachmentId
+                  AND dbo.UserCanAccessProject(@ActorUserId, 0, inv.[ProjectId]) = 1
+            ) THEN CONVERT(BIT, 1)
+            WHEN EXISTS (
+                SELECT 1
+                FROM dbo.[UserRole] ur
+                INNER JOIN dbo.[Role] r
+                    ON r.[Id] = ur.[RoleId]
+                WHERE ur.[UserId] = @ActorUserId
+                  AND r.[Name] IN (N'Owner', N'Controller')
+            )
+            AND (
+                EXISTS (SELECT 1 FROM dbo.[TaxpayerAttachment] x WHERE x.[AttachmentId] = @AttachmentId)
+                OR EXISTS (SELECT 1 FROM dbo.[BusinessLicenseAttachment] x WHERE x.[AttachmentId] = @AttachmentId)
+                OR EXISTS (SELECT 1 FROM dbo.[ContractorsLicenseAttachment] x WHERE x.[AttachmentId] = @AttachmentId)
+                OR EXISTS (SELECT 1 FROM dbo.[AssetAttachment] x WHERE x.[AttachmentId] = @AttachmentId)
+                -- X OR NOT (L OR X) == X OR NOT L: only the five project-linked tables go here.
+                OR NOT EXISTS (
+                    SELECT 1 FROM dbo.[BillLineItemAttachment] x WHERE x.[AttachmentId] = @AttachmentId
+                    UNION ALL
+                    SELECT 1 FROM dbo.[BillCreditLineItemAttachment] x WHERE x.[AttachmentId] = @AttachmentId
+                    UNION ALL
+                    SELECT 1 FROM dbo.[ExpenseLineItemAttachment] x WHERE x.[AttachmentId] = @AttachmentId
+                    UNION ALL
+                    SELECT 1 FROM dbo.[InvoiceAttachment] x WHERE x.[AttachmentId] = @AttachmentId
+                    UNION ALL
+                    SELECT 1 FROM dbo.[InvoiceLineItemAttachment] x WHERE x.[AttachmentId] = @AttachmentId
+                )
+            ) THEN CONVERT(BIT, 1)
+            ELSE CONVERT(BIT, 0)
+        END
+    );
+END;
+GO

@@ -2,6 +2,7 @@
 import html
 import io
 import logging
+from shared.access import EntityNotAccessibleError
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Optional
@@ -344,7 +345,7 @@ class ContractLaborBillService:
             # Populated when we take the edit path (existing bill found);
             # purged only after successful new attachment upload so a
             # failure mid-flow leaves the reviewer with the prior PDF.
-            orphan_attachment_ids: set[int] = set()
+            orphan_attachments: list = []
             try:
                 if project_id is not None:
                     project = project_map.get(project_id)
@@ -521,13 +522,21 @@ class ContractLaborBillService:
                     # the old attachments survive and the reviewer can
                     # still see the prior PDF.
                     blia_service = BillLineItemAttachmentService()
-                    orphan_attachment_ids = set()
+                    orphan_attachments = {}  # Attachment.id -> Attachment (two lines may share one PDF)
                     for bli in existing_blis:
                         if bli.public_id:
                             link = blia_service.read_by_bill_line_item_id(bill_line_item_public_id=bli.public_id)
                             if link:
                                 if link.attachment_id:
-                                    orphan_attachment_ids.add(link.attachment_id)
+                                    # U-166c F1: read the old PDF while its link still
+                                    # exists. Re-reading after the unlink is refused for
+                                    # any non-uploader, so the purge would silently skip it.
+                                    try:
+                                        orphan = AttachmentService().read_by_id(id=link.attachment_id)
+                                    except EntityNotAccessibleError:
+                                        orphan = None
+                                    if orphan is not None:
+                                        orphan_attachments.setdefault(orphan.id, orphan)
                                 blia_service.delete_by_public_id(link.public_id)
                         # Nullify ContractLabor.BillLineItemId before deleting to satisfy FK constraint
                         cl_refs = self.cl_repo.read_by_bill_line_item_id(bli.id)
@@ -545,7 +554,7 @@ class ContractLaborBillService:
                         )
                     # Deferred: orphan Attachment records + their blobs.
                     # Purged only after successful new-attachment creation
-                    # below (search for "orphan_attachment_ids" purge).
+                    # below (search for "orphan_attachments" purge).
 
                 entry_id_to_first_bli_id = {}
                 created_blis_this_project = []
@@ -704,15 +713,13 @@ class ContractLaborBillService:
                         )
                     # New PDF is up + linked. Safe to purge the old
                     # attachments from the prior generation (edit path
-                    # only — orphan_attachment_ids is empty when we
+                    # only — orphan_attachments is empty when we
                     # created the bill fresh).
-                    for att_id in orphan_attachment_ids:
+                    for orphan in orphan_attachments.values():
                         try:
-                            att = AttachmentService().read_by_id(id=att_id)
-                            if att:
-                                AttachmentService().delete_by_public_id(public_id=att.public_id)
+                            AttachmentService().delete_authorized(orphan)
                         except Exception:
-                            logger.warning(f"Could not delete orphan attachment {att_id}")
+                            logger.warning(f"Could not delete orphan attachment {orphan.id}")
                 except Exception as e:
                     # Fixed text to the caller; driver / blob text stays out of errors[] (U-679).
                     logger.error(

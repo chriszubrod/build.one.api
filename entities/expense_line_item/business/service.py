@@ -391,7 +391,9 @@ class ExpenseLineItemService:
                 if attachment:
                     removed = None
                     try:
-                        removed = attachment_service.delete_by_public_id(public_id=attachment.public_id)
+                        # U-166c F1: attachment was read while its link existed; the
+                        # link is gone now, so delete without re-gating.
+                        removed = attachment_service.delete_authorized(attachment)
                     except StatusLockedError:
                         import logging
                         logging.getLogger(__name__).info(

@@ -243,6 +243,7 @@ ACCESS_UDFS = [
     "UserCanAccessBill",
     "UserCanAccessBillCredit",
     "UserCanAccessExpense",
+    "UserCanAccessAttachment",
 ]
 
 # (udf_name, canonical_home) for every single-sourced UDF. The access-UDF family

@@ -8,6 +8,7 @@ from entities.invoice_line_item_attachment.business.model import InvoiceLineItem
 from entities.invoice_line_item_attachment.persistence.repo import InvoiceLineItemAttachmentRepository
 from entities.invoice_line_item.business.service import InvoiceLineItemService
 from entities.attachment.business.service import AttachmentService
+from shared.access import EntityNotAccessibleError
 from shared.authz import current_user_id
 
 
@@ -53,5 +54,13 @@ class InvoiceLineItemAttachmentService:
     def delete_by_public_id(self, public_id: str, *, tenant_id: int = None) -> Optional[InvoiceLineItemAttachment]:
         existing = self.read_by_public_id(public_id=public_id)
         if existing and existing.id:
+            # U-166c fix round 2. Unlinking is an edit of the line's invoice, so the
+            # actor must be able to open that invoice. The gated line read asserts it
+            # (a denial raises EntityNotAccessibleError -> 404). A link whose line is
+            # gone is refused too: fail closed.
+            line_id = getattr(existing, "invoice_line_item_id", None)
+            line = InvoiceLineItemService().read_by_id(int(line_id)) if line_id is not None else None
+            if line is None:
+                raise EntityNotAccessibleError("InvoiceLineItemAttachment", int(existing.id))
             return self.repo.delete_by_id(existing.id)
         return None

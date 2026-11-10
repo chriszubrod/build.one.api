@@ -1123,7 +1123,8 @@ def _generate_invoice_packet(public_id: str):
                     except Exception:
                         logger.warning(f"Failed to delete old packet blob: {old_att.blob_url}")
                 inv_att_service.delete_by_public_id(link.public_id)
-                att_service.delete_by_public_id(old_att.public_id)
+                # U-166c F1: old_att was read while its InvoiceAttachment link existed.
+                att_service.delete_authorized(old_att)
 
     attachment = att_service.create(
         filename=filename,

@@ -115,3 +115,9 @@ so the move is build-order safe.
 - `dbo.llm_daily_spend.sql` — `dbo.LlmDailySpend` + `AddLlmDailySpend` /
   `ReadLlmDailySpend` / `ReadLlmSpendForRange`. No FK dependencies; may be applied
   any time after core `dbo` schema exists.
+
+## Orphaned applock watchdog (U-784a)
+
+- `dbo.applock_watchdog.sql` — `dbo.ReadApplicationLockHolders` +
+  `dbo.CountVisibleUserSessions`. Read-only DMV reads; no dependencies, may be applied
+  any time. Consumed by `shared/applock_watchdog.py`. Permissions: see the file header.

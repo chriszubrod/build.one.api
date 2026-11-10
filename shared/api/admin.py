@@ -301,6 +301,36 @@ async def drain_box_outbox_router():
     return await _timed("box_outbox_drain", _run)
 
 
+# --- Orphaned applock watchdog (U-784a, report only) ------------------------ #
+
+
+@router.post("/locks/watchdog", dependencies=[Depends(_require_drain_secret)])
+async def applock_watchdog_router():
+    """
+    U-784a: detect application locks orphaned by a replaced App Service
+    container (`sp_getapplock` locks held by a silent host's sessions). Called
+    every 5 minutes by the scheduler. REPORT ONLY: logs `applock.orphan_detected`
+    and records a deduplicated `applock_orphan_suspected` reconciliation issue;
+    never ends a session. `APPLOCK_WATCHDOG_MODE=off` returns `{mode: "off"}`
+    without touching the DB. A failed DB read surfaces as a 500 so the
+    scheduler sees it.
+    """
+    # Lazy import — keeps the watchdog off the FastAPI boot path.
+    from shared.applock_watchdog import run_watchdog
+
+    return await _timed("applock_watchdog", run_watchdog)
+
+
+@router.get("/locks")
+async def list_application_locks(current_user: dict = Depends(require_system_admin())):
+    """U-784a: every held application lock with its holder, ages and orphan-rule
+    results, plus `visibility` (`limited` = only our own session is visible),
+    `watchdog_on_container` and the settings used. Read-only; records nothing."""
+    from shared.applock_watchdog import snapshot
+
+    return {"data": await asyncio.to_thread(snapshot)}
+
+
 # --- Time-entry daily digest ----------------------------------------------- #
 
 

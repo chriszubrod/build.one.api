@@ -134,7 +134,11 @@ DRIFT_ELI_LINE_CREATE_FAILED = "eli_line_create_failed"
 # [DriftType] NVARCHAR(32) width).
 DRIFT_CHARGE_UNINVOICED_LOCALLY_BILLED = "charge_uninvoiced_locally_billed"
 
+# U-784a: report-only orphaned-applock watchdog (shared/applock_watchdog.py).
+DRIFT_APPLOCK_ORPHAN_SUSPECTED = "applock_orphan_suspected"
+
 KNOWN_DRIFT_TYPES: FrozenSet[str] = frozenset({
+    DRIFT_APPLOCK_ORPHAN_SUSPECTED,
     DRIFT_CHARGE_UNINVOICED_LOCALLY_BILLED,
     DRIFT_QBO_MISSING_LOCALLY, DRIFT_LOCAL_MISSING_QBO, DRIFT_STALE_SYNC_TOKEN,
     DRIFT_MISSING_MAPPING, DRIFT_FIELD_MISMATCH, DRIFT_DUPLICATE_MAPPING,

@@ -243,8 +243,7 @@ def test_candidate_sql_structure_and_parameterization():
     assert "CODINGSUGGESTION" in upper.replace(" ", "").replace("_", "")
     assert re.search(r"\[ExpenseId\]\s+IS\s+NULL", sql, re.IGNORECASE)
     assert re.search(r"QBOPURCHASEQBOID", sql, re.IGNORECASE)
-    assert re.search(r"ITEMREFVALUE\]\s+IS\s+NULL", sql, re.IGNORECASE)
-    assert "NEED TO CATEGORIZE" in sql
+    assert re.search(r"IsUncodedPlaceholder\]\s*=\s*1", sql, re.IGNORECASE)
     assert "%s" not in sql
     assert re.search(r":\w+", sql) is None, "named params not allowed"
     # Dynamic IN lists must still use ? only in the static template portion we ship
@@ -291,8 +290,7 @@ def test_candidate_exists_clause_requires_a_genuine_placeholder_line_on_both_arm
         )
         assert len(purchase_exists_blocks) >= 1
         for body in purchase_exists_blocks:
-            assert re.search(r"AccountRefName\]\s+LIKE\s+N'%NEED TO CATEGORIZE%'", body, re.IGNORECASE)
-            assert re.search(r"ItemRefValue\]\s+IS\s+NULL", body, re.IGNORECASE)
+            assert re.search(r"IsUncodedPlaceholder\]\s*=\s*1", body, re.IGNORECASE)
 
 
 def test_candidate_sql_eligible_expense_statuses():

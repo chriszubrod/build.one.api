@@ -52,7 +52,7 @@ def test_detection_sproc_requires_no_need_to_categorize_lines_left():
     body = strip_sql_comments(sproc_body(EXPENSE_CODING_SQL, DETECTION_SPROC))
     assert "NOT EXISTS" in body.upper()
     assert re.search(
-        r"AccountRefName\]\s+LIKE\s+N'%NEED TO CATEGORIZE%'",
+        r"IsUncodedPlaceholder\]\s*=\s*1",
         body,
         re.IGNORECASE,
     ), (
@@ -69,18 +69,18 @@ def test_detection_sproc_arm1_requires_missing_purchase_line_row():
     assert "NOT EXISTS" in body.upper()
 
 
-def test_detection_sproc_placeholder_test_requires_item_ref_and_label():
+def test_detection_sproc_placeholder_column_requires_label_and_no_item():
     """A genuine placeholder is the 58999 label AND no ItemRef: label-only would leave
     item-based recodes done in QBO (U-484) permanently open."""
     body = strip_sql_comments(sproc_body(EXPENSE_CODING_SQL, DETECTION_SPROC))
     m = re.search(
-        r"NOT\s+EXISTS\s*\((.*?AccountRefName\]\s+LIKE\s+N'%NEED TO CATEGORIZE%'.*?)\)",
+        r"NOT\s+EXISTS\s*\((.*?IsUncodedPlaceholder\]\s*=\s*1.*?)\)",
         body,
         re.IGNORECASE | re.DOTALL,
     )
     assert m, "detection must NOT EXISTS over genuine placeholders on the purchase"
-    assert re.search(r"ItemRefValue\]\s+IS\s+NULL", m.group(1), re.IGNORECASE), (
-        "the placeholder test must require ItemRefValue IS NULL"
+    assert re.search(r"IsUncodedPlaceholder\]\s*=\s*1", m.group(1), re.IGNORECASE), (
+        "the placeholder test must filter on pl.[IsUncodedPlaceholder] = 1 (label AND no ItemRef)"
     )
     assert not re.search(r"ItemRefValue\]\s+IS\s+NOT\s+NULL", body, re.IGNORECASE), (
         "no arm may accept a purchase because ONE line was item-recoded"
@@ -103,7 +103,7 @@ def test_detection_sproc_arm2_is_per_line_not_parent_58999_guard():
         r"ON\s+pl\.\[QboPurchaseId\]\s*=\s*p\.\[Id\]\s+"
         r"WHERE\s+p\.\[QboId\]\s*=\s*cs\.\[QboPurchaseQboId\]\s+"
         r"AND\s+p\.\[RealmId\]\s*=\s*cs\.\[RealmId\]\s+"
-        r"AND\s+pl\.\[AccountRefName\]\s+LIKE\s+N'%NEED TO CATEGORIZE%'",
+        r"AND\s+pl\.\[IsUncodedPlaceholder\]\s*=\s*1",
         body,
         re.IGNORECASE | re.DOTALL,
     )

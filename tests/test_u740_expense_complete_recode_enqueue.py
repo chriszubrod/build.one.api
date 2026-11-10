@@ -194,8 +194,7 @@ def test_expense_has_genuine_uncoded_staged_lines_reads_probe_sql():
         assert svc._expense_has_genuine_uncoded_staged_lines(expense_id=740) is True
 
     sql = cursor.execute.call_args[0][0]
-    assert "NEED TO CATEGORIZE" in sql
-    assert "ItemRefValue" in sql
+    assert "IsUncodedPlaceholder] = 1" in sql
     assert cursor.execute.call_args[0][1] == 740
 
 

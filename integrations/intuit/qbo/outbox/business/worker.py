@@ -25,6 +25,7 @@ from integrations.intuit.qbo.base.errors import (
     QboBudgetExceededError,
     QboError,
     QboRecodeWritesDisabledError,
+    QboServerError,
     QboSyncTokenMismatchError,
     QboWriteRefusedError,
     is_retryable_error,
@@ -1058,13 +1059,40 @@ class QboOutboxWorker:
                 INNER JOIN [qbo].[Purchase] p ON pl.[QboPurchaseId] = p.[Id]
                 WHERE p.[QboId] = ?
                   AND p.[RealmId] = ?
-                  AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
+                  AND pl.[IsUncodedPlaceholder] = 1
                 ORDER BY pl.[QboLineId]
                 """,
                 qbo_purchase_qbo_id,
                 realm_id,
             )
             return [str(r[0]) for r in cursor.fetchall() if r[0] is not None]
+
+    def _read_label_staging_line_ids(
+        self, *, qbo_purchase_qbo_id: str, realm_id: str
+    ) -> list[str]:
+        """U-652d3 F1: every staging line still on the placeholder account, recoded or not (probe only).
+
+        Filtered in Python by the placeholder label, so no loose LIKE is typed here.
+        """
+        from shared.database import get_connection
+        from integrations.intuit.qbo.purchase.placeholder import has_placeholder_label
+
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT pl.[QboLineId], pl.[AccountRefName]
+                FROM [qbo].[PurchaseLine] pl
+                INNER JOIN [qbo].[Purchase] p ON pl.[QboPurchaseId] = p.[Id]
+                WHERE p.[QboId] = ?
+                  AND p.[RealmId] = ?
+                ORDER BY pl.[QboLineId]
+                """,
+                qbo_purchase_qbo_id,
+                realm_id,
+            )
+            rows = cursor.fetchall()
+        return [str(r[0]) for r in rows if r[0] is not None and has_placeholder_label(r[1])]
 
     def _record_recode_unresolved_line_economics(
         self, row: QboOutbox, item, reason: str
@@ -1116,21 +1144,53 @@ class QboOutboxWorker:
                 exc_info=True,
             )
 
+    def _eli_recode_target(
+        self, item, qbo_line_id: str, local_line, project_cache: dict
+    ) -> tuple[Optional[dict], Optional[str]]:
+        """One recode target whose coding is the local ELI's own (sub cost code + project), or the unmapped error."""
+        sub_cost_code_id = getattr(local_line, "sub_cost_code_id", None)
+        project_id = getattr(local_line, "project_id", None)
+        if not sub_cost_code_id or not project_id:
+            return None, self._MULTI_LINE_UNMAPPED_ERROR
+        return (
+            self._recode_target_from_local_line(
+                item,
+                qbo_line_id,
+                local_line,
+                sub_cost_code_id=sub_cost_code_id,
+                project_id=project_id,
+                description=getattr(local_line, "description", None),
+                project_cache=project_cache,
+            ),
+            None,
+        )
+
     def _resolve_recode_purchase_line_targets(
         self, row: QboOutbox, item
     ) -> tuple[Optional[list[dict]], Optional[str]]:
         realm_id = row.realm_id or item.realm_id or ""
         if getattr(item, "confirmation_source", None) == REPOINT_CONFIRMATION_SOURCE:
             return self._resolve_repoint_targets(row, item, realm_id)
+        is_review_submit = getattr(item, "confirmation_source", None) == "review_submit"
+        qbo_purchase_qbo_id = str(item.qbo_purchase_qbo_id or "")
         uncategorized = self._read_uncategorized_staging_line_ids(
-            qbo_purchase_qbo_id=str(item.qbo_purchase_qbo_id or ""),
+            qbo_purchase_qbo_id=qbo_purchase_qbo_id,
             realm_id=realm_id,
         )
+        if not uncategorized:
+            # U-652d3 F1: an empty strict set is also what a LANDED write looks like once a pull has kept
+            # its ItemRef (staging is sticky), and what a human recode looks like. Probe the label-only
+            # lines so the connector's live fence decides written vs changed_in_qbo. Only an empty label
+            # set is a real no-target.
+            uncategorized = self._read_label_staging_line_ids(
+                qbo_purchase_qbo_id=qbo_purchase_qbo_id,
+                realm_id=realm_id,
+            )
         if not uncategorized:
             return [], None
 
         single_line = len(uncategorized) == 1
-        if not single_line and getattr(item, "confirmation_source", None) != "review_submit":
+        if not single_line and not is_review_submit:
             return None, self._CONFIRMATION_SCOPE_CHANGED
         resolved: list[dict] = []
         missing_eli = 0
@@ -1152,6 +1212,18 @@ class QboOutboxWorker:
             if single_line:
                 if local_line is None and reason and reason != "resolve_failed":
                     self._record_recode_unresolved_line_economics(row, item, reason)
+                if is_review_submit:
+                    # U-652d3 F3 is the PERMANENT rule, not only a deploy-straddle fix: a review_submit
+                    # line is written with its OWN ELI coding at drain time, never confirmed_* (which can
+                    # carry a recoded sibling's coding from the old loose dominant, or any later drift).
+                    if reason == "resolve_failed":
+                        # P3-2: a transient read failure is not a missing ELI. Raise a retryable error so the
+                        # outbox retries with backoff; the suggestion stays in flight, never marked error.
+                        raise QboServerError("coding recode: transient ELI read failure; retry")
+                    target, error = self._eli_recode_target(item, qbo_line_id, local_line, project_cache)
+                    if error is not None:
+                        return None, error
+                    return [target], None
                 return [
                     {
                         "target_qbo_line_id": qbo_line_id,
@@ -1170,22 +1242,10 @@ class QboOutboxWorker:
                 missing_eli += 1
                 continue
 
-            sub_cost_code_id = getattr(local_line, "sub_cost_code_id", None)
-            project_id = getattr(local_line, "project_id", None)
-            if not sub_cost_code_id or not project_id:
-                return None, self._MULTI_LINE_UNMAPPED_ERROR
-
-            resolved.append(
-                self._recode_target_from_local_line(
-                    item,
-                    qbo_line_id,
-                    local_line,
-                    sub_cost_code_id=sub_cost_code_id,
-                    project_id=project_id,
-                    description=getattr(local_line, "description", None),
-                    project_cache=project_cache,
-                )
-            )
+            target, error = self._eli_recode_target(item, qbo_line_id, local_line, project_cache)
+            if error is not None:
+                return None, error
+            resolved.append(target)
 
         if missing_eli > 0:
             return None, self._MULTI_LINE_UNMAPPED_ERROR

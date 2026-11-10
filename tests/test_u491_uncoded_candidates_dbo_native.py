@@ -105,7 +105,8 @@ def _sqlite_fixture_conn() -> sqlite3.Connection:
             QboPurchaseId INTEGER,
             QboLineId TEXT,
             AccountRefName TEXT,
-            ItemRefValue TEXT
+            ItemRefValue TEXT,
+            IsUncodedPlaceholder INTEGER GENERATED ALWAYS AS (CASE WHEN AccountRefName LIKE '%NEED TO CATEGORIZE%' AND ItemRefValue IS NULL THEN 1 ELSE 0 END) STORED
         );
         """
     )

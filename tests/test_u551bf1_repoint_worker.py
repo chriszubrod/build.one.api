@@ -555,6 +555,8 @@ def test_non_repoint_no_targets_still_errors_without_a_get():
     connector = MagicMock()
     worker = QboOutboxWorker()
     worker._read_uncategorized_staging_line_ids = MagicMock(return_value=[])
+    # U-652d3 F1: an empty strict set probes the label-only lines; none here, so it stays an error.
+    worker._read_label_staging_line_ids = MagicMock(return_value=[])
     worker._resolve_recode_line_economics = MagicMock(return_value=(_local(), None))
     with patch(SVC, return_value=svc), patch(CONNECTOR, return_value=connector), patch(GATE, return_value=None), \
             patch(RESOLVER, return_value=SimpleNamespace(value="i", name="n")):

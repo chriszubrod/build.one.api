@@ -1451,8 +1451,7 @@ BEGIN
            AND (cs.[ExpenseId] = e.[Id] OR cs.[ExpenseId] IS NULL)
         WHERE e.[Status] = N'completed'
           AND e.[StatusOrigin] = N'qbo_pull'
-          AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
-          AND pl.[ItemRefValue] IS NULL
+          AND pl.[IsUncodedPlaceholder] = 1
     )
     SELECT
         [Id],

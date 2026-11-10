@@ -111,6 +111,16 @@ CREATE TABLE [qbo].[PurchaseLine]
 END
 GO
 
+-- U-652d3: the one SQL definition of "uncategorized" (58999 label AND no ItemRef). Every site
+-- filters on pl.[IsUncodedPlaceholder] = 1. Computed + PERSISTED, appended last, so no existing
+-- positional reader or column-listed INSERT shifts.
+IF OBJECT_ID('qbo.PurchaseLine', 'U') IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM sys.columns
+    WHERE object_id = OBJECT_ID('qbo.PurchaseLine') AND name = 'IsUncodedPlaceholder'
+)
+ALTER TABLE [qbo].[PurchaseLine] ADD [IsUncodedPlaceholder] AS CAST(CASE WHEN [AccountRefName] LIKE N'%NEED TO CATEGORIZE%' AND [ItemRefValue] IS NULL THEN 1 ELSE 0 END AS BIT) PERSISTED;
+GO
+
 -- U-778a: existing prod table (CREATE TABLE above is skipped) gets the column from the base file itself.
 IF OBJECT_ID('qbo.PurchaseLine', 'U') IS NOT NULL AND COL_LENGTH('qbo.PurchaseLine', 'ReimburseChargeQboId') IS NULL
 ALTER TABLE [qbo].[PurchaseLine] ADD [ReimburseChargeQboId] NVARCHAR(50) NULL;
@@ -819,8 +829,8 @@ BEGIN
         [Description] = CASE WHEN @Description IS NULL THEN [Description] ELSE @Description END,
         [Amount] = CASE WHEN @Amount IS NULL THEN [Amount] ELSE @Amount END,
         [DetailType] = CASE WHEN @DetailType IS NULL THEN [DetailType] ELSE @DetailType END,
-        [ItemRefValue] = CASE WHEN @ItemRefValue IS NULL THEN [ItemRefValue] ELSE @ItemRefValue END,
-        [ItemRefName] = CASE WHEN @ItemRefName IS NULL THEN [ItemRefName] ELSE @ItemRefName END,
+        [ItemRefValue] = CASE WHEN @DetailType = N'AccountBasedExpenseLineDetail' THEN NULL WHEN @ItemRefValue IS NULL THEN [ItemRefValue] ELSE @ItemRefValue END,
+        [ItemRefName] = CASE WHEN @DetailType = N'AccountBasedExpenseLineDetail' THEN NULL WHEN @ItemRefName IS NULL THEN [ItemRefName] ELSE @ItemRefName END,
         [AccountRefValue] = CASE WHEN @AccountRefValue IS NULL THEN [AccountRefValue] ELSE @AccountRefValue END,
         [AccountRefName] = CASE WHEN @AccountRefName IS NULL THEN [AccountRefName] ELSE @AccountRefName END,
         [CustomerRefValue] = CASE WHEN @CustomerRefValue IS NULL THEN [CustomerRefValue] ELSE @CustomerRefValue END,

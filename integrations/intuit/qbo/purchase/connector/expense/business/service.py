@@ -7,6 +7,10 @@ from typing import Dict, List, Optional, Union
 
 # Local Imports
 from integrations.intuit.qbo.purchase.business.model import QboPurchase, QboPurchaseLine
+from integrations.intuit.qbo.purchase.placeholder import (
+    has_placeholder_label,
+    is_uncoded_placeholder_line,
+)
 from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
 from entities.expense.business.service import ExpenseService
 from entities.expense.business.model import Expense
@@ -1142,7 +1146,7 @@ class PurchaseExpenseConnector:
         name = account_ref.get("name")
         if not name:
             return False
-        return "need to categorize" in name.lower()
+        return has_placeholder_label(name)
 
     @staticmethod
     def _qbo_purchase_line_is_uncoded_58999_placeholder(line: QboPurchaseLine) -> bool:
@@ -1151,12 +1155,10 @@ class PurchaseExpenseConnector:
         Account label alone is insufficient — expense-coding recode sets ItemRef
         and deliberately leaves AccountRef on the placeholder (U-484).
         """
-        name = getattr(line, "account_ref_name", None)
-        if not name:
-            return False
-        if "need to categorize" not in name.lower():
-            return False
-        return not getattr(line, "item_ref_value", None)
+        return is_uncoded_placeholder_line(
+            getattr(line, "account_ref_name", None),
+            getattr(line, "item_ref_value", None),
+        )
 
     def _get_qbo_item_ref(self, sub_cost_code_id: int, realm_id: Optional[str] = None):
         """

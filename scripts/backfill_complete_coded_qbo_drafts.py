@@ -47,8 +47,7 @@ WHERE e.[Status] = N'draft'
       SELECT 1
       FROM qbo.[PurchaseLine] pl
       WHERE pl.[QboPurchaseId] = p.[Id]
-        AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
-        AND pl.[ItemRefValue] IS NULL
+        AND pl.[IsUncodedPlaceholder] = 1
   )
   AND EXISTS (
       SELECT 1 FROM dbo.[ExpenseLineItem] eli WHERE eli.[ExpenseId] = e.[Id]

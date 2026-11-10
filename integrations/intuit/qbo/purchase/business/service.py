@@ -516,7 +516,7 @@ class QboPurchaseService:
 
     def get_expense_coding_queue(self, realm_id: Optional[str] = None) -> List[dict]:
         """
-        Read the strict 58999 coding queue and idempotently seed missing
+        Read the uncoded 58999 coding queue (IsUncodedPlaceholder, U-652d3) and idempotently seed missing
         CodingSuggestion rows so every returned line carries coding state.
         """
         actor_user_id = current_user_id.get()

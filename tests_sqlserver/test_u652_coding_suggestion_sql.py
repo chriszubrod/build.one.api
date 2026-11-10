@@ -123,7 +123,9 @@ def _install_supporting_schema(cur) -> None:
             Amount DECIMAL(18,2) NULL,
             Description NVARCHAR(1024) NULL,
             AccountRefName NVARCHAR(255) NULL,
-            ItemRefValue NVARCHAR(50) NULL
+            ItemRefValue NVARCHAR(50) NULL,
+            -- U-652d3: the one definition of "uncategorized" (same as qbo.purchase.sql's column).
+            IsUncodedPlaceholder AS CAST(CASE WHEN AccountRefName LIKE N'%NEED TO CATEGORIZE%' AND ItemRefValue IS NULL THEN 1 ELSE 0 END AS BIT) PERSISTED
         );
         CREATE TABLE dbo.Expense(
             Id BIGINT IDENTITY(1,1) NOT NULL PRIMARY KEY,
@@ -583,6 +585,27 @@ def test_queue_returns_one_row_per_purchase_with_its_uncategorized_line_count(co
     assert set(rows) == {"P-Q2", "P-Q1"}
     assert rows["P-Q2"].UncategorizedLineCount == 2
     assert rows["P-Q1"].UncategorizedLineCount == 1
+    conn.commit()
+
+
+def test_recoded_label_line_is_excluded_from_queue_and_metrics(conn):
+    """U-652d3: a line that keeps the 58999 label but carries an Item is recoded, not uncategorized.
+    It leaves the queue's UncategorizedLineCount and the metrics TotalTargetLines."""
+    cur = conn.cursor()
+    purchase_id, _, _ = _insert_expense_purchase(cur, qbo_purchase_qbo_id="P-REC")
+    cur.execute(
+        """
+        INSERT INTO qbo.PurchaseLine (QboPurchaseId, QboLineId, LineNum, AccountRefName, ItemRefValue)
+        VALUES (?, N'2', 2, N'Cost of construction : NEED TO CATEGORIZE', N'ITEM-9');
+        """,
+        (purchase_id,),
+    )
+    conn.commit()
+    cur.execute("EXEC dbo.ReadExpenseCodingQueue @ActorIsSystemAdmin=1;")
+    rows = {r.QboPurchaseQboId: r for r in cur.fetchall()}
+    assert rows["P-REC"].UncategorizedLineCount == 1
+    cur.execute("EXEC dbo.ReadExpenseCodingMetrics @ActorIsSystemAdmin=1;")
+    assert cur.fetchone().TotalTargetLines == 1
     conn.commit()
 
 

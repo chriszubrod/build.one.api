@@ -58,8 +58,7 @@ _CANDIDATE_SELECT_BODY = """
             ON pl2.[QboPurchaseId] = p2.[Id]
         WHERE p2.[QboId] = e.[QboId]
           AND p2.[RealmId] = e.[RealmId]
-          AND pl2.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
-          AND pl2.[ItemRefValue] IS NULL
+          AND pl2.[IsUncodedPlaceholder] = 1
     ) AS [UncategorizedLineCount],
     N'{source_arm}' AS [SourceArm]
 FROM dbo.[Expense] e
@@ -73,8 +72,7 @@ AND EXISTS (
         ON pl.[QboPurchaseId] = p.[Id]
     WHERE p.[QboId] = e.[QboId]
       AND p.[RealmId] = e.[RealmId]
-      AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
-      AND pl.[ItemRefValue] IS NULL
+      AND pl.[IsUncodedPlaceholder] = 1
 )
 {expense_id_filter}
 """

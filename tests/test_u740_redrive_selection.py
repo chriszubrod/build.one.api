@@ -98,7 +98,7 @@ def test_unconfirmed_sql_uses_claim_lease_predicate():
     assert "DATEADD(SECOND, -900" in UNCONFIRMED_CANDIDATE_SQL
 
 
-def test_unconfirmed_sql_requires_itemrefvalue_null_on_exists():
+def test_unconfirmed_sql_requires_placeholder_column_on_exists():
     from scripts.redrive_skipped_expense_recodes import UNCONFIRMED_CANDIDATE_SQL
 
     purchase_exists_blocks = re.findall(
@@ -108,4 +108,4 @@ def test_unconfirmed_sql_requires_itemrefvalue_null_on_exists():
     )
     assert purchase_exists_blocks
     for body in purchase_exists_blocks:
-        assert re.search(r"ItemRefValue\]\s+IS\s+NULL", body, re.IGNORECASE)
+        assert re.search(r"IsUncodedPlaceholder\]\s*=\s*1", body, re.IGNORECASE)

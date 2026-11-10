@@ -76,27 +76,15 @@ def _status_in_where_completed_only(body: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def test_detection_sproc_requires_item_ref_value_null():
+def test_detection_sproc_filters_on_placeholder_column_and_ands_it_in_completed():
+    """Detection must use the placeholder column (label AND no ItemRef), never the label alone, and the
+    completed-expense filter must AND that predicate in: not OR, not label-only. A revert to a label-only
+    LIKE removes the column from the body and from the WHERE chunk, so both asserts go red."""
     body = strip_sql_comments(sproc_body(EXPENSE_SQL, DETECTION_SPROC))
-    assert re.search(
-        r"ItemRefValue\]\s+IS\s+NULL",
-        body,
-        re.IGNORECASE,
-    ), (
-        "ReadUncodedCompletedExpenseCandidates must require ItemRefValue IS NULL "
+    assert re.search(r"IsUncodedPlaceholder\]\s*=\s*1", body, re.IGNORECASE), (
+        "ReadUncodedCompletedExpenseCandidates must filter on pl.[IsUncodedPlaceholder] = 1 "
         "so stale 58999 labels on coded lines are not re-opened"
     )
-
-
-def test_detection_sproc_does_not_select_on_account_label_alone():
-    body = strip_sql_comments(sproc_body(EXPENSE_SQL, DETECTION_SPROC))
-    assert re.search(
-        r"AccountRefName\]\s+LIKE\s+N'%NEED TO CATEGORIZE%'",
-        body,
-        re.IGNORECASE,
-    )
-    assert re.search(r"ItemRefValue\]\s+IS\s+NULL", body, re.IGNORECASE)
-    # The completed-expense filter must AND both predicates — not OR, not label-only.
     where_match = re.search(
         r"WHERE\s+e\.\[Status\]\s*=\s*N'completed'(.*?)\n\s*\)",
         body,
@@ -104,11 +92,11 @@ def test_detection_sproc_does_not_select_on_account_label_alone():
     )
     assert where_match is not None, "expected Ranked CTE WHERE on completed expenses"
     where_chunk = where_match.group(1)
-    assert "AccountRefName" in where_chunk and "ItemRefValue" in where_chunk, (
-        "detection must AND account placeholder label with ItemRefValue IS NULL"
+    assert "IsUncodedPlaceholder" in where_chunk, (
+        "detection must AND the placeholder column into the completed-expense filter"
     )
     assert " OR " not in where_chunk.upper(), (
-        "must not OR the label predicate without ItemRefValue IS NULL"
+        "must not OR the placeholder predicate in"
     )
 
 
@@ -208,15 +196,14 @@ def test_only_qbo_pull_is_selectable_status_origin_in_mark_sproc(origin):
         )
 
 
-def test_detection_sproc_58999_and_item_ref_null_predicate_still_intact():
+def test_detection_sproc_placeholder_column_predicate_still_intact():
     """F1 must not relax the genuinely-uncoded predicate."""
     body = strip_sql_comments(sproc_body(EXPENSE_SQL, DETECTION_SPROC))
     assert re.search(
-        r"pl\.\[AccountRefName\]\s+LIKE\s+N'%NEED TO CATEGORIZE%'",
+        r"pl\.\[IsUncodedPlaceholder\]\s*=\s*1",
         body,
         re.IGNORECASE,
     )
-    assert re.search(r"pl\.\[ItemRefValue\]\s+IS\s+NULL", body, re.IGNORECASE)
     where_match = re.search(
         r"WHERE\s+e\.\[Status\]\s*=\s*N'completed'(.*?)\n\s*\)",
         body,
@@ -224,7 +211,7 @@ def test_detection_sproc_58999_and_item_ref_null_predicate_still_intact():
     )
     assert where_match is not None
     where_chunk = where_match.group(1)
-    assert "AccountRefName" in where_chunk and "ItemRefValue" in where_chunk
+    assert "IsUncodedPlaceholder" in where_chunk
 
 
 # ---------------------------------------------------------------------------

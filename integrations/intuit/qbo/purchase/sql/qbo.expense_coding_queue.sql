@@ -1,6 +1,7 @@
 -- Expense coding queue read-model: QBO Purchase lines at GL account
--- "Cost of construction : NEED TO CATEGORIZE" (58999). Strict match only —
--- do NOT loosen to NULL / NEED TO UPDATE (that wrongly sweeps item-based lines).
+-- "Cost of construction : NEED TO CATEGORIZE" (58999), still uncoded: the
+-- qbo.PurchaseLine.IsUncodedPlaceholder column (label AND no ItemRef, U-652d3). Do NOT loosen to
+-- NULL / NEED TO UPDATE (that wrongly sweeps item-based lines).
 --
 -- Run: ./.venv/bin/python scripts/run_sql.py integrations/intuit/qbo/purchase/sql/qbo.expense_coding_queue.sql
 
@@ -37,7 +38,7 @@ BEGIN
             pl.[Description] AS [LineDescription]
         FROM [qbo].[PurchaseLine] pl
         INNER JOIN [qbo].[Purchase] p ON pl.[QboPurchaseId] = p.[Id]
-        WHERE pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
+        WHERE pl.[IsUncodedPlaceholder] = 1
           AND (@RealmId IS NULL OR p.[RealmId] = @RealmId)
     ),
     Ranked AS (
@@ -126,7 +127,7 @@ BEGIN
                 ON cs.[TargetKind] = N'expense'
                AND cs.[RealmId] = p.[RealmId]
                AND cs.[QboPurchaseQboId] = p.[QboId]
-            WHERE pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
+            WHERE pl.[IsUncodedPlaceholder] = 1
               AND (@RealmId IS NULL OR p.[RealmId] = @RealmId)
               AND (
                   @ActorIsSystemAdmin = 1

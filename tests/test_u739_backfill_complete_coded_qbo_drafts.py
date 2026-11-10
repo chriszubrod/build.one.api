@@ -21,8 +21,7 @@ def test_candidate_sql_requires_qbo_pull_draft_and_uncoded_predicate():
     sql = mod.CANDIDATE_EXPENSES_SQL
     assert "StatusOrigin" in sql and "qbo_pull" in sql and "coding_backfill" in sql
     assert "Status] = N'draft'" in sql
-    assert "NEED TO CATEGORIZE" in sql
-    assert "ItemRefValue] IS NULL" in sql
+    assert "IsUncodedPlaceholder] = 1" in sql
     assert "IsHoldingCode" in sql
     assert "00.02" in sql
 

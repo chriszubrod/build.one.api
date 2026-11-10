@@ -668,7 +668,7 @@ class ExpenseService:
                    AND p.[RealmId] = e.[RealmId]
                 INNER JOIN qbo.[PurchaseLine] pl
                     ON pl.[QboPurchaseId] = p.[Id]
-                   AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
+                   AND pl.[IsUncodedPlaceholder] = 1
                 LEFT JOIN dbo.[ExpenseLineItem] eli
                     ON eli.[ExpenseId] = e.[Id]
                    AND eli.[QboId] = pl.[QboLineId]
@@ -723,8 +723,7 @@ class ExpenseService:
                         INNER JOIN qbo.[PurchaseLine] pl
                             ON pl.[QboPurchaseId] = p.[Id]
                         WHERE e.[Id] = ?
-                          AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
-                          AND pl.[ItemRefValue] IS NULL
+                          AND pl.[IsUncodedPlaceholder] = 1
                     ) THEN 1 ELSE 0 END
                     """,
                     expense_id,
@@ -747,6 +746,8 @@ class ExpenseService:
             "already_enqueued",
             "written",
             "repoint_pending",
+            # U-652d3 F2: the confirm refused a line-less purchase (nothing left to recode). Not a warning.
+            "nothing_to_recode",
         }
     )
 

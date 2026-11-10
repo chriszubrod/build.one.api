@@ -194,7 +194,9 @@ def _sqlite_fixture_conn() -> sqlite3.Connection:
             QboPurchaseId INTEGER,
             QboLineId TEXT,
             AccountRefName TEXT,
-            Amount REAL
+            Amount REAL,
+            ItemRefValue TEXT,
+            IsUncodedPlaceholder INTEGER GENERATED ALWAYS AS (CASE WHEN AccountRefName LIKE '%NEED TO CATEGORIZE%' AND ItemRefValue IS NULL THEN 1 ELSE 0 END) STORED
         );
         CREATE TABLE qbo.PurchaseLineExpenseLineItem(
             Id INTEGER PRIMARY KEY,
@@ -222,7 +224,7 @@ def test_enqueue_recode_resolves_line_without_map_row():
         INSERT INTO dbo.Expense VALUES (1, 'PUR-A', 'realm-1');
         INSERT INTO dbo.ExpenseLineItem VALUES (101, 1, '1', 'realm-1', 77, 481, 'Fuel', 10.0);
         INSERT INTO qbo.Purchase VALUES (201, 'PUR-A', 'realm-1', 'CreditCard');
-        INSERT INTO qbo.PurchaseLine VALUES (
+        INSERT INTO qbo.PurchaseLine (Id, QboPurchaseId, QboLineId, AccountRefName, Amount) VALUES (
             301, 201, '1', 'Cost of construction : NEED TO CATEGORIZE', 10.0
         );
         INSERT INTO dbo.CodingSuggestion VALUES (
@@ -243,7 +245,7 @@ def test_payment_type_resolves_without_map_row():
         INSERT INTO dbo.Expense VALUES (1, 'PUR-A', 'realm-1');
         INSERT INTO dbo.ExpenseLineItem VALUES (101, 1, '1', 'realm-1', NULL, NULL, NULL, NULL);
         INSERT INTO qbo.Purchase VALUES (201, 'PUR-A', 'realm-1', 'Check');
-        INSERT INTO qbo.PurchaseLine VALUES (301, 201, '1', NULL, NULL);
+        INSERT INTO qbo.PurchaseLine (Id, QboPurchaseId, QboLineId, AccountRefName, Amount) VALUES (301, 201, '1', NULL, NULL);
         """
     )
     rows = _run_sql(conn, _payment_type_line_sql_for_sqlite(), (1,))
@@ -258,7 +260,7 @@ def test_read_state_sproc_resolves_without_map_row():
         INSERT INTO dbo.Expense VALUES (1, 'PUR-A', 'realm-1');
         INSERT INTO dbo.ExpenseLineItem VALUES (101, 1, '1', 'realm-1', NULL, NULL, NULL, NULL);
         INSERT INTO qbo.Purchase VALUES (201, 'PUR-A', 'realm-1', 'CreditCard');
-        INSERT INTO qbo.PurchaseLine VALUES (
+        INSERT INTO qbo.PurchaseLine (Id, QboPurchaseId, QboLineId, AccountRefName, Amount) VALUES (
             301, 201, '1', 'Cost of construction : NEED TO CATEGORIZE', NULL
         );
         INSERT INTO dbo.CodingSuggestion VALUES (
@@ -287,7 +289,7 @@ def test_enqueue_recode_parent_scoped_not_cross_purchase():
           (102, 2, '1', 'realm-1', 99, 999, 'B line', 20.0);
         INSERT INTO qbo.Purchase VALUES (201, 'PUR-A', 'realm-1', 'CreditCard'),
                                         (202, 'PUR-B', 'realm-1', 'CreditCard');
-        INSERT INTO qbo.PurchaseLine VALUES
+        INSERT INTO qbo.PurchaseLine (Id, QboPurchaseId, QboLineId, AccountRefName, Amount) VALUES
           (301, 201, '1', 'Cost of construction : NEED TO CATEGORIZE', 10.0),
           (302, 202, '1', 'Cost of construction : NEED TO CATEGORIZE', 20.0);
         INSERT INTO dbo.CodingSuggestion VALUES (
@@ -312,7 +314,7 @@ def test_payment_type_parent_scoped_not_cross_purchase():
           (102, 2, '1', 'realm-1', NULL, NULL, NULL, NULL);
         INSERT INTO qbo.Purchase VALUES (201, 'PUR-A', 'realm-1', 'Check'),
                                         (202, 'PUR-B', 'realm-1', 'Cash');
-        INSERT INTO qbo.PurchaseLine VALUES
+        INSERT INTO qbo.PurchaseLine (Id, QboPurchaseId, QboLineId, AccountRefName, Amount) VALUES
           (301, 201, '1', NULL, NULL),
           (302, 202, '1', NULL, NULL);
         """
@@ -332,7 +334,7 @@ def test_read_state_parent_scoped_not_cross_purchase():
           (102, 2, '1', 'realm-1', NULL, NULL, NULL, NULL);
         INSERT INTO qbo.Purchase VALUES (201, 'PUR-A', 'realm-1', 'CreditCard'),
                                         (202, 'PUR-B', 'realm-1', 'CreditCard');
-        INSERT INTO qbo.PurchaseLine VALUES
+        INSERT INTO qbo.PurchaseLine (Id, QboPurchaseId, QboLineId, AccountRefName, Amount) VALUES
           (301, 201, '1', 'Cost of construction : NEED TO CATEGORIZE', NULL),
           (302, 202, '1', 'Cost of construction : NEED TO CATEGORIZE', NULL);
         INSERT INTO dbo.CodingSuggestion VALUES (

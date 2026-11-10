@@ -687,11 +687,17 @@ def test_read_state_pin_rejects_a_preceding_union_branch():
     assert _normalised(injected) != (_SITE_FIXTURES / "read_state.sql").read_text().strip()
 
 
-@pytest.mark.parametrize("site", ["enqueue_recode", "read_uncoded"])
-def test_identity_site_pin_sees_whitespace_inside_string_literals(site):
-    """`'%NEED TO  CATEGORIZE%'` matches different rows than `'%NEED TO CATEGORIZE%'`; the pin's
-    whitespace normalisation must leave literal contents untouched (U-652 round 6)."""
-    sql = _site_sql(site)
-    mutated, n = re.subn(r"NEED TO CATEGORIZE", "NEED TO  CATEGORIZE", sql, count=1)
-    assert n == 1, f"{site}: expected the uncategorized-account literal"
-    assert _normalised(mutated) != (_SITE_FIXTURES / f"{site}.sql").read_text().strip()
+def test_identity_pin_normalisation_keeps_label_literal_whitespace_significant():
+    """What this protects: `_normalised` collapses whitespace OUTSIDE string literals only, so a
+    literal's whitespace stays significant. `'%NEED TO  CATEGORIZE%'` matches different rows than
+    `'%NEED TO CATEGORIZE%'` (U-652 round 6). U-652d3 moved the 58999 label literal out of the
+    identity sites: it is now typed ONCE, in the qbo.PurchaseLine.IsUncodedPlaceholder column. This
+    mutates that definition, so the normalisation is proven on the literal that now decides "uncategorized".
+    A site that re-typed the label would be pinned by its own fixture (see test_identity_site_query_is_pinned_exactly)."""
+    text = (REPO_ROOT / "integrations/intuit/qbo/purchase/sql/qbo.purchase.sql").read_text()
+    m = re.search(r"ALTER TABLE \[qbo\]\.\[PurchaseLine\] ADD \[IsUncodedPlaceholder\].*?PERSISTED;", text)
+    assert m is not None, "IsUncodedPlaceholder column definition not found"
+    original = m.group(0)
+    mutated, n = re.subn(r"NEED TO CATEGORIZE", "NEED TO  CATEGORIZE", original, count=1)
+    assert n == 1, "expected the uncategorized-account literal in the column definition"
+    assert _normalised(mutated) != _normalised(original)

@@ -1353,11 +1353,12 @@ class CodingSuggestionService:
                 realm_id=item.realm_id or "",
                 qbo_purchase_qbo_id=item.qbo_purchase_qbo_id or "",
             )
-            if uncategorized_count > 1 and not allow_multi_line:
-                return {
-                    "status": "multi_line_unsupported",
-                    "reason": "multi_line_purchase_confirm_unsupported",
-                }
+            refusal = self._uncategorized_count_refusal(
+                uncategorized_count=uncategorized_count,
+                allow_multi_line=allow_multi_line,
+            )
+            if refusal is not None:
+                return refusal
 
         expense_id = getattr(item, "expense_id", None) or self._resolve_expense_id_for_purchase(
             qbo_purchase_qbo_id=item.qbo_purchase_qbo_id or "",
@@ -1490,6 +1491,19 @@ class CodingSuggestionService:
         ) > 1
 
     @staticmethod
+    def _uncategorized_count_refusal(*, uncategorized_count: int, allow_multi_line: bool) -> Optional[dict]:
+        """U-652d3 F2: a confirm with no genuine placeholder line can only no-op, so it is refused before
+        any write as ``nothing_to_recode`` (router: 409 with the status as detail, like its siblings)."""
+        if uncategorized_count == 0:
+            return {"status": "nothing_to_recode"}
+        if uncategorized_count > 1 and not allow_multi_line:
+            return {
+                "status": "multi_line_unsupported",
+                "reason": "multi_line_purchase_confirm_unsupported",
+            }
+        return None
+
+    @staticmethod
     def _uncategorized_staging_qbo_line_ids(
         *, realm_id: str, qbo_purchase_qbo_id: str
     ) -> list[str]:
@@ -1506,7 +1520,7 @@ class CodingSuggestionService:
                 INNER JOIN [qbo].[Purchase] p ON pl.[QboPurchaseId] = p.[Id]
                 WHERE p.[QboId] = ?
                   AND p.[RealmId] = ?
-                  AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
+                  AND pl.[IsUncodedPlaceholder] = 1
                 ORDER BY pl.[QboLineId]
                 """,
                 qbo_purchase_qbo_id,
@@ -1531,7 +1545,7 @@ class CodingSuggestionService:
                 INNER JOIN [qbo].[Purchase] p ON pl.[QboPurchaseId] = p.[Id]
                 WHERE p.[QboId] = ?
                   AND p.[RealmId] = ?
-                  AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
+                  AND pl.[IsUncodedPlaceholder] = 1
                 """,
                 qbo_purchase_qbo_id,
                 realm_id,

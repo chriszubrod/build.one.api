@@ -1194,8 +1194,7 @@ BEGIN
           INNER JOIN [qbo].[PurchaseLine] pl ON pl.[QboPurchaseId] = p.[Id]
           WHERE p.[QboId] = cs.[QboPurchaseQboId]
             AND p.[RealmId] = cs.[RealmId]
-            AND pl.[AccountRefName] LIKE N'%NEED TO CATEGORIZE%'
-            AND pl.[ItemRefValue] IS NULL
+            AND pl.[IsUncodedPlaceholder] = 1
       );
 END;
 GO

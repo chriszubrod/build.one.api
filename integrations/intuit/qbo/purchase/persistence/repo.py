@@ -855,7 +855,7 @@ class QboPurchaseLineRepository:
         actor_user_id: Optional[int] = None,
         actor_is_system_admin: Optional[bool] = None,
     ) -> List[dict]:
-        """Read strict 58999 NEED TO CATEGORIZE purchase lines with coding item state."""
+        """Read uncoded 58999 NEED TO CATEGORIZE purchase lines (IsUncodedPlaceholder, U-652d3) with coding item state."""
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()

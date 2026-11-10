@@ -852,14 +852,24 @@ GO
 
 -- U-446c (Codex P0): this writes dbo.BillLineItem and so belongs to the
 -- terminal-lock protocol — LOCK UNCONDITIONALLY, REFUSE CONDITIONALLY, exactly
--- as the other guarded sprocs do. Its only caller is invoice reconciliation,
--- which runs under system context and is therefore exempt; the guard exists so
--- a future non-system caller cannot quietly acquire the same reach.
+-- as the other guarded sprocs do. The guard exists so a non-system caller
+-- cannot use it to write to a completed Bill's line.
 --
 -- Severity was bounded even before this: `WHERE [ProjectId] IS NULL` makes it a
 -- one-way fill, so it could never CHANGE a cost allocation, only supply one
 -- that was missing. That is repair, which the lock's contract permits — but it
 -- permits it EXPLICITLY, not by omission.
+--
+-- U-785: it refuses only a call that would actually WRITE — a completed Bill
+-- AND a line with no project yet. A line that already carries a project is a
+-- no-op (the UPDATE below matches nothing), and refusing it was the bug: the
+-- invoice reconciliation that calls this runs as the logged-in user over
+-- `POST /reconcile/invoice/{id}/push-draw` and `/link`, not as the system, so
+-- every completed-bill source halted the link step (MR2-MAIN-11, 2026-11-10).
+-- The Bill lock is still taken first and unconditionally; the line's project is
+-- read in the same locked statement, and every guarded writer to that line
+-- serializes on the same Bill lock, so the value cannot change before the
+-- UPDATE. A real NULL fill on a completed Bill still needs the exemption.
 CREATE OR ALTER PROCEDURE BackfillLinkedSourceProjectId
 (
     @SourceType NVARCHAR(50),
@@ -873,13 +883,14 @@ BEGIN
 
     IF @SourceType = N'BillLineItem'
     BEGIN
-        DECLARE @LockedCompleted INT;
-        SELECT @LockedCompleted = COUNT(*)
+        DECLARE @ParentStatus NVARCHAR(20);
+        DECLARE @LineProjectId BIGINT;
+        SELECT @ParentStatus = b.[Status], @LineProjectId = li.[ProjectId]
         FROM dbo.[BillLineItem] li
         INNER JOIN dbo.[Bill] b WITH (UPDLOCK, HOLDLOCK) ON b.[Id] = li.[BillId]
-        WHERE li.[Id] = @Id AND b.[Status] = 'completed';
+        WHERE li.[Id] = @Id;
 
-        IF @AllowTerminalParent = 0 AND @LockedCompleted > 0
+        IF @AllowTerminalParent = 0 AND @ParentStatus = 'completed' AND @LineProjectId IS NULL
         BEGIN
             RAISERROR('STATUS_LOCKED: the line items of a completed Bill cannot be changed.', 16, 1);
             RETURN;

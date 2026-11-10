@@ -585,6 +585,48 @@ def test_the_project_backfill_joins_the_lock_protocol():
     )
 
 
+def test_the_project_backfill_refuses_only_a_call_that_would_write():
+    """U-785. Invoice reconciliation reaches this as the LOGGED-IN USER over
+    `POST /reconcile/invoice/{id}/push-draw` and `/link`, not as the system. Refusing
+    every line of a completed Bill therefore halted the link step on the first
+    completed-bill source, even though each one already carried its project and the
+    UPDATE would have matched nothing (MR2-MAIN-11, 2026-11-10).
+
+    The refusal has to be exactly the case the one-way UPDATE would write: not
+    exempt, AND a completed parent, AND no project on the line yet. Its inputs are
+    read in the same statement that takes the Bill lock, so they cannot be stale
+    when the UPDATE runs (every guarded writer to that line serializes on the same
+    Bill lock)."""
+    body = _body("entities/invoice/sql/dbo.invoice.sql", "BackfillLinkedSourceProjectId")
+    bill_branch = body.split("N'BillLineItem'", 1)[1].split("ELSE IF", 1)[0]
+
+    refusals = [ln for ln in bill_branch.splitlines() if "@AllowTerminalParent = 0" in ln]
+    assert len(refusals) == 1, refusals
+    refusal = refusals[0]
+    assert "@ParentStatus = 'completed'" in refusal, (
+        "a non-completed parent is never refused"
+    )
+    assert "@LineProjectId IS NULL" in refusal, (
+        "a line that already has its project is a no-op write and must not be "
+        "refused — that refusal is what broke push-draw over HTTP"
+    )
+
+    locked_read = bill_branch[: bill_branch.index("@AllowTerminalParent = 0")]
+    assert "WITH (UPDLOCK, HOLDLOCK)" in locked_read
+    assert "@LineProjectId = li.[ProjectId]" in locked_read, (
+        "the line's project must be read under the Bill lock, in the same statement"
+    )
+    assert "@ParentStatus = b.[Status]" in locked_read
+    assert "AND b.[Status] = 'completed'" not in locked_read, (
+        "filtering the locked read on status would skip the Bill lock for a "
+        "non-completed parent; read the status, test it in the refusal"
+    )
+
+    assert "WHERE [Id] = @Id AND [ProjectId] IS NULL" in bill_branch, (
+        "the refusal and the write must agree on what a write is"
+    )
+
+
 def test_the_contract_NAMES_its_operational_metadata_exemptions():
     """An exemption nobody wrote down is indistinguishable from a hole.
 

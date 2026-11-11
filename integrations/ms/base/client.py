@@ -61,6 +61,11 @@ def _writes_allowed() -> bool:
     return os.getenv("ALLOW_MS_WRITES", "").strip().lower() == "true"
 
 
+def writes_allowed() -> bool:
+    """Public read of the ALLOW_MS_WRITES gate (for status endpoints and callers)."""
+    return _writes_allowed()
+
+
 def _parse_retry_after(header_value: Optional[str]) -> Optional[float]:
     """
     Parse a Retry-After header value into seconds.

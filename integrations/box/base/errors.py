@@ -161,6 +161,15 @@ class BoxConflictError(BoxClientError):
     how callers recover the existing file id to upload a new version instead.
     """
 
+    def conflicting_item_id(self) -> Optional[str]:
+        """The existing item's id from context_info.conflicts (a dict or a 1-element list), else None."""
+        conflicts = (self.context_info or {}).get("conflicts")
+        if isinstance(conflicts, list):
+            conflicts = conflicts[0] if conflicts else None
+        if isinstance(conflicts, dict) and conflicts.get("id"):
+            return str(conflicts["id"])
+        return None
+
 
 class BoxPreconditionError(BoxClientError):
     """

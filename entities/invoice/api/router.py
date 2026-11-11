@@ -1257,6 +1257,33 @@ def push_draw_invoice_router(
     return item_response(payload)
 
 
+@router.post("/finish/invoice/{public_id}/draw-packet")
+def finish_draw_packet_router(
+    public_id: str,
+    dry_run: bool = Query(default=True),
+    current_user: dict = Depends(require_module_api(Modules.INVOICES, "can_complete")),
+):
+    """U-786: finish a published draw in the Box tracker and file its 000 PDFs.
+
+    Dry run by default. `dry_run=false` writes the workbook and the PDFs, and needs
+    both ALLOW_BOX_WRITES and ALLOW_MS_WRITES. Refusals return 409 with the machine
+    code in `error_code` (see draw_packet_finish.py for the list).
+    """
+    from entities.invoice.business.draw_packet_finish import (
+        DrawPacketFinishRefused,
+        DrawPacketFinishService,
+        DrawPacketInvoiceNotFound,
+    )
+
+    try:
+        payload = DrawPacketFinishService().finish(public_id, dry_run=dry_run)
+    except DrawPacketFinishRefused as e:
+        raise ApiError(status_code=409, detail=str(e), error_code=e.code)
+    except DrawPacketInvoiceNotFound:
+        raise_not_found("Invoice")
+    return item_response(payload)
+
+
 @router.get("/get/invoice/{public_id}/draw-removals")
 def propose_draw_removals_router(
     public_id: str,

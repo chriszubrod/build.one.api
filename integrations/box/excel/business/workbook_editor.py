@@ -11,6 +11,8 @@ from typing import Any, Dict, List, Optional
 # imports (and py_compiles) even in environments where openpyxl is not yet
 # installed (it is in requirements.txt at ~3.1.2, present in prod/CI).
 
+from integrations.box.excel.business.drawing_graft import regraft_drawings
+
 logger = logging.getLogger(__name__)
 
 
@@ -538,6 +540,13 @@ def _copy_row_style(ws, src_row: Optional[int], dst_row: int, max_col: int) -> N
         ws.row_dimensions[dst_row].height = ws.row_dimensions[src_row].height
 
 
+def _save_preserving_drawings(wb, original_bytes: bytes) -> bytes:
+    """Save the openpyxl workbook and graft back the drawings openpyxl drops."""
+    out = BytesIO()
+    wb.save(out)
+    return regraft_drawings(original_bytes, out.getvalue())
+
+
 def apply_rows_to_details(
     file_bytes: bytes,
     worksheet_name: str,
@@ -576,6 +585,7 @@ def apply_rows_to_details(
     # defined names) that Excel tolerates but openpyxl refuses to load. Strip it
     # first; a clean workbook is returned byte-identical (no-op). Unparseable
     # human-applied autofilters are stripped on-demand by the resilient loader.
+    raw_file_bytes = file_bytes
     file_bytes = _sanitize_workbook_bytes(file_bytes)
     wb = _load_workbook_resilient(file_bytes, data_only=False)
 
@@ -708,9 +718,11 @@ def apply_rows_to_details(
             _write_row_values(ws, target_row, row)
             applied += 1
 
-    out = BytesIO()
-    wb.save(out)
-    return {"bytes": out.getvalue(), "applied": applied, "skipped": skipped}
+    return {
+        "bytes": _save_preserving_drawings(wb, raw_file_bytes),
+        "applied": applied,
+        "skipped": skipped,
+    }
 
 
 def stamp_columns_by_key(
@@ -737,6 +749,7 @@ def stamp_columns_by_key(
     if not updates:
         return {"bytes": None, "applied": 0, "skipped": 0, "matched": 0}
 
+    raw_file_bytes = file_bytes
     file_bytes = _sanitize_workbook_bytes(file_bytes)
     wb = _load_workbook_resilient(file_bytes, data_only=False)
 
@@ -811,9 +824,12 @@ def stamp_columns_by_key(
     if applied == 0:
         return {"bytes": None, "applied": 0, "skipped": skipped, "matched": matched}
 
-    out = BytesIO()
-    wb.save(out)
-    return {"bytes": out.getvalue(), "applied": applied, "skipped": skipped, "matched": matched}
+    return {
+        "bytes": _save_preserving_drawings(wb, raw_file_bytes),
+        "applied": applied,
+        "skipped": skipped,
+        "matched": matched,
+    }
 
 
 # ---------------------------------------------------------------------------

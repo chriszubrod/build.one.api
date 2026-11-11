@@ -198,6 +198,7 @@ Use the current invoice routes below (all paths are relative to `/api/v1`). They
 | Compare Box and SharePoint draw values | `GET /get/invoice/{public_id}/box-draw-verify` | Read-only |
 | Inspect stale draw tags | `GET /get/invoice/{public_id}/draw-removals` | Read-only |
 | Clear confident stale draw tags | `POST /reconcile/invoice/{public_id}/clear-removals` | SharePoint writes + Box enqueue |
+| Finish the draw tabs and the 000 PDFs (Step 11) | `POST /finish/invoice/{public_id}/draw-packet?dry_run=` | Dry run by default. `dry_run=false` writes the Box tracker workbook, a OneDrive temp render, and SharePoint + Box PDFs (both write gates) |
 
 `InvoiceDrawPushService.push_draw` is the maintained halt-on-step-failure workflow for QBO-pulled draws; it does not push to QBO. It requires a non-draft invoice and both write gates, audits before applying links, and can return a planned halt after enqueuing missing DETAILS rows. Wait for those rows to drain, verify them, and resume. Its `pushed` result describes orchestration/enqueue success, **not completed external delivery**; Steps 9–10 remain mandatory.
 
@@ -990,6 +991,31 @@ Then report the narrative details:
 - **Box:** workbook/folder mapping status from Step 1c; `box.Outbox` rows for this run by Kind × Status (all `done`?); packet in `draw_requests` (yes/no/unmapped); DETAILS-mirror inserts + draw stamp applied (yes/no/unmapped); attachment uploads to `invoices` folder count; any `dead_letter` rows (halt condition — should have been caught in 7c/9)
 
 ---
+
+## Step 11 — Finish the draw tabs and the 000 PDFs (U-786)
+
+**When:** after Step 10 passes, and after the Box draw stamp from Step 7d has drained. The tab sums DETAILS rows tagged with the invoice number, so a stamp still in the outbox makes the total short.
+
+1. **Dry run first.** `POST /finish/invoice/{public_id}/draw-packet` (no flag, or `dry_run=true`). Read the result: `tab_total` must equal `invoice_total`. Check `new_tab` (the tab to be added) and `source_tab` (the draw it clones). `already_finished` is `false` for a first finish. `box_etag` and `pdf_names` are for the record. Nothing is written. A dry run does **not** detect a tracker open in Excel for the web, so the apply can still refuse with `tracker_open_in_excel`.
+2. **Apply.** Only when the dry run is clean and both `writes_enabled` flags are `true`: `POST /finish/invoice/{public_id}/draw-packet?dry_run=false`. The response has `complete`, `workbook_uploaded`, `registry_error`, and one `pdfs` entry per file with its `sharepoint` and `box` status. PDFs over 4 MB are filed through the SharePoint upload session, not the simple upload.
+3. **Refusals** (HTTP 409, machine code in `error_code`). A refusal writes nothing to the workbook or the PDFs unless the code says otherwise. A refusal that comes after the destination folders are resolved may leave EMPTY invoice folders behind; they are harmless and the next run reuses them:
+   - `invoice_is_draft`: the invoice is still a draft. Publish it, then re-run.
+   - `invalid_invoice_date`: the invoice date is not a calendar date. Correct the invoice date, then re-run.
+   - `missing_fields`: the invoice lacks its number, date, total or project. Complete the invoice, then re-run.
+   - `unmapped_workbook`: the project has no Box tracker workbook. Map it (Step 1c) first.
+   - `previous_draw_missing`: the draw before this one has no Draw Request tab. Finish that invoice first, then re-run this one.
+   - `unsupported_layout`: the tracker is outside the automated layout (for example G702/G703 trackers). Finish that draw by hand. When the message says the tracker "could not be evaluated", the tracker file itself is damaged or unusual: report it to engineering (the API log has the detail under `box.excel.draw_tabs_unexpected_error`) and finish that draw by hand.
+   - `tracker_error`: the tracker could not be read as a draw tracker. The message names the sheet and cell. Fix the tracker, then re-run.
+   - `total_mismatch`: the DETAILS draw tags or amounts disagree with the invoice. Fix DETAILS, never the invoice. Nothing was uploaded.
+   - `writes_disabled`: one of `ALLOW_BOX_WRITES` / `ALLOW_MS_WRITES` is off. Turn it on for the apply, not for the dry run.
+   - `tracker_open_in_excel`: the tracker is open in Excel for the web or locked in Box. Close it there, then re-run. Nothing was uploaded.
+   - `tracker_changed`: the tracker changed while the run was in progress. Re-run.
+   - `tracker_busy`: another write holds the tracker's lock. Wait a minute, then re-run.
+   - `sharepoint_folder_unresolved`, `unmapped_draw_folder`, `draw_folder_name_drift`, `box_folder_unresolved`: a destination folder is missing or wrong. Fix the mapping in the project, then re-run. Nothing was written.
+4. **Partial failure.** If `complete` is `false`, a PDF did not file (see its `sharepoint` and `box` status). A re-run takes the already-finished path. It never adds a second tab. Re-run until `complete` is `true`. Re-running after any 500 is safe for the same reason: the already-finished path is idempotent.
+   - If `registry_error` is set, the workbook **was uploaded**. The registry row for it did not record. The PDFs were still rendered and filed. Tell the operator and record the error for engineering. A re-run does not fix the registry row.
+   - Each re-run re-renders both PDFs and writes a **new Box version** of each one, because the Graph PDFs embed timestamps. Expect a new version each time, not a no-op. SharePoint is overwritten by name.
+5. **Hand-off.** The Box workbook is the source of truth for the tabs. Chris copies the finished Box workbook over the SharePoint copy himself. The automation does not write the SharePoint workbook.
 
 ## Delta re-run — the operator edited the QBO invoice after a completed run
 

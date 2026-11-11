@@ -10,6 +10,9 @@ Invariants
 External writes
   MS sharepoint_upload on packet/attachment fan-out (ALLOW_MS_WRITES).
   Box push_blob / draw-stamp excel helpers (ALLOW_BOX_WRITES).
+  Draw-packet finish (U-786, draw_packet_finish.py): Box tracker workbook version via
+  apply_workbook_transform, an MS OneDrive temp render (deleted), and SharePoint + Box
+  "000 -" PDFs (ALLOW_BOX_WRITES + ALLOW_MS_WRITES; dry run by default).
   None for QBO push on complete_invoice (disabled in service).
 Sprocs
   BackfillLinkedSourceProjectId
@@ -1724,6 +1727,38 @@ class InvoiceService:
                 width = max(len(m.group(1)), 2)
 
         return f"{prefix}-{str(max_num + 1).zfill(width)}"
+
+    def resolve_invoice_sharepoint_folder(self, invoice) -> tuple:
+        """(drive_id, folder_item_id) of the invoice's SharePoint draw subfolder.
+
+        Raises LookupError with the reason when the Invoices module folder, its drive or the
+        invoice subfolder cannot be read or created. The subfolder is named as
+        _upload_to_sharepoint names it: the raw invoice number.
+        """
+        try:
+            module = self.module_service.read_by_name("Invoices") or self.module_service.read_by_name("Invoice")
+            if not module:
+                raise LookupError("Invoices module not found")
+            folder = self.project_module_connector.get_folder_for_module(
+                project_id=invoice.project_id, module_id=int(module.id)
+            )
+            if not folder or not folder.get("ms_drive_id") or not folder.get("item_id"):
+                raise LookupError("Invoices module folder not configured for this project")
+            drive = self.drive_repo.read_by_id(folder["ms_drive_id"])
+            if not drive:
+                raise LookupError("drive not found")
+            folder_result = self.driveitem_service.read_or_create_folder(
+                drive_public_id=drive.public_id,
+                parent_item_id=folder["item_id"],
+                folder_name=sharepoint_safe_name(str(invoice.invoice_number or invoice.public_id)),
+            )
+            if folder_result.get("status_code") not in (200, 201) or not folder_result.get("item"):
+                raise LookupError(f"invoice subfolder: {folder_result.get('message')}")
+            return drive.drive_id, folder_result["item"]["item_id"]
+        except LookupError:
+            raise
+        except Exception as error:
+            raise LookupError(str(error)) from error
 
     def _upload_to_sharepoint(self, invoice, line_items: list) -> dict:
         """

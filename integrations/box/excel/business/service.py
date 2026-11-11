@@ -242,6 +242,161 @@ class BoxExcelUpdateService:
                     push_cache_repo, box_file_id_str, fresh_entities
                 )
 
+    def apply_workbook_transform(
+        self,
+        *,
+        box_file_id: str,
+        transform,
+        entity_type: Optional[str],
+        entity_public_id: Optional[str],
+        project_id: Optional[int],
+        upload: bool,
+    ) -> dict:
+        """
+        Run an arbitrary whole-workbook transform under the outbox's lock protocol,
+        synchronously, and (optionally) upload the result as a new Box version.
+
+        WHY: the draw-packet finish (U-786) must rewrite a whole tracker workbook
+        (clone a tab, extend the trend) — not a row insert or a column-H stamp — and
+        must do it inline in the operator request, not through the outbox queue. It
+        still needs the same serialization the drain path uses: the process-wide
+        `box_app_lock` on the file, the WOPI co-edit back-off, and a Box file lock
+        so a human in Excel-for-web cannot co-edit underneath the write.
+
+        `transform(data: bytes) -> (new_bytes | None, result)`. Both modes return the
+        second element as `result`. `None` bytes means nothing to write.
+
+        upload=False: a read. Downloads the file and calls `transform`. Takes NO
+        Box file lock and writes nothing.
+        upload=True: takes the Box lock (if_match=etag0), downloads, calls
+        `transform`, uploads a version (if_match=etag1) and records the push when
+        bytes are returned. Always unlocks in `finally`. A raise from `transform`
+        propagates after the unlock and uploads nothing.
+
+        Registry: `entity_type` / `entity_public_id` are passed to `_record_push`
+        as given. Pass None to keep the workbook's prior entity ownership, as the
+        stamp path does. PushLog still records the new sha1.
+
+        upload=False never refuses on a live human (WOPI) lock: it only reads, and a
+        file open in Excel for the web can still be read and re-rendered.
+
+        Returns {"uploaded", "result", "etag", "sha1", "registry_error"}. `etag` is the
+        new version's etag when uploaded, else etag0. `sha1` is that of the uploaded
+        bytes or None. `registry_error` is the exception class name when the workbook
+        was uploaded but recording its registry row failed (logged ERROR and not
+        raised), else None.
+        """
+        from integrations.box.base.client import BoxHttpClient
+
+        box_file_id_str = str(box_file_id)
+        with box_app_lock(f"box_file_write:{box_file_id_str}") as got:
+            if not got:
+                raise BoxServerError(
+                    f"box_app_lock busy for file {box_file_id_str}; requeue",
+                    request_method="LOCK",
+                    request_path=f"files/{box_file_id_str}",
+                )
+
+            with BoxHttpClient() as client:
+                meta = client.get(
+                    f"files/{box_file_id_str}",
+                    params={"fields": "etag,lock,name"},
+                    operation_name="box.excel.get_meta",
+                )
+                if upload and self._is_live_human_lock(meta.get("lock")):
+                    logger.warning(
+                        "box.excel.transform.deferred_locked",
+                        extra={
+                            "event_name": "box.excel.transform.deferred_locked",
+                            "box_file_id": box_file_id_str,
+                            "entity_type": entity_type,
+                            "entity_public_id": entity_public_id,
+                            "lock_app_type": str((meta.get("lock") or {}).get("app_type")),
+                        },
+                    )
+                    raise BoxLockedError(
+                        f"file {box_file_id_str} held by a live human co-edit (WOPI) lock; defer",
+                        code="item_locked",
+                        request_method="GET",
+                        request_path=f"files/{box_file_id_str}",
+                    )
+                etag0 = meta.get("etag")
+
+                if not upload:
+                    data = client.download_file(
+                        box_file_id_str, operation_name="box.excel.download"
+                    )
+                    _, result = transform(data)
+                    return {"uploaded": False, "result": result, "etag": etag0,
+                            "sha1": None, "registry_error": None}
+
+                expires_at = (
+                    datetime.now(timezone.utc) + timedelta(seconds=BOX_LOCK_TTL_SECONDS)
+                ).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+                lock_resp = client.put(
+                    f"files/{box_file_id_str}",
+                    json_body={"lock": {"access": "lock", "expires_at": expires_at}},
+                    if_match=etag0,
+                    params={"fields": "etag,lock,name"},
+                    operation_name="box.excel.lock",
+                )
+                etag1 = lock_resp.get("etag") or etag0
+                file_name = lock_resp.get("name") or meta.get("name") or "workbook.xlsx"
+
+                try:
+                    data = client.download_file(
+                        box_file_id_str, operation_name="box.excel.download"
+                    )
+                    new_bytes, result = transform(data)
+                    if new_bytes is None:
+                        return {"uploaded": False, "result": result, "etag": etag0,
+                                "sha1": None, "registry_error": None}
+
+                    up = client.upload_file_version(
+                        box_file_id_str,
+                        file_name,
+                        new_bytes,
+                        content_type=WORKBOOK_CONTENT_TYPE,
+                        if_match=etag1,
+                        operation_name="box.excel.upload_version",
+                    )
+                    # The workbook is already uploaded. A registry failure must not
+                    # abort the finish (PDFs would then never be rendered or filed);
+                    # it is logged and surfaced as registry_error instead.
+                    registry_error = None
+                    try:
+                        self._record_push(
+                            row=None,
+                            upload_result=up,
+                            box_file_id=box_file_id_str,
+                            file_name=file_name,
+                            new_bytes=new_bytes,
+                            entity_type=entity_type,
+                            entity_public_id=entity_public_id,
+                            project_id=project_id,
+                        )
+                    except Exception as record_error:
+                        registry_error = type(record_error).__name__
+                        logger.error(
+                            "box.excel.transform.record_push_failed",
+                            exc_info=True,
+                            extra={
+                                "event_name": "box.excel.transform.record_push_failed",
+                                "box_file_id": box_file_id_str,
+                                "error_class": registry_error,
+                            },
+                        )
+                    entry = _unwrap_upload_entry(up)
+                    return {
+                        "uploaded": True,
+                        "result": result,
+                        "etag": entry.get("etag") or etag1,
+                        "sha1": hashlib.sha1(new_bytes).hexdigest(),
+                        "registry_error": registry_error,
+                    }
+                finally:
+                    self._best_effort_unlock(client, box_file_id_str)
+
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #

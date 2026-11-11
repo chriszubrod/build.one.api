@@ -233,41 +233,14 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
 
 ## MR2-MAIN-11 draw-packet finish follow-ups (booked 2026-11-10)
 
-- [ ] **P1 — Box tracker writes strip drawing shapes.** `integrations/box/excel/business/workbook_editor.py`
-  round-trips trackers through openpyxl (`wb.save` at ~712 / 815 / 859), and openpyxl drops DrawingML shapes. So
-  every DETAILS sync removes the "INVOICE" title box (shape "Rectangle 2": Cambria 54pt bold, accent3, bevel) from
-  every Draw Request tab. MR2-MAIN lost it on tabs 01–08: SharePoint kept it through v699 (2026-11-02) and lost it at
-  v700, Chris's Box→SP copy. Tabs 09/10/11 got it back on 2026-11-10 (Box etag 322); **the next DETAILS sync will
-  strip it again.**
-  - Fix: patch DETAILS at the XML level (the sheet part only), or re-inject the source package's drawing parts after
-    the save.
-  - Pin it with a round-trip test that a shape survives a DETAILS write.
-- [ ] **P2 — Automate the draw-packet finish.** Chris: "so eventually we can run this repeatedly for each invoice
-  draw request packet." Done by hand for MR2-MAIN-11 on 2026-11-10, in six steps:
-  1. **Clone the prior Draw Request tab at zip/XML level.**
-     - Copy the sheet, its drawing, rels and content types.
-     - Add `_xlnm.Print_Area` / `_FilterDatabase` for the new tab and bump `localSheetId` on later tabs.
-     - Set D4 = invoice date and E10 = invoice number.
-     - Fill the cached G values.
-     - Hide zero category rows together with their spacer rows.
-  2. **Extend `Draw Request Trend`.**
-     - Add one column per new draw, a VLOOKUP into the new tab.
-     - Shift the spare and Total columns right.
-     - Widen the autoFilter, Print_Area and dimension, and move the logo anchor.
-  3. **Assert** each tab's total == `dbo.Invoice.TotalAmount`.
-  4. **Upload to Box** under the etag/lock guard.
-  5. **Render PDFs.**
-     - Make "000 - <INV> - Invoice.pdf" and "000 - <INV> - Trend.pdf".
-     - Use a temp one-tab workbook (formulas stripped, cached values kept) in the integration OneDrive, fetched with
-       `GET …/content?format=pdf` and `Accept: */*`.
-  6. **File both PDFs** to the SharePoint and Box draw folders.
-
-  The natural home is the InvoiceAgent Surface B step after the packet publish.
-  - ⚠️ DETAILS tag keys differ by tab: draws 01–04 key on date (`$D$4`), 05+ on draw number (`$E$10`), and 05's
-    Builder's Fee row keys on date.
-  - Blocked on P1, or each later sync undoes step 1's title box.
+- [x] **P1 — Box tracker writes strip drawing shapes.** DONE in U-786 (`7720e7bf`):
+  `integrations/box/excel/business/drawing_graft.py` restores each sheet's original drawing after every openpyxl
+  save in `workbook_editor` (real MR2 tracker: 13 drawings kept through a DETAILS write).
+- [x] **P2 — Automate the draw-packet finish.** DONE in U-786 (`7720e7bf`): `POST /finish/invoice/{id}/draw-packet`
+  (dry run by default; playbook Step 11). Clone + Trend + totals check + Box upload + both `000 -` PDFs filed. v1 is
+  the Draw Request + Trend layout; G702/G703 trackers are refused (follow-up below).
 - [ ] **P3 — Restore the INVOICE title on MR2-MAIN Draw Request 01–08** from the SharePoint v699 drawings. Cosmetic;
-  offered to Chris, not done. Pointless until P1 lands.
+  offered to Chris, not done. Unblocked: U-786 keeps shapes through DETAILS writes now.
 - [ ] **(data note) MR2-MAIN-10 DETAILS corrected 2026-11-10 (Box etag 322).** Draw 10's DETAILS now equal the
   invoice, $45,491.31. Changes:
   - N1129 sauna refund sign: +5,690 → −5,690.
@@ -277,6 +250,94 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
     - Selvin 4/15, 5/15, 5/31: 525 / 1,575 / 1,837.50.
 
   MR2-MAIN-06 DETAILS is still $15.76 under its invoice (pre-existing, left alone; the Trend shows the DETAILS figure).
+
+## U-786 follow-ups — draw-packet finish + tracker drawings (booked 2026-11-11)
+
+U-786 (`7720e7bf`) shipped the automated finish for MR2-style trackers (`POST /finish/invoice/{id}/draw-packet`, dry run by default;
+`integrations/box/excel/business/draw_tabs.py`, `entities/invoice/business/draw_packet_finish.py`) and stopped Box DETAILS
+writes from stripping drawing shapes (`integrations/box/excel/business/drawing_graft.py`). Deferred, each with its reason:
+
+- [ ] **(SCOPE, P1 — U-786b) Bound the CPU a crafted tracker can cost.** U-786's hardening round closed the
+  crafted-input *error* class (every unexpected exception is a 409 refusal; the graft memoises and charges failed
+  work and stops at a deadline). Its security review (2026-11-11, reproduced by the EM) found the *CPU-time* class
+  still open, insider-only (needs Box edit access to the tracker):
+  - **draw_tabs regex scanning is quadratic on crafted, well-formed XML.** A comment full of `<row ` / `<c ` /
+    `<Relationship ` openers makes the lazy `_ROW` / `_CELL` / rels regexes rescan to the end of the part from
+    every start: 8 KB of junk = 2 s, 16 KB = 15 s, and `finish_draw_tabs` still succeeds. Pins one API worker per
+    POST to `/finish/invoice/{id}/draw-packet` (operator/agent-triggered only). Same shape likely in `_SHEETDATA`,
+    `_parse_sst`, `_ATTR` (whitespace around `=`, single-quoted values) and `[^>]*?\s*` tag scans. Patching
+    regexes one by one is whack-a-mole: either (a) an input gate (expat streaming check: well-formed, no
+    comments / CDATA / PIs / DTD) plus a linear start-tag/end-tag scanner in place of the lazy element regexes,
+    or (b) run `finish_draw_tabs` / `render_existing` in a child process with a wall-clock and memory limit. (b)
+    needs care with exception pickling (`DrawAlreadyFinished(tab_name)`). Also no time bound on linear work
+    (~2 s per MiB in the source tab) or on the 5M-visit evaluation budget (~5.5 s at the limit).
+  - **Graft: original sheet XML re-parsed per `<sheet>` name** (`_sheet_drawing_rid(o[o_part])` in the plan
+    loop): 150 names → one 1 MiB part = 14 s, 2000 names = the 30 s deadline (shapes lost). Memoise per part.
+  - **Graft: three full ET parses before the first deadline check** (`_sheet_parts` workbook.xml + its rels,
+    `_Types` content types), each up to the 64 MiB member cap: 24 MiB each = 21 s and ~1 GB RSS. Cap these
+    structural parts (real ones are a few KB) before parsing; scan sheets for `<drawing>` with expat, not a tree.
+  - **Graft (LOW): a relationship resolving above the package root** (`../../../x`) is copied under a `../`
+    member name into the tracker version. Refuse resolved targets starting with `../`.
+  - **Graft (LOW, defence in depth):** `_reachable(e, …)` over openpyxl's own drawing has no limit; not
+    reachable through Box (openpyxl writes shallow closures).
+  - Context: the openpyxl load before every DETAILS write (pre-existing, item below) is slower per MiB than the
+    graft and has the same per-sheet-name exposure, so the graft items only matter once that is bounded too.
+  Repro (build with `tests/test_box_draw_tabs.py::_build` / `_edit_sheet` / `_inject_rows`): inject
+  `<!--` + `<row ` × N + `-->` into the source tab's sheetData and time `finish_draw_tabs`; for the graft, N
+  `<sheet>` entries whose workbook rels all target one ~1 MiB worksheet part with a drawing rel.
+- [ ] **(SCOPE) v2: G702 / G703 trackers.** Every non-MR2 project's tracker carries `G702 NN` / `G703 NN` per draw; v1
+  refuses them (`unsupported_layout`). Needs a survey of where each template keeps its application number, application
+  date and period-to cells, and a shift-by-one-draw rule for their cross-tab references (`'G703 13'!J#` → `'G703 14'!J#`).
+  Tab names vary (`Draw Request #37`, `Draw Request - HP-25`, `G702 CW 27`, `Draw Request HE12-POST-01`). Its own unit.
+- [ ] **(SCOPE) Share the Box draw-folder resolver.** `draw_packet_finish._resolve_box_folder` and
+  `InvoiceService._enqueue_box_line_pdfs` resolve the same per-invoice folder with different `get_folder_info → None`
+  semantics; a `BoxProjectFolderService.resolve_draw_request_subfolder` with typed errors would make it one definition.
+- [ ] **(SCOPE) Switch `InvoiceService._upload_to_sharepoint` to `resolve_invoice_sharepoint_folder`** (added by U-786;
+  the old method still carries its own copy and per-step message dicts).
+- [ ] **(SCOPE) Extract the Box lock protocol** shared by `BoxExcelUpdateService._run_locked` (outbox drain) and
+  `apply_workbook_transform` (U-786): `_defer_if_human_locked` + `_take_box_file_lock`. Touches the live drain; thinly
+  tested there today, so it wants its own unit with drain-path tests first.
+- [ ] **(SCOPE) One OOXML package helper set.** `draw_tabs.py` and `drawing_graft.py` keep private, slightly different
+  copies of `_resolve` / `_rels_path` / `_ser_rels` / rels parsing / the direct-child tokenizer / content-type lookup
+  (only the zip writer was merged, into `ooxml.py`). Consolidate on the graft's stricter versions under a Pass-1 review;
+  the test files' three drawing-attach builders → one `tests/ooxml_test_helpers.py`.
+- [ ] **(SCOPE) Delegate the two older Box 409 conflict-id parsers** (`box/file/business/service.py`
+  `_extract_conflict_file_id`, `box/folder/business/service.py` `_extract_conflict_folder_id`) to the new
+  `BoxConflictError.conflicting_item_id()`.
+- [ ] **(SCOPE) Render packages carry the tracker's whole shared-strings table** (all ledger text) into the integration
+  OneDrive temp copy; an orphaned temp item (upload response lost) or the recycle bin keeps it. Prune the render
+  package's `sharedStrings.xml` to the strings its one sheet uses, and/or sweep `BuildOneTemp/`.
+- [ ] **(SCOPE, perf) Graft prune loop is O(passes × targets)** on a chain of dead drawings (crafted input only;
+  openpyxl's own output is shallow). Subtract each newly dead part's targets instead of rebuilding `refs`. (Pass 2 #4.)
+- [ ] **(SCOPE, perf) `regraft_drawings` adds ~0.5 s to every Box DETAILS write** on the MR2 tracker (most of it parsing
+  every sheet XML to find its `<drawing>` element). A byte pre-filter would save ~275 ms but changes behaviour on
+  malformed / UTF-16 parts — needs its own Pass-1 review.
+- [ ] **(DECISION) 409 for every refusal.** Transient refusals (`tracker_busy`, `tracker_changed`,
+  `tracker_open_in_excel`) and permanent ones (`unsupported_layout`, `missing_fields`, …) all return 409 with a distinct
+  `error_code`; `shared/api/responses.py` says clients treat 409 as a retryable conflict. Fine for the operator/agent
+  caller today; decide before any UI calls the route.
+- [ ] **(DECISION) A formula in a DETAILS amount on ANY old draw's matching row blocks every later finish** (the Trend
+  refresh recomputes every old draw and refuses formulas rather than guess). Safe-fail; decide whether old draws may
+  trust their cached values instead.
+- [ ] **(REFUTED as defect — recorded behaviour) Caller errors read as tracker damage.** `draw_tabs` entry points
+  called with `invoice_number=None`, a string `draw_date` or a 5000-digit invoice number return "the tracker could
+  not be evaluated (TypeError … )". The only caller (`DrawPacketFinishService`) validates the invoice number,
+  date (`invalid_invoice_date`) and fields (`missing_fields`) first, and invoice numbers are length-bounded in SQL.
+- [ ] **(DECISION) What a graft deadline trip should do.** `regraft_drawings` stops at `_GRAFT_DEADLINE_SECONDS`
+  (30 s) and fails soft: the DETAILS write goes ahead WITHOUT the shapes, and because the next write's original
+  no longer has them they are lost for good. 30 s is far above any real tracker (MR2: 0.5–1.0 s idle, ~2 s on a
+  3×-oversubscribed Mac), so a trip means crafted input or a pathological tracker. The alternative is to fail the
+  write (retry, then dead-letter) on a trip, which keeps the shapes but lets a crafted tracker stall its own
+  project's DETAILS sync. Watch for `box.excel.drawing_regraft_failed` with "deadline" in the reason.
+- [ ] **(SCOPE, pre-existing) openpyxl's own load of a crafted tracker is unbounded.** `workbook_editor` loads the
+  whole workbook with openpyxl before every DETAILS write (inside the Box drain lock); a tracker with a huge
+  sheet makes that slow regardless of U-786. U-786 bounded only its own share (graft size caps, visit budget,
+  deadline; draw_tabs evaluation budget). A size check on the downloaded tracker before the openpyxl load would
+  cover it. Insider-only (needs Box edit access to the tracker).
+- [ ] **(REFUTED as defects — recorded behaviour)** each re-run adds a new Box version of the `000 -` PDFs (Graph PDFs
+  embed timestamps, so the sha1 "unchanged" path rarely fires); `docProps/app.xml` sheet titles are not updated (Excel
+  ignores them); drawings on the DETAILS sheet keep their row anchors after inserts (openpyxl already did this for
+  pictures).
 
 ## U-757a follow-ups - shared SharePoint module-folder engine (booked 2026-11-05)
 

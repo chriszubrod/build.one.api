@@ -231,6 +231,53 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
 - [ ] 🟢 `GET /api/v1/admin/locks` lists every application lock in the database (not just the allowlisted ones), including identifiers embedded in lock names (realm/tenant/drive-item/Box file ids). System-admin only and nothing secret — accepted for U-784a; revisit if non-admin diagnostics ever reuse it.
 - [ ] 🟢 The visibility self-check (`visibility: limited` when the DMVs show ≤ 1 session) is probably unreachable for its intended case: without the DMV permission the holders proc most likely errors first (a loud 500 every 5 minutes, which is the useful signal anyway). A deterministic permission column would make it exact.
 
+## MR2-MAIN-11 draw-packet finish follow-ups (booked 2026-11-10)
+
+- [ ] **P1 — Box tracker writes strip drawing shapes.** `integrations/box/excel/business/workbook_editor.py`
+  round-trips trackers through openpyxl (`wb.save` at ~712 / 815 / 859), and openpyxl drops DrawingML shapes. So
+  every DETAILS sync removes the "INVOICE" title box (shape "Rectangle 2": Cambria 54pt bold, accent3, bevel) from
+  every Draw Request tab. MR2-MAIN lost it on tabs 01–08: SharePoint kept it through v699 (2026-11-02) and lost it at
+  v700, Chris's Box→SP copy. Tabs 09/10/11 got it back on 2026-11-10 (Box etag 322); **the next DETAILS sync will
+  strip it again.**
+  - Fix: patch DETAILS at the XML level (the sheet part only), or re-inject the source package's drawing parts after
+    the save.
+  - Pin it with a round-trip test that a shape survives a DETAILS write.
+- [ ] **P2 — Automate the draw-packet finish.** Chris: "so eventually we can run this repeatedly for each invoice
+  draw request packet." Done by hand for MR2-MAIN-11 on 2026-11-10, in six steps:
+  1. **Clone the prior Draw Request tab at zip/XML level.**
+     - Copy the sheet, its drawing, rels and content types.
+     - Add `_xlnm.Print_Area` / `_FilterDatabase` for the new tab and bump `localSheetId` on later tabs.
+     - Set D4 = invoice date and E10 = invoice number.
+     - Fill the cached G values.
+     - Hide zero category rows together with their spacer rows.
+  2. **Extend `Draw Request Trend`.**
+     - Add one column per new draw, a VLOOKUP into the new tab.
+     - Shift the spare and Total columns right.
+     - Widen the autoFilter, Print_Area and dimension, and move the logo anchor.
+  3. **Assert** each tab's total == `dbo.Invoice.TotalAmount`.
+  4. **Upload to Box** under the etag/lock guard.
+  5. **Render PDFs.**
+     - Make "000 - <INV> - Invoice.pdf" and "000 - <INV> - Trend.pdf".
+     - Use a temp one-tab workbook (formulas stripped, cached values kept) in the integration OneDrive, fetched with
+       `GET …/content?format=pdf` and `Accept: */*`.
+  6. **File both PDFs** to the SharePoint and Box draw folders.
+
+  The natural home is the InvoiceAgent Surface B step after the packet publish.
+  - ⚠️ DETAILS tag keys differ by tab: draws 01–04 key on date (`$D$4`), 05+ on draw number (`$E$10`), and 05's
+    Builder's Fee row keys on date.
+  - Blocked on P1, or each later sync undoes step 1's title box.
+- [ ] **P3 — Restore the INVOICE title on MR2-MAIN Draw Request 01–08** from the SharePoint v699 drawings. Cosmetic;
+  offered to Chris, not done. Pointless until P1 lands.
+- [ ] **(data note) MR2-MAIN-10 DETAILS corrected 2026-11-10 (Box etag 322).** Draw 10's DETAILS now equal the
+  invoice, $45,491.31. Changes:
+  - N1129 sauna refund sign: +5,690 → −5,690.
+  - N2221 Emilson: 1,974.07 → 1,974.06.
+  - Added four manual lines that were missing:
+    - Ann Sacks refund: −4,917.73.
+    - Selvin 4/15, 5/15, 5/31: 525 / 1,575 / 1,837.50.
+
+  MR2-MAIN-06 DETAILS is still $15.76 under its invoice (pre-existing, left alone; the Trend shows the DETAILS figure).
+
 ## U-757a follow-ups - shared SharePoint module-folder engine (booked 2026-11-05)
 
 - **[test-infra] Goldens to a JSON fixture with a regenerate switch (U-756 + U-757).** `tests/test_u757a_sharepoint_fanout_characterization.py` (~5.6k lines) and the U-756 Box file embed pprinted golden dicts inline and say "never edit by hand", but nothing regenerates them. The drift-fix units that change these exact messages would have to hand-edit them. Move them to `tests/fixtures/u75{6,7a}_*_goldens.json` (the `_ordered` output is already JSON-shaped) and add `UPDATE_GOLDENS=1`. Keep the scenario builders and the structural tests in Python. (Pass 2 #10.)

@@ -10,7 +10,7 @@ guidance. Added 2026-11-11 (U-788).
 |---|---|---|
 | [`DECISIONS.md`](DECISIONS.md) | the decision log — why the architecture is the way it is | **live** |
 | [`runbooks/`](runbooks/README.md) (30) | operational runbooks, one per failure mode. Has its own index | **live** |
-| [`conventions/`](conventions/) (12) | **standing rules**, extracted from `CLAUDE.md` so it stays ~15 KB. Binding, not history — CLAUDE.md keeps the one-line rule and links here | **live** |
+| [`conventions/`](conventions/) (11) | **standing rules**, extracted from `CLAUDE.md` so it stays ~15 KB. Binding, not history — CLAUDE.md keeps the one-line rule and links here | **live** |
 | [`design/`](design/) (47) | per-unit design docs, `u<n>-*.md`. The design that gated a unit | per unit |
 | [`operations/`](operations/) (14) | pre-change prod snapshots, `u<n>_*`. **Evidence, not guidance** — never act on one | frozen |
 | [`archive/2026/`](archive/2026/) (5) | historical audits + closed TODO sections. **Nothing here needs action** | historical |

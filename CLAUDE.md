@@ -69,7 +69,6 @@ Read the matching file before working an area.
 | [`docs/conventions/integrations-hardening.md`](docs/conventions/integrations-hardening.md) | **before adding any external integration** |
 | [`docs/conventions/scheduler-and-admin-endpoints.md`](docs/conventions/scheduler-and-admin-endpoints.md) | timers, drains, the admin endpoint surface |
 | [`docs/conventions/app-service-and-env.md`](docs/conventions/app-service-and-env.md) | env vars, write gates, prod settings |
-| [`docs/conventions/web-ui-patterns.md`](docs/conventions/web-ui-patterns.md) | React patterns the API constrains |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md) | the orchestrator, the agent fleet, the DI pipeline, or when April-2026 rationale matters |
 | [`docs/README.md`](docs/README.md) | index of all 186 docs — what is live vs historical |
 
@@ -77,6 +76,7 @@ Read the matching file before working an area.
 
 **Layout & contract**
 - `entities/{name}/` with `api/` `business/` `persistence/` `sql/`. No `web/` — React owns the UI, API returns JSON only.
+- **UI rules live in `build.one.web`** (moved there 2026-11-11, U-788). Two are shared contracts: an FK in a POST body is the internal `id` (BIGINT), not the `public_id` (UUID) dropdowns carry — the API does not coerce between them; and a debounced edit-page PUT can race an action's own PUT on the same `row_version`.
 - **An entity's contract is in the code, not a spec file (U-631):** the `service.py` module docstring (Owns / Invariants / External writes / Sprocs) + the `-- Contract:` header on `sql/dbo.*.sql`. Read both FIRST; update them in the same change. `tests/test_entity_docstrings.py` enforces it.
 - ProcessEngine for main entity CRUD; direct CRUD for lightweight children. ROWVERSION + base64 for concurrency.
 - Lazy-imported services (e.g. `BillService`) must be used via `self.*`, never a bare class name.

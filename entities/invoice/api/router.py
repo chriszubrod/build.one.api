@@ -308,11 +308,89 @@ def _draw_fee_from_invoice(cover_model, invoice_total):
     return replace(cover_model, builders_fee=fee, total=total_dec)
 
 
-def _budget_sov_for_project(project_id: Optional[int]) -> list:
+def _period_to_date(toc_items: list) -> Optional["date"]:
+    """PERIOD TO for the G702/G703 (U-791): the latest source date among the packet's
+    TOC rows — the documents this draw bills. The Builder's Fee is a Manual line with
+    no document, so it is never a TOC row and never sets the date. Returns a date, or
+    None when no row carries a parseable date (the caller falls back to the invoice
+    date). Mirrors the tracker's G702 J10 / G703 J5 formula."""
+    from datetime import datetime
+    latest = None
+    for r in toc_items or []:
+        try:
+            d = datetime.strptime(r.get("source_date") or "", "%m-%d-%Y").date()
+        except ValueError:
+            continue
+        if latest is None or d > latest:
+            latest = d
+    return latest
+
+
+def _build_aia_pages(invoice, draws: list, toc_items: list, to_name: str,
+                     to_lines: list, public_id: str) -> tuple:
+    """(g702_bytes, g703_bytes) for the packet, or (None, None) when the budget
+    lookup fails. The caller has already checked that the invoice is a coded draw
+    and isolates exceptions.
+
+    U-791: a project with no budget (``_budget_sov_for_project`` -> []) still gets
+    both pages, with the contract-dependent fields blank; PERIOD TO is the latest
+    source-document date on the draw (``_period_to_date``), else the invoice date.
+    """
+    from entities.invoice.business.g703 import build_g703_pdf, build_g703_rows, normalize_draw_date
+    from entities.invoice.business.g702 import build_g702_lines, build_g702_pdf
+    from entities.project.business.service import ProjectService
+
+    # [] = no budget: the pages still render, contract fields blank (U-791).
+    # None = the lookup failed: skip rather than mislabel a budgeted project.
+    sov = _budget_sov_for_project(invoice.project_id)
+    if sov is None:
+        logger.warning(f"Packet [{public_id}]: budget lookup failed — skipping G702/G703")
+        return None, None
+    current_date = normalize_draw_date(invoice.invoice_date)
+    rows, grand = build_g703_rows(sov, draws, invoice.invoice_number or "",
+                                  current_date=current_date)
+    date_str = _format_invoice_date(invoice.invoice_date)
+    period_to_str = _format_invoice_date(
+        _period_to_date(toc_items) or invoice.invoice_date)
+    g703_bytes = build_g703_pdf(
+        {
+            "application_no": invoice.invoice_number or "",
+            "application_date": date_str,
+            "period_to": period_to_str,
+            "architect_project_no": "N/A",
+        },
+        rows,
+        grand,
+    )
+    project = ProjectService().read_by_id(invoice.project_id) if invoice.project_id else None
+    g702_bytes = build_g702_pdf(
+        {
+            # TO OWNER = the project's Customer; Architect + Contract Date
+            # are left blank until the minimal Contract fields are stored.
+            "owner_lines": ([to_name] if to_name else []) + list(to_lines),
+            "project": project.name if project else "",
+            "application_no": invoice.invoice_number or "",
+            "period_to": period_to_str,
+            # The AIA G702 contractor block is name + mailing address only
+            # (no phone/email — those belong on the Draw Request/Trend).
+            "contractor_lines": _CONTRACTOR_BLOCK[:3],
+            "architect_lines": [],
+            "contract_for": "",
+            "contract_date": "",
+        },
+        build_g702_lines(grand),
+    )
+    return g702_bytes, g703_bytes
+
+
+def _budget_sov_for_project(project_id: Optional[int]) -> Optional[list]:
     """The project's schedule of values (G703 col C) from the LIVE Budget: one
-    entry per cost code {cost_code_number, cost_code_name, scheduled_value}. Returns
-    [] when the project has no budget or the lookup fails (failure-isolated — the
-    packet still generates without the G703 page)."""
+    entry per cost code {cost_code_number, cost_code_name, scheduled_value}.
+
+    Returns [] when the project has no budget — the G702/G703 still render, with the
+    contract-dependent fields blank (U-791). Returns None when the lookup FAILS, so a
+    transient error skips the AIA pages instead of silently printing a no-budget
+    version of a budgeted project (failure-isolated — the packet still generates)."""
     if not project_id:
         return []
     try:
@@ -321,7 +399,7 @@ def _budget_sov_for_project(project_id: Optional[int]) -> list:
 
         project = ProjectService().read_by_id(project_id)
         if not project:
-            return []
+            return None
         budget = BudgetService().read_by_project_public_id(project.public_id)
         if not budget:
             return []
@@ -337,7 +415,7 @@ def _budget_sov_for_project(project_id: Optional[int]) -> list:
         ]
     except Exception:
         logger.warning(f"Budget SoV lookup failed for project {project_id}", exc_info=True)
-        return []
+        return None
 
 
 def _consolidate_basic_toc_rows(rows: list[dict]) -> list[dict]:
@@ -865,44 +943,8 @@ def _generate_invoice_packet(public_id: str):
         logger.info(f"Packet [{public_id}]: current invoice not a coded draw — skipping G702/G703")
     if draws and current_is_coded_draw:
         try:
-            from entities.invoice.business.g703 import build_g703_pdf, build_g703_rows, normalize_draw_date
-            from entities.invoice.business.g702 import build_g702_lines, build_g702_pdf
-            from entities.project.business.service import ProjectService
-
-            sov = _budget_sov_for_project(invoice.project_id)
-            if sov:
-                current_date = normalize_draw_date(invoice.invoice_date)
-                rows, grand = build_g703_rows(sov, draws, invoice.invoice_number or "",
-                                              current_date=current_date)
-                date_str = _format_invoice_date(invoice.invoice_date)
-                g703_bytes = build_g703_pdf(
-                    {
-                        "application_no": invoice.invoice_number or "",
-                        "application_date": date_str,
-                        "period_to": date_str,
-                        "architect_project_no": "N/A",
-                    },
-                    rows,
-                    grand,
-                )
-                project = ProjectService().read_by_id(invoice.project_id) if invoice.project_id else None
-                g702_bytes = build_g702_pdf(
-                    {
-                        # TO OWNER = the project's Customer; Architect + Contract Date
-                        # are left blank until the minimal Contract fields are stored.
-                        "owner_lines": ([to_name] if to_name else []) + list(to_lines),
-                        "project": project.name if project else "",
-                        "application_no": invoice.invoice_number or "",
-                        "period_to": date_str,
-                        # The AIA G702 contractor block is name + mailing address only
-                        # (no phone/email — those belong on the Draw Request/Trend).
-                        "contractor_lines": _CONTRACTOR_BLOCK[:3],
-                        "architect_lines": [],
-                        "contract_for": "",
-                        "contract_date": "",
-                    },
-                    build_g702_lines(grand),
-                )
+            g702_bytes, g703_bytes = _build_aia_pages(
+                invoice, draws, toc_items, to_name, to_lines, public_id)
         except Exception:
             logger.exception(f"Packet [{public_id}]: G702/G703 generation failed — continuing without it")
 

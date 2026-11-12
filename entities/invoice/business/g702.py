@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import io
 from decimal import Decimal
-from typing import Any
+from typing import Any, Optional
 
 from entities.invoice.business.cover import _format_money
 from entities.invoice.business.packet_render import (
@@ -30,6 +30,10 @@ def _dec(value: Any) -> Decimal:
     return Decimal(str(value))
 
 
+def _dec_or_none(value: Any) -> Optional[Decimal]:
+    return None if value is None else _dec(value)
+
+
 def _money(value: Any) -> str:
     return _format_money(_dec(value))
 
@@ -45,10 +49,16 @@ def build_g702_lines(grand: dict, retainage_rate: Any = Decimal("0"),
     override L1 via ``original_contract_sum`` once the Budget models a real original
     baseline. Retainage defaults to 0. Identities: L3 = L1+L2; L6 = L4-L5;
     L8 = L6-L7 (= grand This-Period when retainage is 0); L9 = L3-L6.
+
+    No contract sum (U-791): when ``grand["scheduled"]`` is None (the project has no
+    schedule of values) and no ``original_contract_sum`` is given, L1, L3 and L9 are
+    None and render blank — a $0 contract would print a negative balance to finish.
+    L4-L8 (the payment lines) are unaffected.
     """
-    l1 = _dec(original_contract_sum if original_contract_sum is not None else grand.get("scheduled"))
     l2 = Decimal("0")
-    l3 = l1 + l2
+    contract = original_contract_sum if original_contract_sum is not None else grand.get("scheduled")
+    l1 = _dec_or_none(contract)
+    l3 = l1 + l2 if l1 is not None else None
     l4 = _dec(grand.get("total_to_date"))
     rate = _dec(retainage_rate)
     l5 = (l4 * rate).quantize(Decimal("0.01")) if rate else Decimal("0")
@@ -59,7 +69,7 @@ def build_g702_lines(grand: dict, retainage_rate: Any = Decimal("0"),
     prev = _dec(grand.get("prev"))
     l7 = prev - (prev * rate).quantize(Decimal("0.01")) if rate else prev
     l8 = l6 - l7
-    l9 = l3 - l6
+    l9 = l3 - l6 if l3 is not None else None
     return {
         "l1_original_contract_sum": l1,
         "l2_net_change_orders": l2,
@@ -127,15 +137,16 @@ def build_g702_pdf(header: dict, lines: dict) -> bytes:
     contract_for = header.get("contract_for") or ""
     contract_date = header.get("contract_date") or ""
 
-    l1 = _dec(lines.get("l1_original_contract_sum"))
+    # L1/L3/L9 stay None when there is no contract sum (U-791) and render blank.
+    l1 = _dec_or_none(lines.get("l1_original_contract_sum"))
     l2 = _dec(lines.get("l2_net_change_orders"))
-    l3 = _dec(lines.get("l3_contract_sum_to_date"))
+    l3 = _dec_or_none(lines.get("l3_contract_sum_to_date"))
     l4 = _dec(lines.get("l4_total_completed_stored"))
     l5 = _dec(lines.get("l5_retainage"))
     l6 = _dec(lines.get("l6_total_earned_less_retainage"))
     l7 = _dec(lines.get("l7_less_previous_certificates"))
     l8 = _dec(lines.get("l8_current_payment_due"))
-    l9 = _dec(lines.get("l9_balance_to_finish"))
+    l9 = _dec_or_none(lines.get("l9_balance_to_finish"))
     co_add = _dec(lines.get("co_additions"))
     co_ded = _dec(lines.get("co_deductions"))
     co_net = co_add - co_ded
@@ -240,9 +251,12 @@ def build_g702_pdf(header: dict, lines: dict) -> bytes:
         "Application is made for payment, as shown below, in connection with the "
         "Contract. Continuation Sheet, AIA Document G703, is attached.", body)
 
-    def lrow(label: str, value: Decimal, style=ledger_label, vstyle=value_style):
+    # None renders as an empty cell, not the house "-" placeholder (money_number(None)):
+    # on an AIA form a dash reads as accounting-format $0, and a missing contract sum
+    # is not a $0 one (U-791).
+    def lrow(label: str, value: Optional[Decimal], style=ledger_label, vstyle=value_style):
         return [Paragraph(label, style), Paragraph("$", dollar_style),
-                Paragraph(money_number(value), vstyle)]
+                Paragraph("" if value is None else money_number(value), vstyle)]
 
     ledger_rows = [
         [Paragraph("CONTRACTOR'S APPLICATION FOR PAYMENT", section_hdr), "", ""],

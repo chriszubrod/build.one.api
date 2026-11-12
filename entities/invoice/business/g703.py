@@ -38,6 +38,12 @@ def _money(value: Any) -> str:
     return _format_money(_dec(value))
 
 
+def _money_or_blank(value: Any) -> str:
+    """Blank for None — the no-schedule columns (C, H) render empty (U-791). Not the
+    house "-" placeholder: on an AIA form a dash reads as accounting-format $0."""
+    return "" if value is None else _money(value)
+
+
 def _fmt_pct(total_to_date: Decimal, scheduled: Decimal) -> str:
     """% complete (G/C). $0 scheduled → '0.00%' (matches the AIA form for $0-SoV lines)."""
     if scheduled == 0:
@@ -88,7 +94,13 @@ def build_g703_rows(sov: list, draws: list, current_label: str,
     code not in the budget (over-budget → C=$0, negative Balance). The Builder's Fee
     line (``fee_item_number``) is a synthetic row: C from the budget fee line, D = sum
     of prior draws' computed fees, E = the current draw's fee.
+
+    No schedule of values (U-791): an empty ``sov`` means the project has no budget.
+    The rows then come from the draws alone, and C (Scheduled Value), % and H
+    (Balance to Finish) are None on every row and on the grand total — they render
+    blank rather than as $0 / a negative balance. D, E and G are unaffected.
     """
+    has_schedule = bool(sov)
     current_date = normalize_draw_date(current_date) if current_date else None
     label_matches = [i for i, d in enumerate(draws) if d.get("label") == current_label]
     if not label_matches:
@@ -144,8 +156,10 @@ def build_g703_rows(sov: list, draws: list, current_label: str,
         G = D + E
         return {
             "item_no": num, "description": name or "",
-            "scheduled": C, "prev": D, "this_period": E, "stored": Decimal("0"),
-            "total_to_date": G, "pct": _fmt_pct(G, C), "balance": C - G,
+            "scheduled": C if has_schedule else None, "prev": D, "this_period": E,
+            "stored": Decimal("0"), "total_to_date": G,
+            "pct": _fmt_pct(G, C) if has_schedule else None,
+            "balance": C - G if has_schedule else None,
             "retainage": Decimal("0"),
         }
 
@@ -163,16 +177,19 @@ def build_g703_rows(sov: list, draws: list, current_label: str,
     rows.append(_make_row(fee_number or fee_item_number, fee_C, fee_D, fee_E,
                           names.get(fee_number, "Builder's Fee")))
 
-    grand_scheduled = sum((r["scheduled"] for r in rows), Decimal("0"))
     grand_prev = sum((r["prev"] for r in rows), Decimal("0"))
     grand_this = sum((r["this_period"] for r in rows), Decimal("0"))
     grand_total = grand_prev + grand_this
     grand = {
-        "scheduled": grand_scheduled, "prev": grand_prev, "this_period": grand_this,
+        "scheduled": None, "prev": grand_prev, "this_period": grand_this,
         "stored": Decimal("0"), "total_to_date": grand_total,
-        "pct": _fmt_pct(grand_total, grand_scheduled),
-        "balance": grand_scheduled - grand_total, "retainage": Decimal("0"),
+        "pct": None, "balance": None, "retainage": Decimal("0"),
     }
+    if has_schedule:
+        grand_scheduled = sum((r["scheduled"] for r in rows), Decimal("0"))
+        grand.update(scheduled=grand_scheduled,
+                     pct=_fmt_pct(grand_total, grand_scheduled),
+                     balance=grand_scheduled - grand_total)
     return rows, grand
 
 
@@ -316,13 +333,13 @@ def build_g703_pdf(header: dict, rows: list[dict], grand: dict) -> bytes:
         table_data.append([
             P(format_cc_number(row.get("item_no"), 4), wrap_style),
             P(row.get("description") or "", wrap_style),
-            P(_money(row["scheduled"]), money_style),
+            P(_money_or_blank(row["scheduled"]), money_style),
             P(_money(row["prev"]), money_style),
             P(_money(row["this_period"]), money_style),
             P(_money(row["stored"]), money_style),
             P(_money(row["total_to_date"]), money_style),
             P(row.get("pct") or "", money_style),
-            P(_money(row["balance"]), money_style),
+            P(_money_or_blank(row["balance"]), money_style),
             P(_money(row["retainage"]), money_style),
         ])
 
@@ -330,13 +347,13 @@ def build_g703_pdf(header: dict, rows: list[dict], grand: dict) -> bytes:
     table_data.append([
         "",
         P("GRAND TOTALS", bold_left),
-        P(_money(grand["scheduled"]), bold_right),
+        P(_money_or_blank(grand["scheduled"]), bold_right),
         P(_money(grand["prev"]), bold_right),
         P(_money(grand["this_period"]), bold_right),
         P(_money(grand["stored"]), bold_right),
         P(_money(grand["total_to_date"]), bold_right),
         P(grand.get("pct") or "", bold_right),
-        P(_money(grand["balance"]), bold_right),
+        P(_money_or_blank(grand["balance"]), bold_right),
         P(_money(grand["retainage"]), bold_right),
     ])
 

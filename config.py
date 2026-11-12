@@ -208,10 +208,16 @@ class Settings(BaseSettings):
     ramp_chaser_mode: str = "off"
 
     # Standing CC on every chaser digest. COMMA-SEPARATED — more than one address
-    # may stand on it (the owner and the invoice mailbox both do). When unset, no CC.
-    # The cardholder is never CC'd onto their own digest even if listed here.
-    # NB the invoice mailbox is also the /me SENDER, so listing it is a self-CC:
-    # deliberate, so the chase lands in the Inbox and not only in Sent Items.
+    # may stand on it. When unset, no CC. The cardholder is never CC'd onto their
+    # own digest even if listed here.
+    # ⚠️ The live value is the OWNER ALONE (`austin@`) as of 2026-11-12, when
+    # U-549's App Service settings were finally applied — the invoice mailbox moved
+    # to ramp_chaser_bcc_email below. This comment previously said both stood on the
+    # CC, which was true of the live config but is no longer.
+    # The invoice mailbox is also the /me SENDER, so putting it on ANY recipient
+    # line is a deliberate self-copy — that is what makes the chase land in the
+    # Inbox and not only in Sent Items. A BCC to self does that just as well,
+    # without showing an internal archive address to the person being chased.
     ramp_chaser_cc_email: Optional[str] = None
 
     # Standing BCC on every chaser digest — the archive copy, COMMA-SEPARATED.

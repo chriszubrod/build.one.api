@@ -7601,3 +7601,9 @@ because `sys.parameters.has_default_value` is always 0 for a T-SQL procedure and
   referenced by other records and cannot be deleted") via `classify_constraint_violation`'s
   `REFERENCE constraint` branch — never a 500.
 
+✅ **DECIDED by Chris 2026-11-12: all three `FK_VendorAddress_*` stay `ON DELETE NO ACTION`.** Refusing a
+delete that would orphan is the wanted behaviour; cascade was offered and declined. This matches the standing
+convention for mapping tables already stated in `scripts/migrations/u225_qbo_mapping_fk_gaps.sql`
+("deliberately NOT the Purchase-family precedent, which CASCADEs on the qbo-staging side"). ⛔ Do not "fix" a
+422 from `DeleteAddressTypeById` by adding a cascade — the 422 is the feature.
+

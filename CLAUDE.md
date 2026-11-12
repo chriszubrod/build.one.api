@@ -118,11 +118,11 @@ Read the matching file before working an area.
 
 **External integrations** → [detail](docs/conventions/integrations-hardening.md)
 - QBO, MS and Box share one hardened shape (`base/` package, typed retryable errors, applock, correlation ids). **A new integration must follow it.**
-- ⛔ **Every external write enqueues an outbox row — never an inline API call.** Completion returns 202; side effects drain. Each integration drains on its own 30s timer so one slow drain cannot head-of-line-block another.
+- ⛔ **Every external write enqueues an outbox row — never an inline API call.** Completion returns 202; side effects drain. Each integration drains on its own 60s timer so one slow drain cannot head-of-line-block another.
 - Outbox workers declare system intent via `system_authz()` from `shared/authz/context.py` — never a hand-rolled save/set/restore (that pattern shipped a bug). Without it every drain dead-letters as `EntityNotAccessibleError`.
 - Write gates default-deny: `ALLOW_QBO_WRITES` / `ALLOW_MS_WRITES` / `ALLOW_BOX_WRITES`. A fresh checkout cannot push to prod.
 - Tokens are encrypted at rest (`ENCRYPTION_KEY`). 5 failed attempts → dead-letter → `ReconciliationIssue`.
-- ⚠️ **MS outbox has no human-cancel window** (30s drain) — audit ids *before* enqueuing; recovery is row-by-row.
+- ⚠️ **MS outbox has no human-cancel window** (60s drain) — audit ids *before* enqueuing; recovery is row-by-row.
 - Every external failure mode gets a `docs/runbooks/*.md` with Symptom / Severity / Diagnosis / Recovery / Verification / Prevention.
 
 **Scheduler & admin endpoints** → [detail](docs/conventions/scheduler-and-admin-endpoints.md)

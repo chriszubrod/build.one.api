@@ -1,5 +1,36 @@
 # Session Notes
 
+## Repo-wide base-SQL drift sweep — 15 drifted objects, and the batch-trap count was wrong (2026-11-12)
+
+Extended the invoice drift check to every non-migration `*/sql/**/*.sql` in the repo. **212 files, 1,234
+object definitions, 1,219 identical, 15 drifted, 0 missing, 141 of 152 files clean.** `integrations/`
+(qbo/box/ms/sync) and `intelligence/` are entirely clean. Full per-file verdicts and the bookings are in
+`TODO.md` § "Base-SQL drift sweep against prod".
+
+- **Two of my own passes were wrong before the result was right.** The first sweep took one object per GO
+  batch, so `DeleteAddressTypeById` was never compared — it is drifted. The first scope was
+  `entities/` + `shared/` only, which silently skipped `core/`, `integrations/` and `intelligence/`; widening
+  it added the two `core/workflow*` drifts. Both were caught by cross-checking against things the repo already
+  knew (a multi-CREATE batch detector; the TODO's own reference to `integrations/sync/sql/dbo.sync.sql`).
+- **Three `Create*` sprocs are STALE against prod on `@CreatedByUserId`** — `CreateProjectAddress`,
+  `CreateWorkflow`, `CreateWorkflowEvent`. Only the first is `CREATE OR ALTER`, so only the first would
+  actually overwrite prod; the other two are bare `CREATE` and would 2714 into a full-file rollback. An
+  accident of syntax is the only thing standing between that file and the U-037 regression.
+- **The U-048/U-053 batch trap is at least 8 instances, not 3** — and that section had already written
+  "the sweep that produced 'exactly two' therefore has a false-negative and is worth re-running". Six more
+  named guards, **every named object verified ABSENT from prod**: four `IX_*_PublicId`, `IX_VendorType_PublicId`
+  and **`FK_VendorAddress_Vendor`** — a foreign key the schema intends that does not exist, so
+  `VendorAddress.VendorId` carries no referential guarantee. The guarded DDL is not missing; it is executing
+  inside a stored-procedure body on every call.
+- **`dbo.address_type.sql` cannot be applied at all** — two `CREATE PROCEDURE`s in one batch (error 111), the
+  only such file in the repo.
+- **U-424 is still undeployed** and applying `dbo.time_entry.sql` alone still 8145s every iOS submit. The
+  2026-11-06 reading has not moved; the pair ships together or not at all.
+- **Controls, so the 1,219 greens mean something:** planted single-token mutants in three sprocs the sweep
+  called clean each went RED. A comment-only mutant stayed green — correct, since the normalizer ignores
+  comments; a bad mutant, not a blind comparator. Read-only throughout: `sys.sql_modules`, `sys.indexes`,
+  `sys.foreign_keys`, `sys.objects`, `OBJECT_DEFINITION`.
+
 ## Bulk prod deploy — api + mcp, and a deploy recipe that could not run (2026-11-12)
 
 Deployed api `f7008898` (ACR run `caf2`, digest `3cb53dbc`) and mcp `a9975637` (run `caf3`, `da0e95dd`),

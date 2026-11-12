@@ -7442,3 +7442,78 @@ moves, SyncToken does not); delete-reconcile only ran on full pulls, which never
   (no prefill, no auto-apply) is the only use the backtest supports; needs its own Gate 1.
 - **Backtest helper dedupe:** `scripts/u697_vector_similar_bills_backtest.sign_test_p` is copied into
   `entities/coding_suggestion/business/decision_model/stats.py` (U-698); once U-698 lands, make u697 import it.
+
+## Base-SQL drift sweep against prod — 15 drifted objects in 11 files (measured 2026-11-12)
+
+Every non-migration `*/sql/**/*.sql` file in the repo (212 files, `dev/`, `scripts/`, `tests*/` excluded)
+parsed into GO batches, every `CREATE [OR ALTER] PROCEDURE|FUNCTION|VIEW|TRIGGER` in each batch extracted
+**per object** (not one per batch — the first pass missed `DeleteAddressTypeById` that way), compared against
+prod `sys.sql_modules.definition` normalized per `reference_base_vs_live_sproc_diff`: both sides cut at the
+CREATE line, comments stripped, whitespace collapsed, `CREATE OR ALTER` → `CREATE`.
+
+**1,234 object definitions · 1,219 identical · 15 drifted · 0 missing from prod · 141 of 152 files clean.**
+All of `integrations/` (qbo/box/ms/sync) and `intelligence/` are clean. **Non-vacuity proven first:** planted
+single-token mutants in `UpdateBillById`, `UpdateVendorById`, `ReadUserById` (all reported clean) each went
+RED. A comment-only mutant stayed green, correctly — the normalizer is built to ignore comments; that is a bad
+mutant, not a blind comparator.
+
+### A. Prod is AHEAD — applying the file would REGRESS prod (the U-037 class)
+
+- [ ] **`CreateProjectAddress` (`entities/project_address/sql/dbo.project_address.sql`) — `CREATE OR ALTER`,
+  so an apply really does overwrite prod.** Prod takes `@CreatedByUserId BIGINT = NULL` and writes the column;
+  the file has neither. Applying this file silently drops the param and stops populating
+  `ProjectAddress.CreatedByUserId`. This is the gap2 campaign (§ `TODO.md` "Base SQL files are not
+  self-contained") reaching the **sproc signature**, not just the `CREATE TABLE` — U-345 closed only the
+  table-column half, and this instance was in nobody's list.
+- [ ] **`CreateWorkflow` (`core/workflow/sql/dbo.workflow.sql`) and `CreateWorkflowEvent`
+  (`core/workflow_event/sql/dbo.workflow_event.sql`) — same `@CreatedByUserId` staleness.** Both are bare
+  `CREATE PROCEDURE`, so an apply hits 2714 and `run_sql.py` rolls the whole file back — the regression is
+  currently unreachable, and that accident is the only thing protecting it. Fix with the project_address one.
+- [ ] **`dbo.email_message_recipients.sql` would revert FOUR live sprocs.** Already booked as **U-669** (P3,
+  stale duplicate); this sweep measures the consequence. All four — `ReadEmailMessageById`,
+  `ReadEmailMessageByPublicId`, `ReadEmailMessageByGraphMessageId`, `UpsertEmailMessage` — are also defined in
+  `dbo.email_message.sql`, where all four are **byte-identical to prod**. The duplicate's copies are ancient:
+  they select retired `ToRecipients`/`CcRecipients`, omit `Folder` + the four `AgentClassification*` columns,
+  and `UpsertEmailMessage` matches on `GraphMessageId` instead of prod's `(InternetMessageId, Folder)` and
+  drops `@CreatedByUserId`/`@DefaultProcessingStatus`. Raise from P3 — "stale duplicate" undersells "applying
+  it breaks email intake".
+
+### B. The file is ahead of prod — real undeployed change
+
+- [ ] **`UpdateContractLaborAggregates` + `AggregateTimeEntryOnSubmit` (U-424, pushed 2026-09-08) are STILL
+  undeployed** — confirmed again today (sim 0.4066 / 0.9893). The file's `AggregateTimeEntryOnSubmit` calls
+  `UpdateContractLaborAggregates @Id, @ReturnRow = 0`; prod's sproc takes only `@Id`. **Applying
+  `dbo.time_entry.sql` alone still 8145s every iOS submit** — the hazard `feedback_live_image_may_be_off_trunk`
+  recorded on 2026-11-06 has not moved. Deploy the pair together or not at all.
+- [ ] **`ReadProjectAddressByProjectId` — the file adds `ORDER BY [Id] ASC`, prod has no ORDER BY.** Benign,
+  but it rides along with any apply of that file, so land it deliberately (same shape as the still-open
+  `ReadRoleModules` ORDER BY item from U-048).
+
+### C. The batch trap (U-048/U-053) — the count was THREE, it is at least EIGHT
+
+That section says of its own audit: *"The sweep that produced 'exactly two' therefore has a false-negative and
+is worth re-running."* Re-run. Beyond `dbo.rolemodule.sql` (fixed), `dbo.sync.sql` and `dbo.module.sql`, the
+trailing-DDL-inside-a-sproc-body shape appears with a **named** guard in six more places, and **every named
+object is ABSENT from prod** — i.e. the DDL never ran as DDL, it is executing inside a stored procedure body:
+
+- [ ] `IX_Address_PublicId` (`dbo.address.sql`) · `IX_AddressType_PublicId` (`dbo.address_type.sql`) ·
+  `IX_Customer_PublicId` (`dbo.customer.sql`) · `IX_Role_PublicId` (`dbo.role.sql`) ·
+  `IX_VendorType_PublicId` (`dbo.vendor_type.sql`) · **`FK_VendorAddress_Vendor`** (`dbo.vendor_address.sql`)
+  — all verified absent 2026-11-12. `IX_Module_PublicId` and `IX_Attachment_PublicId` are absent too.
+  **`FK_VendorAddress_Vendor` is the one that matters**: a foreign key the schema intends does not exist, so
+  `VendorAddress.VendorId` has no referential guarantee. `FK_VendorAddress_Address` is also absent even though
+  its batch has a correct `GO` — that file simply has not been applied since the FK blocks were added.
+- [ ] **`dbo.address_type.sql` cannot be applied at all.** `UpdateAddressTypeById` and `DeleteAddressTypeById`
+  sit in ONE batch with no `GO` between them — the loud variant of the trap (error 111, "CREATE PROCEDURE must
+  be the first statement in a query batch"), so `run_sql.py` would roll the whole file back. The only file in
+  the repo with two CREATE objects in one batch.
+- The mechanical guard this section has wanted since U-051 (`u054_batch_trap_test_HANDOFF.py`) would catch the
+  whole class. It must land **after** the fixes, not before, or the suite goes red on a known-open defect.
+
+### D. Equivalent, no action
+
+- `ConfirmAttachmentCategorization` (`entities/attachment/sql/add_categorization_fields.sql`, an ancillary
+  one-off, not a base file): the file wraps each `IF`/`ELSE` arm in `BEGIN…END`, prod does not. Single
+  statement per arm — semantically identical.
+- `DeleteModuleById` is the already-documented U-053 case: fixed in the file (the `GO` and its comment are
+  there), prod still carries the swallowed index block in the sproc body. Unchanged by this sweep.

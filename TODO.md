@@ -2,6 +2,13 @@
 
 Carry-over items from sessions. Check off as done; prune anything stale.
 
+> **Closed sections live in [`docs/archive/2026/TODO-closed.md`](docs/archive/2026/TODO-closed.md)**
+> — cut there 2026-11-11 (U-788) once their work was fully closed. Nothing there needs action;
+> grep it for history. ⚠️ Do **not** archive a section by counting checkboxes: a heading saying
+> SHIPPED/RESOLVED over an open body, and prose-style open items with no checkboxes at all, are
+> both common here. Read the body.
+
+
 ### 🚪 U-624a SHIPPED 2026-11-05 `eff795c8` — one TimeEntry header per (worker, day): `CreateTimeEntry` is find-or-create under an applock — NOT DEPLOYED, prod SQL apply = Gate 2 (Chris)
 
 Design: `build.one.team/engineering/designs/u624-one-header-per-worker-day.md`. Prod census 11-05: 22 (worker, work_date) groups got more than one header
@@ -1738,16 +1745,6 @@ same date. Everything below was confirmed against source and is open. Severity i
   `build.one.api` `b6b69fc` and `build.one.web` `67f8f06`, both on `claude/expense-entity-review-sx4baz`.
   Record both shas on the row so they trace back; no amend/rewrite of the pushed commits.
 
-## ~~U-549 C1 — `update_draft` guard sproc never applied~~ — RESOLVED 2026-09-29
-
-`dbo.CountMsOutboxByEntityAndKind` **is live**, verified against `sys.objects` at U-567's Step 0. The
-`update_draft` Kind is reachable; `enqueue_update_draft` no longer fails closed on a missing guard.
-
-Kept as a record because it was rediscovered the hard way twice: the symptom is
-`ms.outbox.update_draft.idempotency_guard_failed_enqueue_refused` + `return None`, which looks like a bug
-and is actually a correct fail-closed on an unverifiable idempotency guard. If it ever recurs, the fix is
-to apply `integrations/ms/outbox/sql/ms.outbox.sql` — purely additive, `CREATE OR ALTER`, idempotent.
-
 ## U-549 Phase A residuals — booked at Pass 2, deliberately not fixed (2026-09-27)
 
 Found by the Pass-2 efficiency and altitude agents. Each is a **behavior change**, which is why a
@@ -1776,30 +1773,6 @@ behavior-preserving quality pass could not take them. Design: `docs/design/u549-
   not sending. `LastDraftedAt` vs `LastNotifiedAt` (design §5) makes the gap measurable: **if drafts
   sit unsent, the bottleneck simply moved** and enabling `send` becomes the conversation. Do not
   enable it on a hunch — read the two columns first.
-
-## U-503d/e residuals — the quantity widening stopped short of three doors (booked 2026-09-25)
-
-Shipped: `34a4ccfa` `06108842` `27c3da22` `281e956e` (bill) and `b2a6d018` (expense). The
-column, sprocs, read path and primary REST endpoint now agree on `Decimal` for BOTH
-entities. These three did NOT move, so a fractional quantity still 422s on them — and
-now that everything around them agrees, they LOOK intentional. That is why they are here.
-
-- [x] 🟡 **`line_quantity: Optional[int]` on both parents.** `entities/bill/api/schemas.py:70` — closed by U-078
-  + `business/service.py:209`, and `entities/expense/api/schemas.py:67` + `business/service.py:152`.
-  These are the one-shot "create the parent with an inline line" paths; they reject 5.25
-  before the fixed line-item create is ever reached. Verified live on expense:
-  `ExpenseCreate(..., line_quantity=Decimal("5.25"))` still raises.
-- [x] 🟡 **Agent tool surfaces still `int`.** `entities/bill/intelligence/tools.py:290,557,659` — closed by U-078
-  and `entities/expense/intelligence/tools.py:257,472,552`. They POST to the endpoints that
-  were just widened, so **an agent still cannot write a fractional quantity on either
-  entity.** Fails loudly (Pydantic v2 rejects 2.5→int rather than truncating), so it is a
-  capability gap, not data loss. Per `feedback_agent_tools_are_a_consumer_surface`, a
-  web+mcp grep would have missed these entirely.
-- [x] 🟢 **Truthy guard on the QBO bill push.** `integrations/intuit/qbo/bill/connector/bill/business/service.py:1152` — closed by U-078
-  — `qty = Decimal(str(line_item.quantity)) if line_item.quantity else None` drops a
-  legitimate `Decimal("0")` to None. **Metadata only, NOT money**: `amount` is sent
-  explicitly and the `qty*unit_price` fallback would have produced 0 anyway. Confirmed the
-  only remaining truthy quantity guard in non-test code. Fold into the next touch of that file.
 
 ## U-503f — two silent-advance paths and a void-detector blind spot (booked 2026-09-25)
 
@@ -1954,12 +1927,6 @@ verified. All three inherited from bill, all P3.
 - [x] ✅ **SUPERSEDED by U-754 (2026-11-02): the two attachment builders are now ONE `_build_attachment_payload(spec=…)`** (Chris chose consolidation; the paired mutations in tests/test_u520_* still exercise BOTH specs). Original rejection kept for history: **Considered and REJECTED: extracting a shared helper from `_build_attachment_payload` (Bill/BLA) and `_build_expense_attachment_payload` (Expense/ELIA).** They are ~25 near-identical lines differing in exactly four things: the child-link method (`read_by_bill_line_item_id` vs `read_by_expense_line_item_id`), the default filename (`bill.pdf` vs `expense.pdf`), the log key (`bill_public_id=` vs `expense_public_id=`), and the parameter names. A behaviour-preserving extraction needs a `resolve_link` callable + `default_filename` + `log_key` + `entity_public_id` — roughly six parameters of indirection to remove one copy of twenty-five lines, in a P0-surface file, paying greppability for it. **The reason it is safe to leave duplicated is specific and load-bearing: every guard in these two functions is mutation-covered IN PAIRS** — m1/m5 (enqueue must not download), m10/m14 (first-PDF-wins ordering), m15/m15b (skip an attachment with no `blob_url`), m4 (PDF-only guard, both). A change applied to one twin and not the other goes RED. ⚠️ **If anyone deletes one of a pair, the argument for leaving this duplicated collapses** — either restore the pair or do the extraction. The divergence risk is real and already nearly materialised: U-520's first build brief covered only the Bill twin, and mutation m5 exists precisely because the Expense twin was almost left behind.
 - [ ] 🟢 **Enqueue-side N+1 is NOT worth its own unit.** `_build_attachment_payload` still walks line items with `read_by_bill_line_item_id()` then `read_by_id()` — two DB round trips per line item until one has an attachment. U-520 moved the blob download, the base64 and the multi-MB `ms.Outbox.Payload` write off the request path but **left this loop in place** (the EM's Gate-1 note claiming the N+1 also moved was over-stated). In practice this is 2 calls, not N, because this codebase writes **one BLI per vendor invoice** ([[feedback_one_bli_per_vendor_invoice]]). Fold it into any future work on that function rather than booking a unit for it; a batch `read_by_bill_id` on the BLA service would be the shape if the one-BLI convention ever changes.
 - ✅ **Altitude reviewed and the existing decision upheld:** the payload stores `blob_url` rather than an attachment identifier. Resolving from an id server-side at drain was considered and rejected correctly — the stored `blob_url` is *itself* client-settable at `/create/attachment`, so re-resolution returns the same attacker-chosen value. The trust boundary is the **write**, not the drain. See the security booking directly below.
-
-## ✅ CLOSED by U-528 (2026-09-24) — client-supplied `blob_url` exfil path
-
-> **FIXED.** `POST /create/attachment` deleted (zero callers, verified across api incl. `entities/*/intelligence/`, web, mcp, ios, scheduler); `AttachmentCreate` removed; `blob_url` dropped from `AttachmentUpdate` and no longer forwarded by `PUT /update/attachment/{public_id}`. **`AttachmentService` deliberately unchanged** — `/upload/attachment`, both folder processors, the QBO attachable connector, the Box vendor service, the email bridge and `BillService._rename_invoice_blob_on_complete` all pass SERVER-DERIVED values and would break if the parameter were removed. The trust boundary is the request-body binding, not the parameter ([[feedback_trust_boundary_is_the_body_binding]]).
->
-> **Closure verified by probe, not grep:** the live OpenAPI spec was built and every `$ref`/`allOf`/`anyOf` in every request body resolved; the only request-side blob field left in the entire API is a boolean (`upload_to_blob` on the MS linked-mail route). All nine sibling `*AttachmentCreate` schemas refute — they are link-table schemas carrying public_ids, none declares `blob_url`. Every remaining writer of `Attachment.blob_url` traces to `storage.upload_file(...)`.
 
 ## U-520 spawned follow-up — NEVER BOOKED UNTIL NOW (found 2026-09-23, booked 2026-09-24)
 
@@ -2583,7 +2550,7 @@ manual date-window runs), 8 never staged. A fresh `vendorcredit` watermark prove
   commits behind master). Private formatter deleted; the client calls the shared helper. Tests:
   `tests/test_u671_vendorcredit_query_offset.py` + an AST guard in `tests/test_qbo_format_datetime_for_qbo_query.py`
   (no QBO entity client may define its own formatter; incremental clients must call the shared one). Mutations
-  M1-M3 RED; suite 6,880 green. Same bug was finding #7 (P1) in `docs/qbo-pull-sync-audit-2026-06-18.md` and was
+  M1-M3 RED; suite 6,880 green. Same bug was finding #7 (P1) in `docs/archive/2026/qbo-pull-sync-audit-2026-06-18.md` and was
   never fixed. Pass-3 note: `POST /sync/qbo-vendorcredits` used to 400 on a garbage `last_updated_time` (the
   old formatter parsed it); it now forwards it unparsed, like `start_date`/`end_date` already were — read-only
   QBO query, QBO_SYNC-gated, no escalation. Optional hardening: a `fromisoformat` validator on all three
@@ -3942,22 +3909,6 @@ NOT RUN** — it is a prod write to SharePoint and needs its own explicit go-ahe
   `CompanyInfoCompanyConnector._check_no_conflicting_company_identity` carry. Fold in with that booked
   `base/identity_fastpath.py` cleanup.
 
-## U-314 follow-up (qbo.CustomerProject retirement) — surfaced running OVH-02, 2026-09-04
-
-- [x] **CLOSED by U-425 (2026-09-09) — the 2026-09-08 rewrite removed every retired-table recipe and U-425 verified the replacement text against code.** ~~`entities/invoice/intelligence/prompt.md` (InvoiceAgent playbook) Step 1 still queries the retired
-  `qbo.CustomerProject` mapping table.** Its project-resolution SQL (`JOIN qbo.CustomerProject cp ON
-  cp.ProjectId = ?` → `qbo.Customer`) and the Step 1 heal recipe (`CustomerProjectConnector().create_mapping(...)`)
-  are stale post-U-314: the table is dropped, `dbo.Project.QboId`/`.RealmId` is the sole identity store now
-  (stamped via `SetProjectQboIdentity`). Confirmed live-broken running the OVH-02 playbook session
-  (2026-09-04): the literal Step 1 query raised `Invalid object name 'qbo.CustomerProject'`; worked around
-  ad hoc by reading `dbo.Project.QboId`/`.RealmId` directly. Rewrite Step 1's project-resolution query as a
-  plain `SELECT Id, PublicId, Name, Abbreviation, QboId, RealmId FROM dbo.Project WHERE ...` and its heal
-  recipe as a direct `SetProjectQboIdentity`-style stamp (mirroring the U-355/U-361 entries' treatment of
-  the analogous Bill/VendorCredit mapping-table retirements). Same "large, actively-used agent prompt,
-  disproportionate content edit" reasoning as those entries — worth doing as one consolidated pass across
-  all four stale sections (this one + the U-355 Bill-recovery entry + the U-361 VendorCredit entry + the
-  U-363 Bill-fingerprint entry below) rather than four separate edits.
-
 ## U-301c follow-ups (ProposeInvoiceSourceLinks Tier 0c/0d repoint) — deferred, not scope-creeped in (2026-08-22)
 
 - [ ] **`entities/invoice/business/reconciliation.py`'s module docstring and `_filter_candidates_ki35`'s docstring
@@ -4188,21 +4139,6 @@ U-271 made the packet **Trend** show a column for every historical pay applicati
 - [ ] **`_qbo_item_by_qbo_id` filters out falsy-`qbo_id` QboItem rows with no test coverage.** Currently unreachable (the only caller, `_resolve_cost_code_for_qbo_item_ref`, already short-circuits on a falsy `qbo_item_ref_value` before any lookup) — add a test if a second caller of the index is ever added.
 - [ ] **Shared-git-index hygiene reminder** (not a code item): this unit's own Gate-2 packet noted the review process itself hit the standing "parallel session git-index" hazard (two review agents' own in-place mutation testing transiently raced on the live working-tree file) — no data was lost (confirmed stable + green afterward), but it's the same class `feedback_parallel_session_git_index_hygiene.md` already documents. No action needed beyond the standing pathspec-commit discipline.
 
-## ~~U-238a migration not applied~~ — **RESOLVED 2026-08-16, do not act on this**
-
-> ⚠️ **This entry is HISTORICAL. The migration IS applied.** Verified directly against prod
-> on 2026-08-16: `dbo.Bill.QboId`, `dbo.Invoice.QboId`, `dbo.BillLineItem.QboId` and
-> `SetInvoiceQboIdentity` all exist. U-238b and U-238c SQL have since been applied on top,
-> and the U-238c reference backfill stamped 7,145 rows with a clean 17-topology drift check.
-> **The blanket "do not run local pull/connector scripts" warning below no longer applies.**
-> Kept for the incident record only.
-
-- [x] **(RESOLVED — see banner above) P0 for any local playbook/InvoiceAgent/script session — SQL-first deploy step from commit `00a3dec` was never run.** That commit added dual-write QBO-identity stamping (`Set<Entity>QboIdentity`) to the Bill/Expense/Invoice/Project/Company QBO connectors, on **both** create and update paths, gated on `scripts/migrations/238a_qbo_identity_headers.sql` (new `QboId`/`RealmId`/`SyncToken` columns + 5 new sprocs) landing FIRST — the commit message says so explicitly ("⛔ SQL-FIRST DEPLOY REQUIRED — do not build/deploy the container before applying..."). The migration was never run. Confirmed live: `dbo.Invoice` has no `QboId` column, `SetInvoiceQboIdentity` does not exist on prod.
-  - **Blast radius:** any session running a local script from this checkout (`scripts/sync_qbo_{bill,invoice,purchase,vendorcredit}.py`, `--project` scoped pulls, direct connector calls per the InvoiceAgent playbook) against prod DB hits the missing sproc on the FIRST identity-stamp call and raises — for BOTH new-record CREATE and existing-record UPDATE paths, across all 5 entities.
-  - **Deployed API/scheduler is currently UNAFFECTED** (confirmed: a Bill was cleanly created+mapped by the scheduler at 17:48 on 2026-08-13, after the commit landed) — the container hasn't picked up this commit yet, so periodic scheduled pulls are safe. The exposure is specifically local script sessions running against prod DB with the current checkout.
-  - **Confirmed incident:** an OL-14 InvoiceAgent session's local `sync_qbo_invoice.py --project` pull hit this repeatedly, creating 3 orphaned zombie `dbo.Invoice` rows (header created, mapping+lines never reached, non-`ValueError` exception skipped the orphan-cleanup path) before being diagnosed. Cleaned up manually (deleted the 3 zombies; the invoice ultimately landed correctly via the scheduler's own unaffected pull and was renamed back to `OL-14` from an accidental `-4` suffix).
-  - **Fix:** apply `scripts/migrations/238a_qbo_identity_headers.sql` (purely additive, `NOT EXISTS`-guarded — safe standalone) plus the 5 new `Set<Entity>QboIdentity` sprocs (brand-new objects in each entity's base SQL file — extract just those, don't blanket re-apply the base files, since Bill/Expense/Project/Company/Invoice aren't on the single-source-of-truth converted list and may carry other prod-drifted sprocs). Until then: **no local pull/connector script for Bill/Expense/Invoice/Project/Company should be run from this checkout against prod** — wait for the scheduler's own cadence instead (its deployed code is unaffected).
-
 ## `/bill/create` Complete Bill misreports "offline" on large PDF uploads (found 2026-07-29)
 
 - [x] **SHIPPED 141491d4 + DEPLOYED 2026-08-17 — U-240 — watermark commit correctness cluster (P1, FLEET-WIDE, live in prod). IN FLIGHT 2026-08-16.** Booked from a 32-agent adversarial review (4 lenses, 0 agents errored, 19 confirmed findings). (a) **The hold-bound force-advance defeats the contract it bounds, on the FIRST commit** — `_held_duration` (`scripts/sync_helper.py`) anchors on `dbo.Sync.ModifiedDatetime`, the age of the ROW, not how long the current hold has lasted; a `--skip-sync-update` run never stamps it, so on the first committing run `held` is already past the 7200s bound and the watermark force-advances PAST FAILED RECORDS. Confirmed live: the reimburse_charge Sync row's `ModifiedDatetime` was **4 days stale**, which is why its watermark was set BY HAND rather than through `WatermarkRun.commit`. (b) **A TxnDate is written into a field consumed as `Metadata.LastUpdatedTime`** (`commit()` writes `f"{end_date}T23:59:59"`) — unrelated time axes. (c) **The watermark write is not monotonic** — the only comparison sits on the RowVersion-conflict fallback branch, so a clean single-writer run can drive it BACKWARD. (d) **QBO REJECTS `TxnDate` filters on ReimburseCharge entirely** (`Invalid query`, measured 2026-08-16 on both `SELECT *` and `COUNT(*)`), so `--start-date`/`--end-date` are dead for that entity and the CLI epilog documents a mode that cannot work; `Metadata.LastUpdatedTime` and `HasBeenInvoiced` filters DO work. (e) **The CLI exits 0 on total failure** — no `sys.exit(1)`, so a scripted chunk loop cannot detect a dead chunk.
@@ -4229,7 +4165,7 @@ U-271 made the packet **Trend** show a column for every historical pay applicati
 
 ## Re-adjudication follow-ups (2026-08-12) — booked, NOT rushed
 
-Source: `docs/readjudication_u218_2026_08_12.md` (35 CONFIRMED / 1 REFUTED / 1 UNADJUDICATED).
+Source: `docs/archive/2026/readjudication_u218_2026_08_12.md` (35 CONFIRMED / 1 REFUTED / 1 UNADJUDICATED).
 ⚠️ **Read that confirmation rate skeptically** — 95% is the mirror image of the original panel's over-refuting, and the adjudicator prompt likely over-corrected. The items below carry real evidence but are LEADS, not a settled backlog; re-verify each at its unit's Gate 1. Fixed immediately (commit below): reconcile_project system intent + the operator guidance that created the live P1 trap, and reclaim un-gated from the write gate.
 
 - [x] **SHIPPED 40fec02f (2026-08-16) — U-232 — Hard guard on the dead-letter re-push path (P1, live in prod).** `POST /sync/bill-to-qbo` → `QboOutboxService.enqueue()` mints a fresh RequestId (`outbox/business/service.py:107`) because the coalesce sproc matches only `Status IN ('pending','failed')` (`qbo.outbox.sql:286`), so a **dead-lettered** row never coalesces. A bill whose push reached QBO but whose mapping write failed is then pushed a SECOND time under a requestid Intuit has never seen → duplicate A/P bill. This unit's own runbook forbids exactly this substitution (`qbo-outbox-dead-letter-replay.md:87`). **Interim mitigation SHIPPED:** `reconcile_project.py` no longer routes operators here and names the replay script instead. The hard guard (refuse, or reuse the dead-lettered RequestId) needs a new read — `ReadDeadLetterQboOutboxByEntity` — hence a SQL step, which is why it is its own unit rather than a rushed patch.
@@ -4238,7 +4174,7 @@ Source: `docs/readjudication_u218_2026_08_12.md` (35 CONFIRMED / 1 REFUTED / 1 U
 - [x] **SHIPPED e7ded8c3 2026-08-17 — U-235 — Test-vacuity cluster (P2/P3).** `tests/test_u218b_bill_push_surface.py:326` asserts the captured call's args against themselves (reduces to a length check); the write-refused park test pins both operator-facing constants against themselves though the prefix is a documented runbook SQL predicate (`:219`); the router draft-guard and 404 are exercised only on their pass-through branch (`:46`); `report_db_to_qbo_bills`' headline mock assertion cannot fail. Same class in `test_u218e_attachable_shared_client.py:292` — every test that could detect a restored upload retry injects a `deterministic_retry` fixture whose fake clock exhausts the budget, so the headline at-most-once fix has no protection.
 - [ ] **U-236 — reconcile_project + observability tail (P2/P3).** Excel→DB orphan detection treats "outside this run's narrow snapshot" as "not in DB" and CLEARS col Z in write mode (`reconcile_project.py:779`) — data-destructive against idempotency keys; the "OK — all bills have QBO mappings" banner prints in the same run that reports unmapped bills (`:1059`); writes-off starvation leaves zero durable DB evidence; the replay runbook documents a `write_refused_park_ceiling` symptom that never existed and points at an empty query; `MAX_LIMIT=2098` still exceeds the effective parameter ceiling.
 
-## QBO audit fix ledger (2026-08-09) — every confirmed finding from `docs/audit_qbo_integration_2026_08_07.md` mapped to a unit
+## QBO audit fix ledger (2026-08-09) — every confirmed finding from `docs/archive/2026/audit_qbo_integration_2026_08_07.md` mapped to a unit
 
 Source: 14 double-confirmed P1s (main eval) + 1 once-verified P1 + 9 sync-script findings (addendum S-01…S-09) + carried P2s. Units promoted to BOARD.md; work top-down. Findings that die in staging-removal Phase 4 are still fixed now when cheap — the risk is live today and Phase 4 is weeks out.
 
@@ -4261,7 +4197,7 @@ Source: 14 double-confirmed P1s (main eval) + 1 once-verified P1 + 9 sync-script
 - [x] **SHIPPED 6d1b08a7 — U-224 — Lift the transient/permanent auth split to MS + Box (found by U-215's Pass 2).** `integrations/ms/auth/business/service.py` and `integrations/box/auth/business/service.py` still collapse every refresh failure into an unclassified return, so their outbox workers dead-letter on attempt 1 exactly as QBO did before U-215. `AuthFailureKind` now lives in `integrations/intuit/qbo/base/errors.py`; lifting it plus a shared transient-auth-error shape into a common home is the unit.
 - [x] **SHIPPED 3b01a8f7 (U-259) — scripts/outbox_replay_common.py exists; all three retry_* scripts repointed. — U-230 — extract `scripts/outbox_replay_common.py` (booked from U-218b's Pass 2).** `scripts/retry_qbo_outbox_dead_letters.py` is the THIRD near-copy of outbox reset tooling alongside `retry_ms_outbox_dead_letters.py` and `unpark_qbo_outbox_budget.py` — ~100 duplicated lines of argparse, preview SQL, row formatting, dry-run/apply flow, ID-placeholder generation and rowcount handling. Extract the select/preview/apply mechanics parameterized by schema/table/status-predicate/update-policy, keeping the QBO-vs-MS policy differences explicit (notably: the MS original's UPDATE is `WHERE Id IN (...)` with **no status re-assertion**, a TOCTOU hole the QBO version deliberately does not copy — the shared helper must take the safe form and the MS script should be fixed as it migrates). Not done in U-218b because it reaches into U-215's shipped script.
 - [x] **SHIPPED 48ff5226 (2026-08-16) — U-231 — unify the two pre-claim write gates in `QboOutboxWorker.drain_once` (booked from U-218b's Pass 2).** `worker.py` now has two inline pre-claim gates — U-211's budget breaker and U-218b's `writes_allowed()` — with separate log events and independent precedence. One `can_worker_do_external_writes_now(api_budget)` style check would stop them drifting in logging, precedence and future breaker handling. Behavior-preserving, but it modifies U-211's shipped guard, so it was deliberately left out of U-218b.
-- [x] **SHIPPED 8fcd80c0 (2026-08-16) — U-225 — `qbo.VendorCreditBillCredit` has TWO divergent `CREATE TABLE` bodies in the repo (DBA; found by U-218a's Pass 2).** `integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql:483-484` declares bare FKs (implicit NO ACTION); `.../connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql:24-27` declares the same table with `ON DELETE CASCADE`. Both are `IF OBJECT_ID(...) IS NULL`-guarded, so whichever ran first silently won — **prod is NO_ACTION** (measured 2026-08-11) and neither file is authoritative. A fresh DB built from the connector file would get CASCADE and behave *differently from prod*. Base-file single-source-of-truth violation. Decide CASCADE vs NO_ACTION once and delete the loser; U-218a's mapping-before-header ordering is correct under **both**, so it is a safe interim either way. Related: `docs/audit_qbo_integration_2026_08_07.md:461` (P3) — 11 other mapping tables carry no FK at all.
+- [x] **SHIPPED 8fcd80c0 (2026-08-16) — U-225 — `qbo.VendorCreditBillCredit` has TWO divergent `CREATE TABLE` bodies in the repo (DBA; found by U-218a's Pass 2).** `integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql:483-484` declares bare FKs (implicit NO ACTION); `.../connector/bill_credit/sql/qbo.vendorcredit_bill_credit.sql:24-27` declares the same table with `ON DELETE CASCADE`. Both are `IF OBJECT_ID(...) IS NULL`-guarded, so whichever ran first silently won — **prod is NO_ACTION** (measured 2026-08-11) and neither file is authoritative. A fresh DB built from the connector file would get CASCADE and behave *differently from prod*. Base-file single-source-of-truth violation. Decide CASCADE vs NO_ACTION once and delete the loser; U-218a's mapping-before-header ordering is correct under **both**, so it is a safe interim either way. Related: `docs/archive/2026/audit_qbo_integration_2026_08_07.md:461` (P3) — 11 other mapping tables carry no FK at all.
 - [x] **SHIPPED a4c2b768 (2026-08-16) — U-226 — entity delete services do not clear their own `qbo.*` mapping row (found by U-218a's Pass 2 altitude lens).** `BillCreditService.delete_by_public_id` hand-cascades line items → attachments → blobs → header but never touches `qbo.VendorCreditBillCredit`, so `DELETE /delete/bill-credit/{public_id}` still hits SQL 547 for any QBO-pulled credit. U-218a taught the **rollback** path to route around this; it did not make the system correct. Bill and Expense have the identical gap. This is the right-depth home for the FK-ordering discipline (CLAUDE.md already states application code must handle cleanup), after which the compensation helper's ordering becomes belt-and-suspenders. 3 entity services.
 - [x] **SHIPPED c1c79e40 2026-08-17 — FOLDED INTO U-246 (u246-reconciliation-issue-lifecycle) — U-227 — move the drift-type registry out of the test suite into production (found by U-218a's Pass 2).** `tests/test_qbo_reconciliation_recorder.py::_KNOWN_DRIFT_TYPES` is a 12-entry frozenset of every legal drift type in the system — a real domain registry that exists only in `tests/`. Production has no enum, no `Literal`, no validation: `record_mapping_issue` accepts any string. Move it beside the recorder, validate membership, and reduce the guard test to "AST-discovered literals ⊆ production registry" so a new drift type *has* to be registered. This also makes the width clamp unreachable-by-construction rather than a live truncation risk on a **query key** — `ReadQboUnresolvedIssueKeysByDriftType` selects on `@DriftType NVARCHAR(32)`, so a truncated value is a category nothing ever queries and two distinct 35-char names collide into one 32-char key. Completing it also deletes the guard's path→entity_type special cases and its hand-maintained `_MIN_CALL_SITES` count. Natural companion to the recorder-migration unit.
 - [x] **U-228 — bound the unbounded QBO watermark hold — DONE 2026-08-12.** Booked as a latent VendorCredit risk; **went live during the build** — `bill` had been held at 19:15 UTC for 90+ min on 11 Walker Lumber "Service Charge" `AccountBasedExpenseLineDetail` bills (qbo_ids 75071-75083) when this unit started. Map re-verified rather than trusted: a real, transaction-isolated execution of `BillBillConnector.sync_from_qbo_bill` against the live prod rows (single pyodbc connection, never committed, explicit `rollback()` at the end — zero writes) projected all 11 cleanly under correct `system_authz()` context, so **the connector logic has no bug** for this data. Root cause is almost certainly the pre-existing, already-documented P0 two sections below (invoice-sync duplication ratchet): `POST /api/v1/admin/sync/qbo/{entity}` has no `sp_getapplock`, and the scheduler's client-side `REQUEST_TIMEOUT_SECONDS=60` doesn't cancel the server-side `asyncio.to_thread` work on timeout — so a run re-processing an ever-growing held window can still be executing when the next 15-min tick fires, and two overlapping runs racing to `create_mapping()` for the same qbo_id would hit real `UNIQUE` constraints on both `qbo.BillBill` and `qbo.BillLineItemBillLine`. **Not fixed here** (a concurrency-control change to a live write-path endpoint deserves its own adversarial pass, mirroring why U-221 split out of U-220) — booked as follow-up (a) below, tied to the existing P0 entry.
@@ -4578,12 +4514,6 @@ The daily `reconcile_qbo` (03:00 UTC) voided-bill detector at `integrations/intu
 
 **ADDRESSED by U-053 (apply pending):** `UQ_Module_Name` is now declared in `entities/module/sql/dbo.module.sql`, with `entities/role_module/sql/migrations/001_rbac_join_integrity_constraints.sql` as the apply vehicle (guards on 0 duplicate names first). **The prod apply is separately gated and may not have run yet** — confirm with the U-053 read-back query below before treating the constraint as live.
 
-## 🟢 U-120 — `coi_parser` live-ACORD calibration (2026-07-22) — DONE
-
-**DONE:** `_parse_policies_from_tables` rewritten to parse the DI **coverage-grid table by header-name column mapping** (INSR LTR / TYPE OF INSURANCE / POLICY NUMBER / POLICY EFF / POLICY EXP — indices differ per cert), grouping multi-row coverage blocks, dropping blank sections (no policy#/dates), carrier via INSR-LTR → INSURER A–F table; content-scan kept as fallback when no grid table. Sanitized DI fixtures (`tests/fixtures/acord_{gl_auto,wc}_di.json`, scrubbed from the real certs) + `tests/test_coi_parser_grid.py`; existing content-path tests unchanged. 543 tests green. **LIVE-validated on A&A's real GL+WC DI:** GL #03750825 exp 2025-12-14 + Auto #5575082500 exp 2025-12-14 (no spurious WC) and WC #UB-5W154448-25-42 exp 2026-02-24 (no spurious GL/Auto) — auto-parses exactly what previously needed hand-correction.
-
-_Original problem (kept for provenance):_ Proven necessary during the A&A Masonry test case: on a REAL ACORD 25 (A&A's GL cert), `entities/certificate_of_insurance/business/coi_parser.py` mis-parsed the coverage table — put the **limit `1,000,000` into `policy_number`**, **missed EVERY `POLICY EXP` date** (they're plainly in the DI text as `12/14/2025`), invented a **spurious empty WC row** (matched the blank "WORKERS COMPENSATION" section header), and only half-mapped carriers. The raw DI `content` is clean — it's the **table-mapping / insurer-letter→carrier + limits-vs-policy#-column logic** that isn't calibrated. Ground-truth to calibrate against (A&A's GL cert, attachment `6A657092…`): GL insurer-A OWNERS #**03750825** eff 12/14/2024 exp **12/14/2025** $1M/$2M; Auto insurer-B Auto-Owners #**5575082500** exp 12/14/2025 $1M CSL; WC section BLANK (not a policy). Fixes: (1) read `POLICY EXP (MM/DD/YYYY)` per coverage row; (2) don't put limit amounts in `policy_number` (require a non-limit alnum token from the POLICY NUMBER column); (3) drop coverage rows with no policy#/dates/limits (blank ACORD section headers); (4) resolve carrier by INSR-LTR → INSURER A–F block. Re-test on A&A's GL + WC certs (both in the folder). Until then, COI ingests need human correction of the drafted policies.
-
 ## 🟢 U-122 — Taxpayer W-9 ingest 500 on blank NOT-NULL columns (2026-07-22, found onboarding Engineered Comfort) — DONE (deploy HELD w/ batch)
 
 **DONE:** `TaxpayerW9IngestService.ingest` now coerces every `dbo.Taxpayer` NOT-NULL column that took an `Optional`/blank-passable value, so a valid W-9 persists (taxpayer + TIN) instead of dying with a bare SQL 515 → HTTP 500. Service-side only, **no schema change**: `business_name` → legal `entity_name` when None/blank (a business with no DBA operates under its legal name); `classification` → `"Unspecified"` when None/blank (extract's `unresolved` already flags it for review); blank `entity_name` → clear `ValueError` (400, create branch only — reuse-by-TIN untouched); blank/digit-less `taxpayer_id_number` → `ValueError` (400) rejected **before** the dedup lookup (it's the identity/dedup key + NOT NULL, `TaxpayerService` coerces a falsy TIN to NULL — no sensible default). Correctness review: Codex gpt-5.5 high, refute-by-default — confirmed reuse path safe / ValueError→400 / no CHECK on Classification / tests assert via `create` kwargs, and it **caught the TIN case** (added). 7 new ingest tests (parametrized blanks), 560 green.
@@ -4702,11 +4632,6 @@ Not a bug (no token loss — the lock ordering is already correct). `ensure_vali
 - [ ] **Confirm no client completes via those paths first** — web "Complete" uses `/complete`; check iOS / agents / scripts never `POST create is_draft=false` or `PUT is_draft=false`. If any do, this is a live data-integrity bug (entity marked complete, zero external sync).
 - [ ] Then **either delete the triggers as vestigial, or activate + CompletionJob-cover them.** **Audit all four** — bill / expense / invoice / bill_credit routers share the shape. (U-065 left one-line `# vestigial, see U-080` markers at the sites.)
 
-## U-081 — MS Excel drain worker re-checks column-Z at drain time (2026-07-17, found during U-065 Gate-2) — closes the reclaim-overlap residual
-
-The one side-effect NOT idempotent under overlapping completion runs. Column-Z (line-item public_id) is checked only at *enqueue*; Excel outbox rows never coalesce and the drain worker doesn't re-check, so two overlapping runs of the same completion — a reclaim overtaking a still-alive >30-min-hung task (U-065's N=1800s residual, practically unreachable but real) — can enqueue duplicate DETAILS rows. SharePoint (coalesce+replace) and QBO (mapping-check) are already overlap-idempotent; Excel is the only gap.
-- [x] ~~Make the MS Excel drain worker re-check column-Z at drain time → true idempotency under overlap.~~ **CLOSED 2026-10-08 — superseded by U-440a (`d556af0a`, 2026-09-10), which shipped exactly this after the 2026-08-06 duplicate-rows incident; see `MsOutboxWorker._filter_rows_already_in_worksheet` + `tests/test_u440a_excel_drain_dedup.py`.** **Shared sensitive path** — touches every Excel sync (Box + SharePoint workbooks) and the insert row-index is position-dependent, so it needs its own verify + blast-radius pass (which is why it was kept out of U-065).
-
 ## U-084 — Diagnose the real `/time-entries` 13.5s (2026-07-17, from U-064 Gate-2) — the iOS-timeout blocker is NOT the DB query
 
 **Correction to U-064's premise.** U-064 (`e69e93a`) shipped a covering index `IX_TimeEntryStatus_TimeEntryId_CreatedDatetime_Id INCLUDE(Status)` — a *real, correct* optimization (~5–9× on the warm status query; applied to prod 2026-07-17). But the Gate-2 perf measurement disproved the triage's premise: at prod volumes (**945 TimeEntry / 2,233 TimeEntryStatus rows**) the DB was never the bottleneck — `ReadTimeEntriesPaginated` was 242–482ms *without* the index and 52ms with it; the `@Status`-filter APPLY path 48ms; count 106ms; batch status read 96ms. **Nothing DB-side approaches 13.5s.** The U-064 commit message's claim ("the real 13.5s cost is the missing covering index") is wrong — keep the index (it's a genuine win) but it does not resolve the 13.5s.
@@ -4813,12 +4738,6 @@ Remaining duplicate sproc bodies not yet neutralized — fold into future conver
 - [ ] **Consider — `CASE WHEN` guard on `UpdateProjectById.[Notes]`** as defence-in-depth, per the repo's documented NULL-overwrite convention. Not strictly required once the read is fixed (the service does read-modify-write, so unconditional SET is the intended design there, as it is for `Name`/`Description`/`Abbreviation`) — but a guard would have made this chain un-exploitable. Weigh against the deliberate "user cleared the textarea → store NULL" behaviour at `service.py:203`, which a naive guard would break.
 - [ ] **Audit the same shape elsewhere.** The trigger is a *tolerant* `getattr(row, "X", None)` mapper sitting over a sproc that may not return `X`, feeding an unconditional `SET [X] = @X`. That combination converts a schema/sproc drift into silent data loss with no error anywhere. `repo.py` uses `getattr` defensively in several entities — grep for the pattern and check each against its live sproc's column list.
 - [ ] **Sibling (latent, repo-only) — `scripts/migrations/gap2_core_threading.sql` carries a DRIFTED `CreateProject` that drops `[Notes]`.** Found + verified during U-050's Pass-2 (2026-07-16): that file's `CreateProject` body has **no `@Notes` param, no `[Notes]` INSERT column, and no `INSERTED.[Notes]` OUTPUT**, vs the canonical base (`entities/project/sql/dbo.project.sql:60-89`) which has all three. Same Notes-regression class as the read-path bug above, but on the **write** path and **latent** rather than live: re-applying `gap2_core_threading.sql` would revert `CreateProject` to a body that **silently discards user-entered Notes on every project create** and drops Notes from the create response. Not fixed in U-050 (outside its 4 approved paths). Fix = reconcile that copy to the base or stub it. **NOT done by U-051 (2026-07-16) — re-tag to the next `project`-conversion unit.** U-051 turned out to be the access-UDF re-homing only; `CreateProject` is a *sproc on an unconverted entity*, and folding it in would have rebuilt exactly the blast radius U-045/U-051 exist to shrink. Still open, still latent. NB the U-050 guard (`tests/test_project_sproc_bypass_guard.py`) does **not** cover this: it is deliberately scoped to the 4 RBAC *read* sprocs, and `CreateProject` is out of that set.
-
-## ✅ RESOLVED 2026-07-10 — `master` reconciled to the prod line; it is now the canonical trunk
-
-The former landmine (`master` was divergent + stale and would hard-regress prod) is **fixed**. On 2026-07-10 `master` was merged with `feat/model-cascade`, resolving the whole tree to the prod lineage, so `master`'s tree is now **byte-identical** to `feat/model-cascade` and the live `:latest` commit `4b13d1f` is an **ancestor of both** (`git merge-base --is-ancestor 4b13d1f master` → true). `master`/`origin/master` are converged and safe; **deploy from `master` going forward.** `feat/model-cascade` is now a redundant mirror carrying only the in-flight Path-B work below and is **slated for retirement** once that lands on `master`.
-
-**Deploy discipline is unchanged:** `az acr build` builds the working tree, so still confirm HEAD is on the live `:latest` lineage before every deploy (`master` now is). The cascade/Foundry feature (`cc3965c`) remains an ancestor of `4b13d1f`, i.e. already live in prod.
 
 ## ✅ RESOLVED 2026-07-12 — Auth cross-site "hourly re-login" fix → Path B (custom API domain `api.bld-one.com`) — COMPLETE (API + web both live)
 
@@ -6129,24 +6048,6 @@ These were surfaced during the unit and deliberately not built:
   (`verify_project_ref_or_none(project_service, project)`, collapsing the 3 push-side call sites) — would
   also fold the duplicated docstring paragraph into one place. Own unit; touches 6-7 already-shipped files +
   their tests, needs its own Gate-1 (not U-311's scope, which was Project-family-only).
-
-## U-337 follow-up (account sync lock, 2026-08-31) — ✅ CLOSED by U-340 (2026-08-31)
-
-- [x] **→ SHIPPED U-340 (2026-08-31): fanned out the proven U-337 lock pattern to the sibling routers.**
-  Wrapped all 6 remaining per-entity API routes with live `/sync/*` handlers
-  (`bill`/`purchase`/`vendor`/`customer`/`company_info`/`vendorcredit`) in
-  `qbo_app_lock(qbo_entity_sync_lock_resource(entity))`, 409 on a busy lock — same shape as U-337's account
-  fix, entity strings verified to match `shared/api/admin.py`'s dispatcher keys exactly. `term` had no API
-  router to fix (only entry point is the already-locked admin dispatcher); `invoice`'s `/sync/qbo-invoices`
-  route was left alone — it's dead code, disabled and never calling `sync_from_qbo`, so a lock there would
-  wrap nothing. `scripts/sync_qbo_account.py`'s third unlocked entry point (the CLI `__main__` path) is now
-  locked via a new `run_locked()` wrapper — locking only the CLI path, not `sync_qbo_account()`/
-  `sync_qbo_to_local()` themselves, since those are also called by the admin dispatcher which already holds
-  the same lock for that whole call; wrapping at the originally-suggested line 106 would have self-deadlocked
-  every admin/scheduler-triggered account sync. `scripts/repair_invoice_line_duplicates.py`'s hardcoded
-  `"qbo_sync:invoice"` literal now calls the shared helper. Codex `xhigh` round 1: PASS, 0 findings.
-  `/simplify` 4-lens: reuse/efficiency clean; one simplification applied (test file's redundant `case_id`
-  column collapsed into `entity_key`); altitude confirmed right depth, logged 2 new deferred follow-ups below.
 
 ## U-340 follow-up (QBO entity sync lock fan-out, 2026-08-31) — ✅ BOTH CLOSED (U-346, U-347)
 

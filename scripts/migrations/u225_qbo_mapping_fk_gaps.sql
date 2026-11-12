@@ -1,6 +1,6 @@
 -- Migration: U-225 -- close the qbo.* mapping-table FK gap (11 tables, 0 FK today)
 -- Purpose: enforce referential integrity on the 11 qbo.* mapping tables flagged by
---          docs/audit_qbo_integration_2026_08_07.md:461 as carrying no FK at all.
+--          docs/archive/2026/audit_qbo_integration_2026_08_07.md:461 as carrying no FK at all.
 --          Every constraint below is ON DELETE NO ACTION on BOTH sides -- deliberately
 --          NOT the Purchase-family precedent (add_fk_constraints_to_mapping_tables.sql,
 --          which CASCADEs on the qbo-staging side). NO ACTION matches this codebase's

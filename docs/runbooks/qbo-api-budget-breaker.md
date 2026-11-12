@@ -53,4 +53,4 @@ Medium. QBO sync is paused by design; no data is lost. Pulls resume on the next 
 ## Prevention
 
 - App Insights alerts on `qbo.budget.threshold_crossed` (warn band = investigate before block).
-- The reconcile query-diff discipline (U-153/U-160) keeps steady-state usage ~8-10% of the cap; any new bulk QBO path should be budgeted against `docs/audit_qbo_integration_2026_08_07.md`'s call-cost analysis before shipping.
+- The reconcile query-diff discipline (U-153/U-160) keeps steady-state usage ~8-10% of the cap; any new bulk QBO path should be budgeted against `docs/archive/2026/audit_qbo_integration_2026_08_07.md`'s call-cost analysis before shipping.

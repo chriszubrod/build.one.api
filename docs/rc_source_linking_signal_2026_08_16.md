@@ -244,7 +244,7 @@ A real implementation unit would need to:
 These files still carry the old KI-32 framing and were **intentionally left untouched** in U-242:
 
 - `scripts/sync_qbo_reimburse_charge.py`
-- `docs/audit_qbo_integration_2026_08_07.md`
+- `docs/archive/2026/audit_qbo_integration_2026_08_07.md`
 - `entities/invoice/intelligence/prompt.md`
 
 Refresh in a doc-only follow-up unit once this decision doc is filled with live numbers.

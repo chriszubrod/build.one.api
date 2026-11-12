@@ -1054,7 +1054,7 @@ A runtime error is not permission to broaden a repair. Resolve it within existin
 
 ## Known issues to anticipate
 
-> Renumbered 2026-07-03 (the previous list had duplicated numbers 19–21; cross-references elsewhere — including `docs/audit_qbo_pull_sync_2026_06_23.md`, which cites the old #27 — map via the "formerly" tags). Reference these as `KI-<n>` going forward.
+> Renumbered 2026-07-03 (the previous list had duplicated numbers 19–21; cross-references elsewhere — including `docs/archive/2026/audit_qbo_pull_sync_2026_06_23.md`, which cites the old #27 — map via the "formerly" tags). Reference these as `KI-<n>` going forward.
 
 1. **KI-1 — Write gates required** (`ALLOW_MS_WRITES`, `ALLOW_BOX_WRITES`): set inline on the process for the run only; never persist. **Step 5 reads `ALLOW_BOX_WRITES` only** — packet generation consults no MS gate, so generating with the Box gate closed is a genuine local-review build. `ALLOW_MS_WRITES` is needed from Step 7 onward. Set both before the publishing steps when both targets are authorized.
 2. **KI-2 — `SourceType='Manual'` after invoice pull is by design** — Step 4 is mandatory.

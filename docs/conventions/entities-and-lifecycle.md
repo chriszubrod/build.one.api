@@ -1,0 +1,20 @@
+# Entity pattern, lifecycle, cascade deletes
+
+How an entity is laid out, where its contract lives, and the delete orders that were verified against code.
+
+> Extracted verbatim from `CLAUDE.md` on 2026-11-11 (U-788) to take it off the
+> per-session load. **These are standing rules, not history** — they bind the same as
+> before. Read this file when touching the area; CLAUDE.md keeps the one-line rule and
+> links here.
+
+---
+
+- **Entity pattern**: `entities/{name}/` with `api/`, `business/`, `persistence/`, `sql/` sub-packages. `web/` subpackages are gone as of Wave E5 — React owns the UI.
+- **Entity contract lives in the code (U-631).** An entity's current contract is the module docstring at the top of `entities/<x>/business/service.py` (Owns / Invariants / External writes / Sprocs) and the `-- Contract:` header on its `sql/dbo.*.sql` — read those FIRST when touching an entity; update them in the same change when behaviour changes. `tests/test_entity_docstrings.py` fails on a missing section, a sproc named that is not defined, or a sproc called that is not named. Covered entities are listed there; the rest sit in a shrink-only ledger. The old `*.spec.md` playbooks are retired as entities gain docstrings. Design rationale (WHY it changed) stays in `docs/design/u<n>-*.md`; the docstring is WHAT holds now.
+- **Expense lifecycle is a STORED column (U-467)**: `dbo.Expense.Status` ∈ {draft, submitted, in_review, approved, declined, completed}; `IsDraft` is a persisted computed column over it (`entities/expense/sql/dbo.expense.sql`). Writers: `CreateExpense` (draft), `CreateReview` mirrors the review kind onto the parent (`entities/review/sql/dbo.review.sql`), `FinalizeExpenseById` → completed, `MarkExpenseDraftForCoding` completed→draft for `qbo_pull` rows only. `completed` is terminal (`shared/lifecycle/terminal_lock.py`; every mutation sproc takes `@AllowTerminalParent`). `GET /get/expenses?status=` filters on the column in SQL. Bill carries the same shape.
+- **Concurrency**: SQL Server ROWVERSION columns with base64 encoding for transport
+- **Workflow engine**: ProcessEngine for main entity CRUD; lightweight child entities use direct CRUD
+- **Lazy imports**: Some services (e.g., BillService) use lazy imports in `__init__` to avoid circular deps — always use `self.*` instance attributes, not bare class names
+- **Contact entity**: Polymorphic child entity with nullable FKs to User, Company, Customer, Project, Vendor. Fields: Email, OfficePhone, MobilePhone, Fax, Notes. Uses instant workflow (ProcessEngine.execute_synchronous). **UI pattern**: React `<InlineContacts parentEntity={...} parentId={item.id} />` component in `build.one.web/src/components/InlineContacts.tsx` — wired on all 5 parent edit pages (Vendor, Company, Customer, Project, User) and all 5 parent view pages (pass `readOnly` on view). API calls `GET /api/v1/get/contacts/{parent}/{id}` for list, `POST/PUT/DELETE /api/v1/...contact` for mutation.
+- **FK cascade on delete**: When deleting entities referenced by FK, nullify or delete child references first. Examples: `BillLineItemService.delete_by_public_id()` nullifies `InvoiceLineItem.BillLineItemId` before deleting; `ExpenseLineItemService.delete_by_public_id()` deletes the ExpenseLineItemAttachment link → the Attachment row → the blob LAST (see next bullet). SQL Server FK constraints have no CASCADE DELETE — application code must handle cleanup
+- **Expense line-item cascade delete (order verified in code 2026-10-03)**: `ExpenseLineItemAttachment` link first (`FK_ExpenseLineItemAttachment_Attachment` is NO ACTION, so the Attachment delete fails while the link stands) → `Attachment` row → Azure blob **last**, because the guarded row delete is what decides: the same Attachment can be a completed Bill's evidence too, and the blob must survive if the row delete is refused. Each step in its own try-except so cleanup failures don't block the delete. The whole-expense `DeleteExpenseCascadeById` runs in one transaction under a header UPDLOCK and deliberately leaves Attachment rows + blobs in place.

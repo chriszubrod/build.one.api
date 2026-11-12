@@ -7569,7 +7569,35 @@ semantically equivalent case. Full suite 12,324 passed / 1 skipped / 0 failed.
   resolves. API `/ping` 200, `/api/v1/lookups` 401 after.
 - [ ] **U-057's `TimeEntry.ProjectId` retirement is now the one known destructive block in a base file.**
   It is documented in-file. Applying `dbo.time_entry.sql` whole drops the column; decide it on its own.
-- [ ] **`dbo.project_address.sql` is still unapplied** — the only effect left is landing
-  `ReadProjectAddressByProjectId`'s `ORDER BY [Id] ASC`, a deliberate determinism change (prod returns rows
-  unordered). `CreateProjectAddress` and the new `CreatedByUserId` guard are already no-ops against prod.
+- [x] **`dbo.project_address.sql` applied 2026-11-12** (Chris's go) after the full census: 0 destructive
+  statements, 0 guarded targets would fire, 9 of 10 modules already identical. `ORDER BY [Id] ASC` is live and
+  `EXEC dbo.ReadProjectAddressByProjectId @ProjectId = 16` returns Ids `[1, 2]` in order. **Repo-wide drift is
+  now 1 of 1,230** — only `ConfirmAttachmentCategorization`'s equivalent `BEGIN/END` wrapping.
+
+#### Compatibility audit of everything applied today (asked 2026-11-12, verified not assumed)
+
+**No sproc signature or result-set shape broke.** Proven behaviourally inside a rolled-back transaction,
+because `sys.parameters.has_default_value` is always 0 for a T-SQL procedure and therefore proves nothing:
+- `EXEC dbo.UpdateContractLaborAggregates @Id = 1614` with **no** `@ReturnRow` returned its parent row (34
+  columns) — so the `= 1` default is real and `contract_labor/persistence/repo.py::update_aggregates`, which
+  passes `{"Id": id}` only, still gets a row to `_from_db`.
+- `EXEC dbo.AggregateTimeEntryOnSubmit @TimeEntryId = 1559` returned 2 rows carrying **all ten** columns
+  `time_entry/persistence/repo.py::aggregate_for_billing` reads (plus a harmless extra `LineItemRowId`).
+  Its own param list is unchanged, so the live container's call still fits.
+- The nine `Delete*`/`Read*` sprocs whose bodies changed: the removed text sat **after** each procedure's
+  final `END;`, outside the OUTPUT clause, so no result set moved. The only sproc-to-sproc dependency in the
+  changed set is the U-424 pair itself.
+- The six new indexes are **non-unique and unfiltered** — they cannot reject an INSERT.
+
+⚠️ **One reachable behaviour change, and it is the FK working as intended.** All three
+`FK_VendorAddress_*` are `ON DELETE NO_ACTION`, and 781 Vendors / 765 Addresses / **1** AddressType have
+`VendorAddress` children:
+- `DeleteVendorById` is a hard delete with no child cleanup — but it has **no Python caller**. The routed
+  vendor delete is a **soft** delete (`VendorService.delete_by_public_id` → `IsDeleted = 1`), so the FK never
+  fires on the live path.
+- `DeleteAddressById` already self-guards on `VendorAddress`/`ProjectAddress`. Unaffected.
+- `DeleteAddressTypeById` **is** called (`address_type/persistence/repo.py:184`), so deleting the one
+  referenced AddressType now fails where it previously orphaned rows. It surfaces as a clean **422** ("still
+  referenced by other records and cannot be deleted") via `classify_constraint_violation`'s
+  `REFERENCE constraint` branch — never a 500.
 

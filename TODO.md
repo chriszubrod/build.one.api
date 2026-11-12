@@ -7547,15 +7547,29 @@ semantically equivalent case. Full suite 12,324 passed / 1 skipped / 0 failed.
   `UPDATE` is still swallowed. It is **not** — that file has no trap site, and had none before U-789 either.
   Its instance was fixed at some point without the section being updated.
 
-#### Still open — both are prod-side decisions, deliberately NOT taken by U-789
+#### ✅ BOTH PROD APPLIES DONE 2026-11-12 (Chris's go) — drift is now 2 of 1,230
 
-- [ ] **Create the six declared-but-absent objects.** Applying the seven fixed files is what creates them:
-  `IX_Address_PublicId`, `IX_AddressType_PublicId`, `IX_Customer_PublicId`, `IX_Role_PublicId`,
-  `IX_VendorType_PublicId`, `FK_VendorAddress_Vendor` (+ `IX_Module_PublicId` from the U-053 file).
-  `dbo.project.sql`'s guard is already a no-op (`Project.Abbreviation` exists). The FK is the one with
-  integrity meaning — 781 `VendorAddress` rows, **0 orphans** on either side today, so this is schedulable,
-  not urgent. Each apply also rewrites that file's `Delete*ById` to drop the swallowed block from its body,
-  which is the point.
-- [ ] **Deploy U-424** (`UpdateContractLaborAggregates` + `AggregateTimeEntryOnSubmit`), both sprocs in one
-  apply. Pushed 2026-09-08, still not live.
+- [x] **Nine objects created, not six.** The pre-apply census corrected my own count: applying the eight
+  additive files creates **9**, because `dbo.vendor_address.sql` carries *three* FK blocks, not one.
+  All four FK orphan counts were 0 beforehand, so each creation succeeded: `IX_Address_PublicId`,
+  `IX_AddressType_PublicId`, `IX_Customer_PublicId`, `IX_Role_PublicId`, `IX_VendorType_PublicId`,
+  `IX_Module_PublicId` (the U-053 one), `FK_VendorAddress_Vendor`, `FK_VendorAddress_Address`,
+  `FK_VendorAddress_AddressType`. `FK_VendorAddress_Vendor` is `is_disabled=0` **and `is_not_trusted=0`** —
+  SQL Server validated the 781 existing rows, so it is real enforcement, not `WITH NOCHECK`. All eight
+  `Delete*ById` sprocs now match their files, i.e. the swallowed blocks are out of prod's sproc bodies.
+  Applied one file per command, each exit code read on its own (never through a pipe).
+- [x] **U-424 deployed — as a SCOPED apply, and the census is why.** ⛔ A whole-file apply of
+  `dbo.time_entry.sql` would ALSO have run **U-057's guarded `ALTER TABLE dbo.TimeEntry DROP COLUMN
+  ProjectId`** (batch 13). All 1,433 rows are NULL, so that guard *passes* and the drop would have
+  proceeded — a destructive retirement from 2026-07-16 that has never been applied and has nothing to do
+  with U-424. The sproc-level base==live rule does not see guarded DDL, which is exactly the gap this
+  catches. Shipped instead as the two sproc batches extracted verbatim; both now match their base files,
+  `dbo.TimeEntry.ProjectId` still exists, and `EXEC dbo.UpdateContractLaborAggregates @Id = -1,
+  @ReturnRow = 0` (zero-write, rolled back) proves the call that would have 8145'd every iOS submit now
+  resolves. API `/ping` 200, `/api/v1/lookups` 401 after.
+- [ ] **U-057's `TimeEntry.ProjectId` retirement is now the one known destructive block in a base file.**
+  It is documented in-file. Applying `dbo.time_entry.sql` whole drops the column; decide it on its own.
+- [ ] **`dbo.project_address.sql` is still unapplied** — the only effect left is landing
+  `ReadProjectAddressByProjectId`'s `ORDER BY [Id] ASC`, a deliberate determinism change (prod returns rows
+  unordered). `CreateProjectAddress` and the new `CreatedByUserId` guard are already no-ops against prod.
 

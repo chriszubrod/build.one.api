@@ -1,5 +1,25 @@
 # Session Notes
 
+## Both prod applies done — and the census stopped a column drop (2026-11-12)
+
+Drift against prod is now **2 of 1,230** (it was 15 of 1,234 this morning); both survivors are documented
+no-action cases. Full detail in `TODO.md` § Base-SQL drift sweep.
+
+- **The pre-apply census earned its keep twice.** It corrected my own object count (9, not 6 —
+  `dbo.vendor_address.sql` carries three FK blocks), and it caught that a whole-file apply of
+  `dbo.time_entry.sql` would have executed **U-057's guarded `DROP COLUMN dbo.TimeEntry.ProjectId`**. All
+  1,433 rows are NULL, so the guard passes and the drop proceeds — it would not have failed loudly. U-424
+  shipped as a scoped apply of its two sproc batches instead, and `ProjectId` is still there.
+- **A sproc-level base==live check does not make a file safe to apply.** That was the gap in my own earlier
+  reasoning: I had cleared both files on the strength of "every object in it is live-identical except the
+  unit's own", which is a statement about *modules* and says nothing about the guarded DDL batches sitting
+  between them. The rule needs the second half — census the guarded targets too.
+- **The FK is real enforcement.** `FK_VendorAddress_Vendor` came back `is_disabled=0` and
+  `is_not_trusted=0`, so SQL Server validated all 781 existing rows rather than taking it on trust.
+- **Proof, not inference, for U-424:** `EXEC dbo.UpdateContractLaborAggregates @Id = -1, @ReturnRow = 0`
+  inside a rolled-back transaction — zero rows could match, and it resolved. That is the exact call that
+  would have raised 8145 on every iOS submit had `dbo.time_entry.sql` gone in alone.
+
 ## U-789 — every base SQL file is now safe to apply (2026-11-12, `1fd1c67c`)
 
 Closed the half of the drift sweep where the FILE was wrong. Drift **15 → 9**, trap sites **7 → 0**

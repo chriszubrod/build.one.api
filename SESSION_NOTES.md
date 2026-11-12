@@ -9,14 +9,37 @@ each with `:latest` and the sha tag on the same digest. Scheduler skipped with e
   delta was a clean 12 commits — but it carried **U-785** and **U-786**, landed by other sessions and never
   deployed. The deploy therefore shipped U-786's `POST /api/v1/finish/invoice/{public_id}/draw-packet`
   (dry-run by default) to prod. Sizing a deploy from `merge-base(live, master)` is what surfaced this.
-- **U-785 is only half shipped, and the half that matters is NOT live.** Its container change
-  (`entities/invoice/persistence/repo.py`) is **comment-only**; the fix is entirely in
-  `entities/invoice/sql/dbo.invoice.sql` — `BackfillLinkedSourceProjectId` refusing only a real NULL fill on
-  a completed Bill, binding the UPDATE to the locked `BillId`, and reading the line under
-  `READCOMMITTEDLOCK` after the Bill lock. **No SQL was applied**, so prod still refuses the no-op call that
-  invoice reconciliation makes over HTTP (`is_exempt()` false ⇒ `@AllowTerminalParent = 0`). That apply
-  needs a per-object drift check of `dbo.invoice.sql` against prod first — the base file is a cross-entity
-  writer and a whole-file apply is not safe on its own.
+- **U-785's container change is comment-only — and its SQL was ALREADY live.** The fix is entirely in
+  `entities/invoice/sql/dbo.invoice.sql` (`BackfillLinkedSourceProjectId` refusing only a real NULL fill on a
+  completed Bill, binding the UPDATE to the locked `BillId`, reading the line under `READCOMMITTEDLOCK` after
+  the Bill lock). I first recorded this as "no SQL applied, so prod still refuses the no-op call" — **that was
+  wrong**, inferred from the container being undeployed. The drift check below settles it: prod's definition
+  carries `@ParentStatus`, `@LockedBillId`, `@LineProjectId` and `READCOMMITTEDLOCK`, with no
+  `@LockedCompleted`, and `sys.objects.modify_date` = **2026-11-10 21:04:47Z** — U-785's own session applied
+  it. A unit's container state says nothing about its SQL state; read the SQL state from the database.
+
+### Drift check of `dbo.invoice.sql` against prod (2026-11-12) — base == live, apply is a no-op
+
+- **All 17 procedures normalize byte-identical to prod.** (`CREATE OR ALTER` → `CREATE`, comments stripped,
+  whitespace collapsed, both sides cut at the CREATE line.) Nothing in this base file is stale, so the
+  "extract the unit's batches verbatim" rule does not apply — there is no stale sibling to work around.
+- **The comparator was proven non-vacuous before the result was believed.** Three planted single-token
+  mutations — dropping `AND [BillId] = @LockedBillId`, `SYSUTCDATETIME()` → `GETUTCDATE()`, and an injected
+  `1=1 AND` — each went RED at similarity 0.983–0.991, and a bogus object name returned `None` on the MISSING
+  path. A 17/17 green from an unexercised comparator would look exactly the same.
+- **All 12 non-procedure batches are existence-guarded, and every guard target is present in prod** (the
+  table, `CreatedByUserId` + its FK, four `IX_Invoice_*`, `QboId`/`RealmId`/`SyncToken`,
+  `UQ_Invoice_QboId_RealmId`, `UQ_Invoice_ProjectId_InvoiceNumber`). Each is therefore a *proven* no-op, not
+  merely one that reads as idempotent.
+- **From-scratch residual — a confirming instance of an already-open item, not a new find.** The base
+  `CREATE TABLE` declares 13 columns; prod has 18. Four extras are backfilled by guarded `ALTER`s later in the
+  file, but **`CompanyId` is not mentioned anywhere in the file** (0 occurrences) while being `NOT NULL` in
+  prod and populated on all 1,027 rows. That is exactly the campaign-wide P3 already booked at `TODO.md:4684`
+  ("Base SQL files are not self-contained from scratch", naming `CompanyId` / `phase5_company_id_*`), and
+  `TODO.md:4685` explains the asymmetry: **U-345 closed only the `CreatedByUserId` slice** across 29 base
+  files, leaving `CompanyId` for a later slice. No new booking — I checked before filing one, and the
+  duplicate would have been the third entry for the same campaign. Apply-safe either way: no sproc in this
+  file references `CompanyId`, so unlike batch 7's QboId case there is no CREATE-time 207.
 - **The route sentinel needed a control, and the first one was vacuous.** `POST …/draw-packet` without
   credentials returned 404 before the deploy — but so did a route I believed existed, so 404 proved nothing.
   The non-vacuous sentinel was the public `/openapi.json`: **711 paths → 712**, the single new path being

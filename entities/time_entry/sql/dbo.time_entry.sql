@@ -176,6 +176,10 @@ GO
 
 
 -- Retire the vestigial TimeEntry.ProjectId (U-057, 2026-07-16).
+-- ✅ RAN IN PROD 2026-11-12 (U-789, Chris's go): the column and IX_TimeEntry_ProjectId
+-- are gone, all 1,433 rows had been NULL so nothing was lost, and the block below is
+-- now a proven no-op (its sys.columns guard finds nothing). Reversal, if ever needed:
+-- ALTER TABLE dbo.TimeEntry ADD ProjectId BIGINT NULL, then recreate the index.
 --
 -- The project link lives on dbo.TimeLog.ProjectId, per clock-in segment, because
 -- a worker can move between projects inside one WorkDate. An earlier migration
@@ -1356,12 +1360,12 @@ GO
 -- U-125 (2026-07-23): sprocs below homed from migrations 001-013; bodies are the LIVE prod definitions captured via sys.sql_modules.
 
 
--- ⛔ DO NOT APPLY THIS FILE ALONE (U-424, pushed 2026-09-08, still undeployed —
--- re-verified against prod 2026-11-12). The body below calls
+-- ⛔ PAIRED WITH dbo.contract_labor.sql — keep them in sync. The body below calls
 --   EXEC dbo.UpdateContractLaborAggregates @Id = @ParentRowId, @ReturnRow = 0
--- and prod's UpdateContractLaborAggregates still takes @Id ONLY. Applying this file
--- without dbo.contract_labor.sql's matching sproc 8145s every iOS time-entry submit.
--- The two ship together or not at all.
+-- so this sproc only works against a UpdateContractLaborAggregates that declares
+-- @ReturnRow. U-424 (pushed 2026-09-08) DEPLOYED 2026-11-12 as a scoped apply of both
+-- sprocs, then re-applied whole with this file; prod now carries both. If either side is
+-- ever reverted or rebuilt alone, the mismatch 8145s every iOS time-entry submit.
 CREATE OR ALTER PROCEDURE dbo.AggregateTimeEntryOnSubmit
 (
     @TimeEntryId BIGINT

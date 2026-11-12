@@ -7567,8 +7567,27 @@ semantically equivalent case. Full suite 12,324 passed / 1 skipped / 0 failed.
   `dbo.TimeEntry.ProjectId` still exists, and `EXEC dbo.UpdateContractLaborAggregates @Id = -1,
   @ReturnRow = 0` (zero-write, rolled back) proves the call that would have 8145'd every iOS submit now
   resolves. API `/ping` 200, `/api/v1/lookups` 401 after.
-- [ ] **U-057's `TimeEntry.ProjectId` retirement is now the one known destructive block in a base file.**
-  It is documented in-file. Applying `dbo.time_entry.sql` whole drops the column; decide it on its own.
+- [x] **U-057's `TimeEntry.ProjectId` retirement APPLIED 2026-11-12** (Chris's go), by applying
+  `dbo.contract_labor.sql` then `dbo.time_entry.sql` whole. Census first: `contract_labor` was a pure refresh
+  (0 destructive, 0 firing targets, 0 of 32 modules differing); `time_entry`'s only destructive statements
+  were the three lines of the U-057 block itself, and 0 of its 27 modules differed. The
+  `FK_TimeEntry_Project` "would create" was the DROP-guard false positive the census rule warns about.
+  **Column and `IX_TimeEntry_ProjectId` are gone, all 1,433 rows had been NULL so nothing was lost**, and
+  `dbo.TimeLog` carries 1,902 rows with a real `ProjectId` — the link lives there, per clock-in segment.
+  `EXEC dbo.AggregateTimeEntryOnSubmit` still returns its 11 columns with the column gone (rolled back).
+  Reversal if ever needed: `ALTER TABLE dbo.TimeEntry ADD ProjectId BIGINT NULL` + recreate the index.
+- [x] ⛔ **Self-inflicted, found and fixed in the same pass: my U-424 staging header was baked into a PROD
+  sproc definition.** `run_sql.py` stores a whole batch, so the comment block at the top of the staged
+  `u424_scoped_apply.sql` — including the line **"NOT YET APPLIED"** — became part of prod's
+  `OBJECT_DEFINITION(dbo.UpdateContractLaborAggregates)`, with a `-- ===== … verbatim from …` line on the
+  other sproc. It was invisible to the drift check because the comparison strips comments by design, and it
+  surfaced only because a dependency grep for `TimeEntry.ProjectId` matched **my own header text**. Both
+  definitions were overwritten by the whole-file applies and now match their base files byte-for-byte with
+  comments included. **Rule: never put commentary above `CREATE` in a file you apply — SQL Server keeps it
+  forever, and a staging note ages into a lie inside the database.**
+- [x] **The in-file PAIRED APPLY warnings were corrected before the final apply**, because they said U-424
+  was "still undeployed" — and after the first apply that stale claim was itself stored in prod's sproc text.
+  They now record the 2026-11-12 deploy and keep the never-revert-one-side-alone rule.
 - [x] **`dbo.project_address.sql` applied 2026-11-12** (Chris's go) after the full census: 0 destructive
   statements, 0 guarded targets would fire, 9 of 10 modules already identical. `ORDER BY [Id] ASC` is live and
   `EXEC dbo.ReadProjectAddressByProjectId @ProjectId = 16` returns Ids `[1, 2]` in order. **Repo-wide drift is

@@ -1933,10 +1933,11 @@ GO
 -- Idempotent (CREATE OR ALTER). Safe to re-run.
 -- =============================================================================
 
--- ⛔ PAIRED APPLY (U-424, pushed 2026-09-08, still undeployed — re-verified against
--- prod 2026-11-12). The @ReturnRow param below does not exist in prod, and
--- dbo.time_entry.sql's AggregateTimeEntryOnSubmit already passes it. Apply this file
--- and dbo.time_entry.sql together; applying time_entry alone 8145s every iOS submit.
+-- ⛔ PAIRED WITH dbo.time_entry.sql — keep them in sync. @ReturnRow below is what
+-- AggregateTimeEntryOnSubmit passes. U-424 (pushed 2026-09-08) DEPLOYED 2026-11-12:
+-- prod declares @Id and @ReturnRow, verified by calling it with @Id alone and getting
+-- the parent row back. Never revert or rebuild one of the pair without the other —
+-- a mismatch 8145s every iOS time-entry submit.
 CREATE OR ALTER PROCEDURE dbo.UpdateContractLaborAggregates
 (
     @Id BIGINT,

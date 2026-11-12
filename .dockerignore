@@ -1,3 +1,20 @@
+# Build context for `az acr build` (the Dockerfile does `COPY . .`, so whatever
+# survives this file is baked into the prod image).
+#
+# DO NOT widen the bare `*.md` pattern below to a recursive one.
+# Docker matches each pattern against the FULL path relative to the context root
+# and `*` never crosses a `/`, so bare `*.md` drops only TOP-LEVEL markdown.
+# That is load-bearing: the agent fleet reads 12 nested `prompt.md` files at
+# IMPORT time (`intelligence/agents/*/definition.py`, plus
+# `entities/invoice/intelligence/prompt.md`) via `Path(...).read_text()`.
+# A recursive markdown pattern would exclude all of them and the container would
+# die on startup with FileNotFoundError before serving a single request.
+#
+# The same matching rule is why the cache patterns appear twice: the bare form
+# for the top level, the `**/` form for nested copies (511 nested `__pycache__`
+# dirs, 27 MB, were shipping into the prod image before 2026-11-11).
+# Mirrors build.one.mcp/.dockerignore; keep the two in step.
+
 # Git
 .git
 .gitignore
@@ -6,10 +23,16 @@
 .venv
 venv
 __pycache__
+**/__pycache__
 *.py[cod]
+**/*.py[cod]
 *.pyo
 .pytest_cache
+**/.pytest_cache
 .mypy_cache
+**/.mypy_cache
+.ruff_cache
+**/.ruff_cache
 .coverage
 htmlcov
 
@@ -26,6 +49,7 @@ htmlcov
 
 # OS
 .DS_Store
+**/.DS_Store
 Thumbs.db
 
 # Docs and samples

@@ -50,16 +50,20 @@ az webapp config container set \
 # ACR builds server-side — no local Docker, no `az acr login`, no `docker push`.
 # Name the build context explicitly; never a bare `.`. The positional argument is
 # tarred and uploaded, so a wrong CWD silently ships the wrong tree (and, once the
-# repos are consolidated, the whole monorepo). `--file` stays RELATIVE to that
-# context (per `az acr build --help`). ALWAYS pass both tags — :latest and the sha
+# repos are consolidated, the whole monorepo). ⛔ Pass NO `--file`: az joins
+# `Dockerfile` to the named context itself (azure-cli `acr/build.py:57`), so the
+# two can never disagree. A `--file` you DO pass is resolved against the CURRENT
+# DIRECTORY and checked there (`build.py:60`), which puts back the exact CWD
+# dependence the explicit context removes — it failed outright on the 2026-11-12
+# deploy. `--help`'s "relative to the context" holds only for a REMOTE (git-URL)
+# source location. ALWAYS pass both tags — :latest and the sha
 # — including on a rollback build, or :latest matches no sha and traceability dies.
 REPO=/Users/chris/Applications/build.one/build.one.api   # or .worktrees/<unit>
 git -C "$REPO" fetch origin && git -C "$REPO" merge --ff-only origin/master
 SHA=$(git -C "$REPO" rev-parse --short=8 HEAD)
 echo "shipping $SHA"   # assert this is the commit you mean BEFORE building
 az acr build --registry buildone \
-  --image buildone:latest --image "buildone:$SHA" \
-  --file Dockerfile "$REPO"
+  --image buildone:latest --image "buildone:$SHA" "$REPO"
 
 # Force the Web App to pull the new image.
 # Use stop + start, NOT `az webapp restart` — restart can relaunch the CACHED

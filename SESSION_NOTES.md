@@ -1,5 +1,34 @@
 # Session Notes
 
+## Bulk prod deploy — api + mcp, and a deploy recipe that could not run (2026-11-12)
+
+Deployed api `f7008898` (ACR run `caf2`, digest `3cb53dbc`) and mcp `a9975637` (run `caf3`, `da0e95dd`),
+each with `:latest` and the sha tag on the same digest. Scheduler skipped with evidence, not by assumption.
+
+- **The api delta was NOT just docs.** Live was `74380f2d` (2026-11-10), an ancestor of `master`, so the
+  delta was a clean 12 commits — but it carried **U-785** and **U-786**, landed by other sessions and never
+  deployed. The deploy therefore shipped U-786's `POST /api/v1/finish/invoice/{public_id}/draw-packet`
+  (dry-run by default) to prod. Sizing a deploy from `merge-base(live, master)` is what surfaced this.
+- **U-785 is only half shipped, and the half that matters is NOT live.** Its container change
+  (`entities/invoice/persistence/repo.py`) is **comment-only**; the fix is entirely in
+  `entities/invoice/sql/dbo.invoice.sql` — `BackfillLinkedSourceProjectId` refusing only a real NULL fill on
+  a completed Bill, binding the UPDATE to the locked `BillId`, and reading the line under
+  `READCOMMITTEDLOCK` after the Bill lock. **No SQL was applied**, so prod still refuses the no-op call that
+  invoice reconciliation makes over HTTP (`is_exempt()` false ⇒ `@AllowTerminalParent = 0`). That apply
+  needs a per-object drift check of `dbo.invoice.sql` against prod first — the base file is a cross-entity
+  writer and a whole-file apply is not safe on its own.
+- **The route sentinel needed a control, and the first one was vacuous.** `POST …/draw-packet` without
+  credentials returned 404 before the deploy — but so did a route I believed existed, so 404 proved nothing.
+  The non-vacuous sentinel was the public `/openapi.json`: **711 paths → 712**, the single new path being
+  exactly U-786's route, nothing removed. A sub-30s "up" after stop+start again proved nothing by itself
+  (stop returned in 2s, start in 4s).
+- ⛔ **The deploy recipe written yesterday could not run.** `--file Dockerfile "$REPO"` failed with
+  `Unable to find 'Dockerfile'` from the umbrella. azure-cli existence-checks `--file` against the **process
+  CWD** and uses it as-is (`acr/build.py:60`); only when `--file` is **omitted** does it join `Dockerfile` to
+  the named context (line 57). `--help`'s "relative to the context" is true only for a remote git-URL source.
+  Omitting `--file` is strictly safer than an absolute one: it makes the Dockerfile and the tree it builds
+  impossible to disagree. Fixed in `DEPLOY.md`, mcp `TODO.md`, umbrella memory, and both team briefs.
+
 ## U-551b-f1 follow-up batch — six units in one day with the Codex leg dead (2026-11-08)
 
 Landed on master (none deployed): f9 `8fcd4c82`, f8 `cc82492d`, f10 `868c755b`, f12 `a0ca847a` (SQL),

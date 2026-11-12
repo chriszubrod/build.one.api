@@ -1,5 +1,24 @@
 # Session Notes
 
+## API container realigned to master — `aff54ff5` (2026-11-12 11:59Z)
+
+`az acr build` run **`caf4`**, digest **`e7933aeb`**, both `:latest` and `:aff54ff5` on it; stop+start, not
+restart. The live image had been `f7008898` from 09:05Z.
+
+- **A traceability deploy, not a behaviour deploy — and worth saying so.** The delta from the live image was
+  9 commits: **18 `.sql`, 3 `.md`, 2 `.py` — and both `.py` are tests.** Zero runtime Python changed, and
+  every `.sql` mention in the Python tree is a docstring, so nothing in the running app reads those files.
+  The image's embedded tree was stale; the code it executes was not.
+- **There was therefore no behavioural sentinel to use, so the proof is platform-side.** Site stopped
+  11:58:54 (nothing old could answer), pull of `:latest` began 11:59:07, container created 11:59:15, startup
+  probe succeeded after 13.6s, `Application startup complete` 11:59:30 with no traceback. Route table
+  **712 → 712, none added, none removed** — the right assertion for a deploy that should change nothing.
+- ⚠️ My first health read came back 200 at 11:59:22, *before* the startup probe succeeded. On its own that is
+  the cache-hit tell the U-410/U-674 notes warn about; here it was the new container mid-warmup, which the
+  platform log settles. I re-read after 11:59:30 rather than keep the earlier number.
+- **This deploy also exercised the morning's `--file` fix**: built from the umbrella directory, deliberately
+  not from the repo. The corrected recipe is CWD-independent, which was the whole point of dropping `--file`.
+
 ## Both prod applies done — and the census stopped a column drop (2026-11-12)
 
 Drift against prod is now **2 of 1,230** (it was 15 of 1,234 this morning); both survivors are documented

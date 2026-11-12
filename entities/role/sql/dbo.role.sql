@@ -194,6 +194,12 @@ BEGIN
 END;
 
 -- PublicId index
+GO
+
+-- NB the GO above is load-bearing (U-789; the U-048/U-053 batch trap): a stored
+-- procedure body runs to the end of its BATCH, not to its matching END, so without
+-- it the block below was compiled into DeleteRoleById's body instead of
+-- running as DDL. Verified 2026-11-12: IX_Role_PublicId does NOT exist in prod.
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_Role_PublicId' AND object_id = OBJECT_ID('dbo.Role'))
 BEGIN
     CREATE INDEX [IX_Role_PublicId] ON [dbo].[Role] ([PublicId]);

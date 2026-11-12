@@ -49,107 +49,15 @@ GO
 
 
 -- Step 2: UpsertEmailMessage with new MERGE on (InternetMessageId, Folder).
-CREATE OR ALTER PROCEDURE UpsertEmailMessage
-(
-    @GraphMessageId NVARCHAR(255),
-    @InternetMessageId NVARCHAR(255) = NULL,
-    @ConversationId NVARCHAR(255) = NULL,
-    @MailboxAddress NVARCHAR(320),
-    @FromAddress NVARCHAR(320) = NULL,
-    @FromName NVARCHAR(255) = NULL,
-    @ToRecipients NVARCHAR(MAX) = NULL,
-    @CcRecipients NVARCHAR(MAX) = NULL,
-    @Subject NVARCHAR(1024) = NULL,
-    @BodyPreview NVARCHAR(1024) = NULL,
-    @BodyContent NVARCHAR(MAX) = NULL,
-    @BodyContentType NVARCHAR(20) = NULL,
-    @ReceivedDatetime DATETIME2(3) = NULL,
-    @WebLink NVARCHAR(1024) = NULL,
-    @HasAttachments BIT = 0,
-    @CreatedByUserId BIGINT = NULL,
-    @Folder NVARCHAR(50) = 'inbox',
-    @DefaultProcessingStatus NVARCHAR(50) = 'pending'
-)
-AS
-BEGIN
-    -- New invariant: InternetMessageId is required. GraphMessageId is
-    -- not stable enough in shared mailboxes (recycled on soft-delete +
-    -- restore cycles) to use as a primary key. RFC 5322 Message-ID is
-    -- globally unique and immutable; every standard email has one.
-    IF @InternetMessageId IS NULL OR LTRIM(RTRIM(@InternetMessageId)) = ''
-    BEGIN
-        RAISERROR(
-            'UpsertEmailMessage requires @InternetMessageId (RFC 5322 Message-ID). GraphMessageId is not stable enough to use as a primary key in this mailbox. Caller should log + skip.',
-            16, 1
-        );
-        RETURN;
-    END
-
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    MERGE dbo.[EmailMessage] AS target
-    USING (SELECT @InternetMessageId AS InternetMessageId, @Folder AS Folder) AS source
-    ON target.[InternetMessageId] = source.InternetMessageId
-       AND target.[Folder] = source.Folder
-    WHEN MATCHED THEN
-        UPDATE SET
-            [ModifiedDatetime] = @Now,
-            -- GraphMessageId is NOW a mutable secondary — Graph can
-            -- recycle these and a later poll might see the same IMID
-            -- under a different GraphMessageId. Update to the latest.
-            [GraphMessageId] = @GraphMessageId,
-            [ConversationId] = @ConversationId,
-            [MailboxAddress] = @MailboxAddress,
-            [FromAddress] = @FromAddress,
-            [FromName] = @FromName,
-            [ToRecipients] = @ToRecipients,
-            [CcRecipients] = @CcRecipients,
-            [Subject] = @Subject,
-            [BodyPreview] = @BodyPreview,
-            [BodyContent] = @BodyContent,
-            [BodyContentType] = @BodyContentType,
-            [ReceivedDatetime] = @ReceivedDatetime,
-            [WebLink] = @WebLink,
-            [HasAttachments] = @HasAttachments
-            -- Folder + ProcessingStatus deliberately not updated on
-            -- match: folder is part of the match key (immutable per row);
-            -- status is owned by the agent claim/process workflow.
-    WHEN NOT MATCHED THEN
-        INSERT
-            ([CreatedDatetime], [ModifiedDatetime], [GraphMessageId], [InternetMessageId],
-             [ConversationId], [MailboxAddress], [FromAddress], [FromName],
-             [ToRecipients], [CcRecipients], [Subject],
-             [BodyPreview], [BodyContent], [BodyContentType], [ReceivedDatetime],
-             [ProcessingStatus], [WebLink], [HasAttachments], [CreatedByUserId], [Folder])
-        VALUES
-            (@Now, @Now, @GraphMessageId, @InternetMessageId,
-             @ConversationId, @MailboxAddress, @FromAddress, @FromName,
-             @ToRecipients, @CcRecipients, @Subject,
-             @BodyPreview, @BodyContent, @BodyContentType, @ReceivedDatetime,
-             @DefaultProcessingStatus, @WebLink, @HasAttachments, COALESCE(@CreatedByUserId, 17), @Folder)
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[GraphMessageId],
-        INSERTED.[InternetMessageId],
-        INSERTED.[ConversationId],
-        INSERTED.[MailboxAddress],
-        INSERTED.[FromAddress],
-        INSERTED.[FromName],
-        INSERTED.[Subject],
-        INSERTED.[BodyPreview],
-        INSERTED.[BodyContentType],
-        CONVERT(VARCHAR(19), INSERTED.[ReceivedDatetime], 120) AS [ReceivedDatetime],
-        INSERTED.[ProcessingStatus],
-        INSERTED.[AgentSessionId],
-        INSERTED.[WebLink],
-        INSERTED.[HasAttachments];
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-789, 2026-11-12) — body removed, NOT the (InternetMessageId, Folder) merge-key intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/email_message/sql/dbo.email_message.sql
+--
+-- This copy was byte-identical to prod (verified 2026-11-12), so nothing is lost: the
+-- base file carries the same body. Migrations carry pointer stubs only, so that the
+-- single-source ratchet can see one definition instead of three.
+-- Re-running this file is now a no-op for UpsertEmailMessage. Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO

@@ -30,196 +30,74 @@ BEGIN
 END
 GO
 
-CREATE OR ALTER PROCEDURE UpsertEmailMessage
-(
-    @GraphMessageId NVARCHAR(255),
-    @InternetMessageId NVARCHAR(255) = NULL,
-    @ConversationId NVARCHAR(255) = NULL,
-    @MailboxAddress NVARCHAR(320),
-    @FromAddress NVARCHAR(320) = NULL,
-    @FromName NVARCHAR(255) = NULL,
-    @ToRecipients NVARCHAR(MAX) = NULL,
-    @CcRecipients NVARCHAR(MAX) = NULL,
-    @Subject NVARCHAR(1024) = NULL,
-    @BodyPreview NVARCHAR(1024) = NULL,
-    @BodyContent NVARCHAR(MAX) = NULL,
-    @BodyContentType NVARCHAR(20) = NULL,
-    @ReceivedDatetime DATETIME2(3) = NULL,
-    @WebLink NVARCHAR(1024) = NULL,
-    @HasAttachments BIT = 0
-)
-AS
-BEGIN
-    SET NOCOUNT ON;
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    MERGE dbo.[EmailMessage] AS target
-    USING (SELECT @GraphMessageId AS GraphMessageId) AS source
-    ON target.[GraphMessageId] = source.GraphMessageId
-    WHEN MATCHED THEN
-        UPDATE SET
-            [ModifiedDatetime] = @Now,
-            [InternetMessageId] = @InternetMessageId,
-            [ConversationId] = @ConversationId,
-            [MailboxAddress] = @MailboxAddress,
-            [FromAddress] = @FromAddress,
-            [FromName] = @FromName,
-            [ToRecipients] = @ToRecipients,
-            [CcRecipients] = @CcRecipients,
-            [Subject] = @Subject,
-            [BodyPreview] = @BodyPreview,
-            [BodyContent] = @BodyContent,
-            [BodyContentType] = @BodyContentType,
-            [ReceivedDatetime] = @ReceivedDatetime,
-            [WebLink] = @WebLink,
-            [HasAttachments] = @HasAttachments
-    WHEN NOT MATCHED THEN
-        INSERT
-            ([CreatedDatetime], [ModifiedDatetime], [GraphMessageId], [InternetMessageId],
-             [ConversationId], [MailboxAddress], [FromAddress], [FromName],
-             [ToRecipients], [CcRecipients],
-             [Subject], [BodyPreview], [BodyContent], [BodyContentType], [ReceivedDatetime],
-             [ProcessingStatus], [WebLink], [HasAttachments])
-        VALUES
-            (@Now, @Now, @GraphMessageId, @InternetMessageId,
-             @ConversationId, @MailboxAddress, @FromAddress, @FromName,
-             @ToRecipients, @CcRecipients,
-             @Subject, @BodyPreview, @BodyContent, @BodyContentType, @ReceivedDatetime,
-             'pending', @WebLink, @HasAttachments)
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[GraphMessageId],
-        INSERTED.[InternetMessageId],
-        INSERTED.[ConversationId],
-        INSERTED.[MailboxAddress],
-        INSERTED.[FromAddress],
-        INSERTED.[FromName],
-        INSERTED.[ToRecipients],
-        INSERTED.[CcRecipients],
-        INSERTED.[Subject],
-        INSERTED.[BodyPreview],
-        INSERTED.[BodyContentType],
-        CONVERT(VARCHAR(19), INSERTED.[ReceivedDatetime], 120) AS [ReceivedDatetime],
-        INSERTED.[ProcessingStatus],
-        INSERTED.[AgentSessionId],
-        INSERTED.[WebLink],
-        INSERTED.[HasAttachments];
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-789, 2026-11-12) — body removed, NOT the recipient-column intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/email_message/sql/dbo.email_message.sql
+--
+-- This file's copy had fallen far behind prod: it selected ToRecipients/CcRecipients,
+-- omitted Folder and the four AgentClassification* columns, and UpsertEmailMessage
+-- matched on GraphMessageId instead of prod's (InternetMessageId, Folder) and lacked
+-- @CreatedByUserId/@DefaultProcessingStatus. Applying this file would have reverted
+-- four live email-intake sprocs. The ToRecipients/CcRecipients COLUMNS this migration
+-- adds are already present in prod and its ADD guards above are kept; only the sproc
+-- bodies are neutralised. The read shape is owned by the base file.
+-- Re-running this file is now a no-op for UpsertEmailMessage. Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO
 
 -- Update the read sprocs to include the new columns so existing API
 -- consumers see them. The remaining sprocs (Update*Status,
 -- ClaimNextPending, paginated read, count, delete) don't need touching —
 -- they either don't return body data or already SELECT *.
-CREATE OR ALTER PROCEDURE ReadEmailMessageById
-(
-    @Id BIGINT
-)
-AS
-BEGIN
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [GraphMessageId],
-        [InternetMessageId],
-        [ConversationId],
-        [MailboxAddress],
-        [FromAddress],
-        [FromName],
-        [ToRecipients],
-        [CcRecipients],
-        [Subject],
-        [BodyPreview],
-        [BodyContent],
-        [BodyContentType],
-        CONVERT(VARCHAR(19), [ReceivedDatetime], 120) AS [ReceivedDatetime],
-        [ProcessingStatus],
-        [LastError],
-        [AgentSessionId],
-        [WebLink],
-        [HasAttachments]
-    FROM dbo.[EmailMessage]
-    WHERE [Id] = @Id;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-789, 2026-11-12) — body removed, NOT the recipient-column intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/email_message/sql/dbo.email_message.sql
+--
+-- This file's copy had fallen far behind prod: it selected ToRecipients/CcRecipients,
+-- omitted Folder and the four AgentClassification* columns, and UpsertEmailMessage
+-- matched on GraphMessageId instead of prod's (InternetMessageId, Folder) and lacked
+-- @CreatedByUserId/@DefaultProcessingStatus. Applying this file would have reverted
+-- four live email-intake sprocs. The ToRecipients/CcRecipients COLUMNS this migration
+-- adds are already present in prod and its ADD guards above are kept; only the sproc
+-- bodies are neutralised. The read shape is owned by the base file.
+-- Re-running this file is now a no-op for ReadEmailMessageById. Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO
 
-CREATE OR ALTER PROCEDURE ReadEmailMessageByPublicId
-(
-    @PublicId UNIQUEIDENTIFIER
-)
-AS
-BEGIN
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [GraphMessageId],
-        [InternetMessageId],
-        [ConversationId],
-        [MailboxAddress],
-        [FromAddress],
-        [FromName],
-        [ToRecipients],
-        [CcRecipients],
-        [Subject],
-        [BodyPreview],
-        [BodyContent],
-        [BodyContentType],
-        CONVERT(VARCHAR(19), [ReceivedDatetime], 120) AS [ReceivedDatetime],
-        [ProcessingStatus],
-        [LastError],
-        [AgentSessionId],
-        [WebLink],
-        [HasAttachments]
-    FROM dbo.[EmailMessage]
-    WHERE [PublicId] = @PublicId;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-789, 2026-11-12) — body removed, NOT the recipient-column intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/email_message/sql/dbo.email_message.sql
+--
+-- This file's copy had fallen far behind prod: it selected ToRecipients/CcRecipients,
+-- omitted Folder and the four AgentClassification* columns, and UpsertEmailMessage
+-- matched on GraphMessageId instead of prod's (InternetMessageId, Folder) and lacked
+-- @CreatedByUserId/@DefaultProcessingStatus. Applying this file would have reverted
+-- four live email-intake sprocs. The ToRecipients/CcRecipients COLUMNS this migration
+-- adds are already present in prod and its ADD guards above are kept; only the sproc
+-- bodies are neutralised. The read shape is owned by the base file.
+-- Re-running this file is now a no-op for ReadEmailMessageByPublicId. Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO
 
-CREATE OR ALTER PROCEDURE ReadEmailMessageByGraphMessageId
-(
-    @GraphMessageId NVARCHAR(255)
-)
-AS
-BEGIN
-    SELECT
-        [Id],
-        [PublicId],
-        [RowVersion],
-        CONVERT(VARCHAR(19), [CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), [ModifiedDatetime], 120) AS [ModifiedDatetime],
-        [GraphMessageId],
-        [InternetMessageId],
-        [ConversationId],
-        [MailboxAddress],
-        [FromAddress],
-        [FromName],
-        [ToRecipients],
-        [CcRecipients],
-        [Subject],
-        [BodyPreview],
-        [BodyContent],
-        [BodyContentType],
-        CONVERT(VARCHAR(19), [ReceivedDatetime], 120) AS [ReceivedDatetime],
-        [ProcessingStatus],
-        [LastError],
-        [AgentSessionId],
-        [WebLink],
-        [HasAttachments]
-    FROM dbo.[EmailMessage]
-    WHERE [GraphMessageId] = @GraphMessageId;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-789, 2026-11-12) — body removed, NOT the recipient-column intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/email_message/sql/dbo.email_message.sql
+--
+-- This file's copy had fallen far behind prod: it selected ToRecipients/CcRecipients,
+-- omitted Folder and the four AgentClassification* columns, and UpsertEmailMessage
+-- matched on GraphMessageId instead of prod's (InternetMessageId, Folder) and lacked
+-- @CreatedByUserId/@DefaultProcessingStatus. Applying this file would have reverted
+-- four live email-intake sprocs. The ToRecipients/CcRecipients COLUMNS this migration
+-- adds are already present in prod and its ADD guards above are kept; only the sproc
+-- bodies are neutralised. The read shape is owned by the base file.
+-- Re-running this file is now a no-op for ReadEmailMessageByGraphMessageId. Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO

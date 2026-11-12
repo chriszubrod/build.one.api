@@ -35,6 +35,18 @@ CREATE TABLE [dbo].[WorkflowEvent]
 );
 GO
 
+-- U-789: idempotent column-add so a from-scratch build of this file matches prod,
+-- whose dbo.WorkflowEvent.CreatedByUserId is BIGINT NULL, no default — matched to prod. Added out-of-band (Gap 2 / Phase 4
+-- attribution) before this base file became canonical, so the CREATE TABLE above
+-- never declared it while the Create sproc below writes it. No-op against prod.
+IF OBJECT_ID('dbo.WorkflowEvent', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.WorkflowEvent') AND name = 'CreatedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[WorkflowEvent] ADD [CreatedByUserId] BIGINT NULL;
+END
+GO
+
 CREATE INDEX IX_WorkflowEvent_WorkflowId ON [dbo].[WorkflowEvent]([WorkflowId], [CreatedDatetime]);
 CREATE INDEX IX_WorkflowEvent_EventType ON [dbo].[WorkflowEvent]([EventType], [CreatedDatetime]);
 GO
@@ -50,7 +62,13 @@ GO
 DROP PROCEDURE IF EXISTS CreateWorkflowEvent;
 GO
 
-CREATE PROCEDURE CreateWorkflowEvent
+-- U-789 (2026-11-12): body replaced with the LIVE prod definition, taken verbatim from
+--   core/workflow_event/sql/migrations/002_phase4_attribution_sprocs.sql
+-- and byte-verified against prod OBJECT_DEFINITION. The copy here was the STALE side
+-- (no @CreatedByUserId), and base files are re-run routinely, so an apply would have
+-- dropped the param and stopped populating the column. Same shape as the three
+-- attachment Create sprocs retired from tests/sproc_drift_ledger.py before it.
+CREATE OR ALTER PROCEDURE CreateWorkflowEvent
 (
     @WorkflowId BIGINT,
     @EventType VARCHAR(50),
@@ -58,7 +76,8 @@ CREATE PROCEDURE CreateWorkflowEvent
     @ToState VARCHAR(50) = NULL,
     @StepName VARCHAR(100) = NULL,
     @Data NVARCHAR(MAX) = NULL,
-    @CreatedBy VARCHAR(200) = NULL
+    @CreatedBy VARCHAR(200) = NULL,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -68,7 +87,8 @@ BEGIN
 
     INSERT INTO dbo.[WorkflowEvent] (
         [CreatedDatetime], [ModifiedDatetime], [WorkflowId],
-        [EventType], [FromState], [ToState], [StepName], [Data], [CreatedBy]
+        [EventType], [FromState], [ToState], [StepName], [Data], [CreatedBy],
+        [CreatedByUserId]
     )
     OUTPUT
         INSERTED.[Id],
@@ -82,10 +102,12 @@ BEGIN
         INSERTED.[ToState],
         INSERTED.[StepName],
         INSERTED.[Data],
-        INSERTED.[CreatedBy]
+        INSERTED.[CreatedBy],
+        INSERTED.[CreatedByUserId]
     VALUES (
         @Now, @Now, @WorkflowId,
-        @EventType, @FromState, @ToState, @StepName, @Data, @CreatedBy
+        @EventType, @FromState, @ToState, @StepName, @Data, @CreatedBy,
+        @CreatedByUserId
     );
 
     COMMIT TRANSACTION;

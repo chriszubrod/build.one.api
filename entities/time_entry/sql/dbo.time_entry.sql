@@ -1356,6 +1356,12 @@ GO
 -- U-125 (2026-07-23): sprocs below homed from migrations 001-013; bodies are the LIVE prod definitions captured via sys.sql_modules.
 
 
+-- ⛔ DO NOT APPLY THIS FILE ALONE (U-424, pushed 2026-09-08, still undeployed —
+-- re-verified against prod 2026-11-12). The body below calls
+--   EXEC dbo.UpdateContractLaborAggregates @Id = @ParentRowId, @ReturnRow = 0
+-- and prod's UpdateContractLaborAggregates still takes @Id ONLY. Applying this file
+-- without dbo.contract_labor.sql's matching sproc 8145s every iOS time-entry submit.
+-- The two ship together or not at all.
 CREATE OR ALTER PROCEDURE dbo.AggregateTimeEntryOnSubmit
 (
     @TimeEntryId BIGINT

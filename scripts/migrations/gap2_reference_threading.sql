@@ -146,33 +146,19 @@ END;
 GO
 
 -- ===== 6. CreateProjectAddress =====
-CREATE OR ALTER PROCEDURE CreateProjectAddress
-(
-    @ProjectId BIGINT,
-    @AddressId BIGINT,
-    @AddressTypeId BIGINT,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[ProjectAddress] ([CreatedDatetime], [ModifiedDatetime], [ProjectId], [AddressId], [AddressTypeId], [CreatedByUserId])
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[ProjectId],
-        INSERTED.[AddressId],
-        INSERTED.[AddressTypeId]
-    VALUES (@Now, @Now, @ProjectId, @AddressId, @AddressTypeId, COALESCE(@CreatedByUserId, 17));
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-789, 2026-11-12) — body removed, NOT the @CreatedByUserId intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   entities/project_address/sql/dbo.project_address.sql
+--
+-- The base file previously carried the STALE copy (no @CreatedByUserId) while this
+-- migration carried the live one. Base files use CREATE OR ALTER and are re-run
+-- routinely, so whichever ran last won — and a base re-run would have dropped the
+-- param and stopped populating the column. U-789 moved the live body into the base
+-- file, byte-verified against prod, and neutralised this copy.
+-- Re-running this file is now a no-op for CreateProjectAddress. Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO
 
 PRINT 'Gap 2 Phase Reference: 6 Create sprocs threaded with @CreatedByUserId';

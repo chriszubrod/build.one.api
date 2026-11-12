@@ -304,6 +304,13 @@ END;
 
 
 -- FK constraints
+GO
+
+-- NB the GO above is load-bearing (U-789; the U-048/U-053 batch trap): a stored
+-- procedure body runs to the end of its BATCH, not to its matching END, so without
+-- it the block below was compiled into DeleteVendorAddressByVendorId's body instead of
+-- running as DDL. Verified 2026-11-12: FK_VendorAddress_Vendor does NOT exist in prod, so VendorAddress.VendorId
+-- has carried no referential guarantee (0 orphans in 781 rows — the app held it, the schema did not).
 IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = 'FK_VendorAddress_Vendor')
 BEGIN
     ALTER TABLE [dbo].[VendorAddress] ADD CONSTRAINT [FK_VendorAddress_Vendor] FOREIGN KEY ([VendorId]) REFERENCES [dbo].[Vendor]([Id]);

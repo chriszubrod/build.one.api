@@ -196,6 +196,14 @@ END;
 
 
 
+GO
+
+-- NB the GO above is load-bearing (U-789; the U-048/U-053 batch trap): a stored
+-- procedure body runs to the end of its BATCH, not to its matching END, so without
+-- it the block below was compiled into UpdateAddressTypeById's body instead of
+-- running as DDL. This was the LOUD variant: two CREATE PROCEDUREs in one batch is error 111 ('CREATE
+-- PROCEDURE must be the first statement in a query batch'), which made this the only
+-- file in the repo that could not be applied at all.
 CREATE OR ALTER PROCEDURE DeleteAddressTypeById
 (
     @Id BIGINT
@@ -220,6 +228,12 @@ BEGIN
 END;
 
 -- PublicId index
+GO
+
+-- NB the GO above is load-bearing (U-789; the U-048/U-053 batch trap): a stored
+-- procedure body runs to the end of its BATCH, not to its matching END, so without
+-- it the block below was compiled into DeleteAddressTypeById's body instead of
+-- running as DDL. Verified 2026-11-12: IX_AddressType_PublicId does NOT exist in prod.
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_AddressType_PublicId' AND object_id = OBJECT_ID('dbo.AddressType'))
 BEGIN
     CREATE INDEX [IX_AddressType_PublicId] ON [dbo].[AddressType] ([PublicId]);

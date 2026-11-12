@@ -395,6 +395,13 @@ END;
 
 
 
+GO
+
+-- NB the GO above is load-bearing (U-789; the U-048/U-053 batch trap): a stored
+-- procedure body runs to the end of its BATCH, not to its matching END, so without
+-- it the block below was compiled into DeleteProjectById's body instead of
+-- running as DDL. dbo.Project.Abbreviation DOES exist in prod (the sproc above OUTPUTs it), so this
+-- guard is a proven no-op there — but it was dead code inside a delete sproc, not a guard.
 IF NOT EXISTS (
     SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
     WHERE TABLE_NAME = 'Project' AND COLUMN_NAME = 'Abbreviation'

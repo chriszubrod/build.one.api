@@ -9,50 +9,19 @@ SET XACT_ABORT ON;
 SET NOCOUNT ON;
 GO
 
-CREATE OR ALTER PROCEDURE CreateWorkflowEvent
-(
-    @WorkflowId BIGINT,
-    @EventType VARCHAR(50),
-    @FromState VARCHAR(50) = NULL,
-    @ToState VARCHAR(50) = NULL,
-    @StepName VARCHAR(100) = NULL,
-    @Data NVARCHAR(MAX) = NULL,
-    @CreatedBy VARCHAR(200) = NULL,
-    @CreatedByUserId BIGINT = NULL
-)
-AS
-BEGIN
-    BEGIN TRANSACTION;
-
-    DECLARE @Now DATETIME2(3) = SYSUTCDATETIME();
-
-    INSERT INTO dbo.[WorkflowEvent] (
-        [CreatedDatetime], [ModifiedDatetime], [WorkflowId],
-        [EventType], [FromState], [ToState], [StepName], [Data], [CreatedBy],
-        [CreatedByUserId]
-    )
-    OUTPUT
-        INSERTED.[Id],
-        INSERTED.[PublicId],
-        INSERTED.[RowVersion],
-        CONVERT(VARCHAR(19), INSERTED.[CreatedDatetime], 120) AS [CreatedDatetime],
-        CONVERT(VARCHAR(19), INSERTED.[ModifiedDatetime], 120) AS [ModifiedDatetime],
-        INSERTED.[WorkflowId],
-        INSERTED.[EventType],
-        INSERTED.[FromState],
-        INSERTED.[ToState],
-        INSERTED.[StepName],
-        INSERTED.[Data],
-        INSERTED.[CreatedBy],
-        INSERTED.[CreatedByUserId]
-    VALUES (
-        @Now, @Now, @WorkflowId,
-        @EventType, @FromState, @ToState, @StepName, @Data, @CreatedBy,
-        @CreatedByUserId
-    );
-
-    COMMIT TRANSACTION;
-END;
+-- ---------------------------------------------------------------------------
+-- SUPERSEDED (U-789, 2026-11-12) — body removed, NOT the @CreatedByUserId attribution intent.
+--
+-- Canonical definition now lives in exactly ONE place:
+--   core/workflow_event/sql/dbo.workflow_event.sql
+--
+-- The base file previously carried the STALE copy (no @CreatedByUserId) while this
+-- migration carried the live one. Base files use CREATE OR ALTER and are re-run
+-- routinely, so whichever ran last won — and a base re-run would have dropped the
+-- param and stopped populating the column. U-789 moved the live body into the base
+-- file, byte-verified against prod, and neutralised this copy.
+-- Re-running this file is now a no-op for CreateWorkflowEvent. Do NOT reintroduce a body here.
+-- ---------------------------------------------------------------------------
 GO
 
 PRINT 'CreateWorkflowEvent extended with @CreatedByUserId.';

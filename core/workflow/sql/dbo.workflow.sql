@@ -48,6 +48,18 @@ CREATE TABLE [dbo].[Workflow]
 );
 GO
 
+-- U-789: idempotent column-add so a from-scratch build of this file matches prod,
+-- whose dbo.Workflow.CreatedByUserId is BIGINT NULL, no default — matched to prod. Added out-of-band (Gap 2 / Phase 4
+-- attribution) before this base file became canonical, so the CREATE TABLE above
+-- never declared it while the Create sproc below writes it. No-op against prod.
+IF OBJECT_ID('dbo.Workflow', 'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns
+                   WHERE object_id = OBJECT_ID('dbo.Workflow') AND name = 'CreatedByUserId')
+BEGIN
+    ALTER TABLE [dbo].[Workflow] ADD [CreatedByUserId] BIGINT NULL;
+END
+GO
+
 CREATE INDEX IX_Workflow_TenantState ON [dbo].[Workflow]([TenantId], [State]);
 CREATE INDEX IX_Workflow_ConversationId ON [dbo].[Workflow]([ConversationId]);
 CREATE INDEX IX_Workflow_ParentWorkflowId ON [dbo].[Workflow]([ParentWorkflowId]);
@@ -63,7 +75,13 @@ GO
 DROP PROCEDURE IF EXISTS CreateWorkflow;
 GO
 
-CREATE PROCEDURE CreateWorkflow
+-- U-789 (2026-11-12): body replaced with the LIVE prod definition, taken verbatim from
+--   core/workflow/sql/migrations/002_phase4_attribution_sprocs.sql
+-- and byte-verified against prod OBJECT_DEFINITION. The copy here was the STALE side
+-- (no @CreatedByUserId), and base files are re-run routinely, so an apply would have
+-- dropped the param and stopped populating the column. Same shape as the three
+-- attachment Create sprocs retired from tests/sproc_drift_ledger.py before it.
+CREATE OR ALTER PROCEDURE CreateWorkflow
 (
     @TenantId BIGINT,
     @WorkflowType VARCHAR(50),
@@ -75,7 +93,8 @@ CREATE PROCEDURE CreateWorkflow
     @ProjectId BIGINT = NULL,
     @BillId BIGINT = NULL,
     @CreatedBy VARCHAR(200) = NULL,
-    @Context NVARCHAR(MAX) = NULL
+    @Context NVARCHAR(MAX) = NULL,
+    @CreatedByUserId BIGINT = NULL
 )
 AS
 BEGIN
@@ -86,7 +105,8 @@ BEGIN
     INSERT INTO dbo.[Workflow] (
         [CreatedDatetime], [ModifiedDatetime], [TenantId], [WorkflowType], [State],
         [ParentWorkflowId], [ConversationId], [TriggerMessageId],
-        [VendorId], [ProjectId], [BillId], [CreatedBy], [Context]
+        [VendorId], [ProjectId], [BillId], [CreatedBy], [Context],
+        [CreatedByUserId]
     )
     OUTPUT
         INSERTED.[Id],
@@ -105,11 +125,13 @@ BEGIN
         INSERTED.[BillId],
         INSERTED.[CreatedBy],
         INSERTED.[Context],
-        CONVERT(VARCHAR(19), INSERTED.[CompletedDatetime], 120) AS [CompletedDatetime]
+        CONVERT(VARCHAR(19), INSERTED.[CompletedDatetime], 120) AS [CompletedDatetime],
+        INSERTED.[CreatedByUserId]
     VALUES (
         @Now, @Now, @TenantId, @WorkflowType, @State,
         @ParentWorkflowId, @ConversationId, @TriggerMessageId,
-        @VendorId, @ProjectId, @BillId, @CreatedBy, @Context
+        @VendorId, @ProjectId, @BillId, @CreatedBy, @Context,
+        @CreatedByUserId
     );
 
     COMMIT TRANSACTION;

@@ -32,10 +32,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/payment_term/sql/dbo.payment_term.sql',
         'scripts/migrations/gap2_reference_threading.sql',
     }),  # known-dup, home=entities/payment_term/sql/dbo.payment_term.sql
-    "CreateProjectAddress": frozenset({
-        'entities/project_address/sql/dbo.project_address.sql',
-        'scripts/migrations/gap2_reference_threading.sql',
-    }),  # known-dup, home=entities/project_address/sql/dbo.project_address.sql
     "CreateReviewStatus": frozenset({
         'entities/review_status/sql/dbo.review_status.sql',
         'scripts/migrations/gap2_adjacent_threading.sql',
@@ -44,14 +40,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/sub_cost_code/sql/dbo.subcostcode.sql',
         'scripts/migrations/gap2_reference_threading.sql',
     }),  # known-dup, home=entities/sub_cost_code/sql/dbo.subcostcode.sql
-    "CreateWorkflow": frozenset({
-        'core/workflow/sql/dbo.workflow.sql',
-        'core/workflow/sql/migrations/002_phase4_attribution_sprocs.sql',
-    }),  # known-dup, home=core/workflow/sql/dbo.workflow.sql
-    "CreateWorkflowEvent": frozenset({
-        'core/workflow_event/sql/dbo.workflow_event.sql',
-        'core/workflow_event/sql/migrations/002_phase4_attribution_sprocs.sql',
-    }),  # known-dup, home=core/workflow_event/sql/dbo.workflow_event.sql
     "DeleteQboVendorCreditByQboId": frozenset({
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
         'scripts/migrations/qbo_vendorcredit_reconcile_deletes.sql',
@@ -60,18 +48,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql',
         'scripts/migrations/qbo_vendorcredit_upsert_inplace.sql',
     }),  # known-dup, home=integrations/intuit/qbo/vendorcredit/sql/qbo.vendorcredit.sql
-    "ReadEmailMessageByGraphMessageId": frozenset({
-        'entities/email_message/sql/dbo.email_message.sql',
-        'entities/email_message/sql/dbo.email_message_recipients.sql',
-    }),  # known-dup, home=entities/email_message/sql/dbo.email_message.sql, entities/email_message/sql/dbo.email_message_recipients.sql
-    "ReadEmailMessageById": frozenset({
-        'entities/email_message/sql/dbo.email_message.sql',
-        'entities/email_message/sql/dbo.email_message_recipients.sql',
-    }),  # known-dup, home=entities/email_message/sql/dbo.email_message.sql, entities/email_message/sql/dbo.email_message_recipients.sql
-    "ReadEmailMessageByPublicId": frozenset({
-        'entities/email_message/sql/dbo.email_message.sql',
-        'entities/email_message/sql/dbo.email_message_recipients.sql',
-    }),  # known-dup, home=entities/email_message/sql/dbo.email_message.sql, entities/email_message/sql/dbo.email_message_recipients.sql
     "ReadEmailSenderHistory": frozenset({
         'entities/email_message/sql/dbo.email_message.sql',
         'entities/email_message/sql/migrations/002_contract_labor_timesheet_vocab.sql',
@@ -99,12 +75,6 @@ SPROC_DRIFT_LEDGER: dict[str, frozenset[str]] = {
         'entities/email_message/sql/dbo.email_attachment.sql',
         'scripts/migrations/gap2_adjacent_threading.sql',
     }),  # known-dup, home=entities/email_message/sql/dbo.email_attachment.sql
-    "UpsertEmailMessage": frozenset({
-        'entities/email_message/sql/dbo.email_message.sql',
-        'entities/email_message/sql/dbo.email_message_recipients.sql',
-        'entities/email_message/sql/migrations/004_imid_merge_key.sql',
-        'scripts/migrations/gap2_adjacent_threading.sql',
-    }),  # known-dup, home=entities/email_message/sql/dbo.email_message.sql, entities/email_message/sql/dbo.email_message_recipients.sql
     "InvalidateBoxFile": frozenset({
         'integrations/box/file/sql/box.file.sql',
         'scripts/migrations/u256_box_integrity.sql',

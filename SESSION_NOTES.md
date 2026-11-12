@@ -1,5 +1,33 @@
 # Session Notes
 
+## U-789 — every base SQL file is now safe to apply (2026-11-12, `1fd1c67c`)
+
+Closed the half of the drift sweep where the FILE was wrong. Drift **15 → 9**, trap sites **7 → 0**
+repo-wide, full suite **12,324 passed / 1 skipped / 0 failed**. Detail and the two remaining prod-side
+decisions are in `TODO.md` § "Base-SQL drift sweep against prod".
+
+- **Fixing the trap CREATED four new drifts, and that is the correct outcome.** `DeleteAddressById`,
+  `DeleteCustomerById`, `DeleteProjectById` and `DeleteRoleById` previously matched prod *because prod's
+  sproc bodies carry the swallowed DDL too* — the file and the database agreed on being wrong together. A
+  drift count is not a quality metric: nine explained drifts where the file is right beats fifteen where
+  four of them are "both sides wrong in the same way".
+- **Two repo guards caught two omissions in my own work.** The single-source ratchet found
+  `UpsertEmailMessage` in **four** files, not the two I had measured — stubbing the first copy made the
+  other two visible. U-345's self-containment test found that moving the live body into
+  `dbo.project_address.sql` introduced a `CreatedByUserId` reference with no idempotent ALTER-ADD guard.
+  Both fixed, each guard matched to prod's actual column shape. The lesson is not that the guards are strict;
+  it is that my sweep measured the files and the guards measured the *invariants*, and the invariants were
+  the ones that knew what I had broken.
+- **Two of my own earlier claims were wrong and are corrected in `TODO.md`:** `IX_Attachment_PublicId` is
+  absent from prod because **nothing in the repo declares it**, not because a batch swallowed it — it does
+  not belong to this class. And the U-048/U-053 section's claim that `dbo.sync.sql`'s trailing `UPDATE` is
+  still swallowed is stale; that file has no trap site and had none before this unit either.
+- **The guard landed last, deliberately** (`tests/test_sql_batch_trap.py`), after the fixes, as the U-051
+  handoff note required — landing it first would have turned a known-open defect into a red suite. It
+  carries its own non-vacuity cases, because a detector whose pattern stops matching passes forever.
+- **No prod writes.** Six declared-but-absent objects — five indexes and `FK_VendorAddress_Vendor` — are
+  created by *applying* the fixed files, which is a separate gated decision, as is deploying U-424.
+
 ## Repo-wide base-SQL drift sweep — 15 drifted objects, and the batch-trap count was wrong (2026-11-12)
 
 Extended the invoice drift check to every non-migration `*/sql/**/*.sql` in the repo. **212 files, 1,234

@@ -7499,7 +7499,10 @@ object is ABSENT from prod** — i.e. the DDL never ran as DDL, it is executing 
 - [ ] `IX_Address_PublicId` (`dbo.address.sql`) · `IX_AddressType_PublicId` (`dbo.address_type.sql`) ·
   `IX_Customer_PublicId` (`dbo.customer.sql`) · `IX_Role_PublicId` (`dbo.role.sql`) ·
   `IX_VendorType_PublicId` (`dbo.vendor_type.sql`) · **`FK_VendorAddress_Vendor`** (`dbo.vendor_address.sql`)
-  — all verified absent 2026-11-12. `IX_Module_PublicId` and `IX_Attachment_PublicId` are absent too.
+  — all verified absent 2026-11-12, as is `IX_Module_PublicId`. ⛔ **Correction:**
+  `IX_Attachment_PublicId` was also listed here on first pass and does not belong — it is absent from
+  prod because **the repo never declares it anywhere** (0 occurrences in any `.sql`), not because a
+  batch swallowed it. It is a possible missing index, not an instance of this class.
   **`FK_VendorAddress_Vendor` is the one that matters**: a foreign key the schema intends does not exist, so
   `VendorAddress.VendorId` has no referential guarantee. `FK_VendorAddress_Address` is also absent even though
   its batch has a correct `GO` — that file simply has not been applied since the FK blocks were added.
@@ -7517,3 +7520,42 @@ object is ABSENT from prod** — i.e. the DDL never ran as DDL, it is executing 
   statement per arm — semantically identical.
 - `DeleteModuleById` is the already-documented U-053 case: fixed in the file (the `GO` and its comment are
   there), prod still carries the swallowed index block in the sproc body. Unchanged by this sweep.
+
+### ✅ RESOLVED by U-789 (`1fd1c67c`, 2026-11-12) — read this before acting on A–D above
+
+Everything in **A** and **C** above is **done**; **B** is documented in-file, not deployed; **D** needed
+nothing. Drift against prod went **15 → 9**, trap sites **7 → 0** repo-wide (migrations and scripts included),
+and no base file is stale any more — all nine remaining drifts are *prod is behind a correct file*, or one
+semantically equivalent case. Full suite 12,324 passed / 1 skipped / 0 failed.
+
+- **A — done.** `CreateProjectAddress`, `CreateWorkflow`, `CreateWorkflowEvent` now carry the LIVE body,
+  taken verbatim from the sibling migration that already held it and byte-verified against prod
+  `OBJECT_DEFINITION`; the migration copies are pointer stubs. All four `dbo.email_message_recipients.sql`
+  sproc bodies are stubbed (its column-add guards kept), plus two further `UpsertEmailMessage` copies that the
+  single-source ratchet surfaced once the first was stubbed — it was in **four** files, not two. **7 ledger
+  rows retired** from `tests/sproc_drift_ledger.py`.
+- **C — done.** `GO` inserted at all 7 trap sites. ⚠️ **Fixing them CREATED four new drifts**
+  (`DeleteAddressById`, `DeleteCustomerById`, `DeleteProjectById`, `DeleteRoleById`): those four files
+  previously matched prod *because prod's sproc bodies carry the swallowed block too*. That is the
+  `dbo.module.sql` situation, now five instances — the file is right and prod needs the apply.
+- **B — documented, not deployed.** Both halves of U-424 now carry a PAIRED APPLY warning in-file, and
+  `ReadProjectAddressByProjectId`'s `ORDER BY` is marked as a real behaviour change rather than a silent rider.
+- **The guard landed:** `tests/test_sql_batch_trap.py` — no statement may follow a module declaration in the
+  same batch, no two modules may share a batch, repo-wide, with its own non-vacuity cases. This is the
+  detector held since U-051 as `u054_batch_trap_test_HANDOFF.py`; that handoff note can be closed.
+- ⛔ **Stale claim corrected:** the U-048/U-053 section says `integrations/sync/sql/dbo.sync.sql`'s trailing
+  `UPDATE` is still swallowed. It is **not** — that file has no trap site, and had none before U-789 either.
+  Its instance was fixed at some point without the section being updated.
+
+#### Still open — both are prod-side decisions, deliberately NOT taken by U-789
+
+- [ ] **Create the six declared-but-absent objects.** Applying the seven fixed files is what creates them:
+  `IX_Address_PublicId`, `IX_AddressType_PublicId`, `IX_Customer_PublicId`, `IX_Role_PublicId`,
+  `IX_VendorType_PublicId`, `FK_VendorAddress_Vendor` (+ `IX_Module_PublicId` from the U-053 file).
+  `dbo.project.sql`'s guard is already a no-op (`Project.Abbreviation` exists). The FK is the one with
+  integrity meaning — 781 `VendorAddress` rows, **0 orphans** on either side today, so this is schedulable,
+  not urgent. Each apply also rewrites that file's `Delete*ById` to drop the swallowed block from its body,
+  which is the point.
+- [ ] **Deploy U-424** (`UpdateContractLaborAggregates` + `AggregateTimeEntryOnSubmit`), both sprocs in one
+  apply. Pushed 2026-09-08, still not live.
+

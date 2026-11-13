@@ -74,3 +74,29 @@ def test_draw_request_pdf_includes_builders_fee_when_rate_set():
     # lives in its own column and need not be contiguous with the number in text).
     assert "14.00" in text          # fee = 100 * 0.14
     assert "114.00" in text         # total = 100 + 14
+
+
+def _right_edge(content: str, text: str, font: str, size: float) -> float:
+    """Right edge (cell origin + right-align offset + glyph width) of the first
+    `(text) Tj` in a reportlab page stream. pypdf's visitor_text does not report
+    the Td offset a right-aligned Paragraph uses, so read the operators directly."""
+    import re
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    m = re.search(r"1 0 0 1 ([\d.]+) [\d.]+ cm\s+q\s+[^()]*?([\d.]+) 0 Td \(" + re.escape(text) + r"\) Tj",
+                  content)
+    assert m, f"{text!r} not drawn as a single right-aligned run"
+    return float(m.group(1)) + float(m.group(2)) + stringWidth(text, font, size)
+
+
+def test_amount_header_right_edge_aligns_with_figures():
+    """U-793b: the AMOUNT header spans the $ and amount columns, and a span takes its
+    padding from its top-left ($) cell, whose right padding is zeroed so the $ hugs
+    its number. The header sat flush on the band's right edge; it must end where the
+    figures below it end."""
+    model = build_cover_rollup([_line(billed_price=2500.0)], fee_rate=None)
+    page = PdfReader(io.BytesIO(build_draw_request_pdf(_header(), model))).pages[0]
+    content = page.get_contents().get_data().decode("latin-1")
+    header = _right_edge(content, "AMOUNT", "Times-Bold", 10)
+    figure = _right_edge(content, "2,500.00", "Times-Roman", 9.5)
+    assert abs(header - figure) < 0.5, (header, figure)

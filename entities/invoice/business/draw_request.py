@@ -171,6 +171,10 @@ def build_draw_request_pdf(header: dict, cover_model: CoverRollup) -> bytes:
         # $ column hugs its number
         ("RIGHTPADDING", (2, 0), (2, -1), 0),
         ("LEFTPADDING", (3, 0), (3, -1), 0),
+        # ...but the AMOUNT header spans (2,0)-(3,0) and a span takes its padding from
+        # the top-left cell, whose right padding was just zeroed — restore it so the
+        # header's right edge lines up with the figures below instead of the band edge.
+        ("RIGHTPADDING", (2, 0), (2, 0), 4),
         # subtotal + total: rule above the money cells
         ("LINEABOVE", (2, subtotal_idx), (3, subtotal_idx), 0.75, BLACK),
         ("LINEABOVE", (2, total_idx), (3, total_idx), 0.75, BLACK),

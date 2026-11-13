@@ -1,5 +1,6 @@
 """U-793: the Schedule of Values splits the scheduled value into Original, Previous
-Change Orders, This Period Change Orders and Revised; the Application for Payment's
+Adjustment, Current Adjustment and Revised (labels per U-793a; the adjustments are
+approved budget change orders); the Application for Payment's
 Contract Sum / Net Change by Change Orders / Contract Sum to Date follow the same split.
 
 Pure-logic / no-live-DB."""
@@ -107,9 +108,14 @@ def test_the_schedule_prints_the_industry_column_names_unsplit():
     text = _text(build_schedule_of_values_pdf(HEADER, rows, grand))
     for name in ("SCHEDULED VALUE", "ORIGINAL", "REVISED", "WORK COMPLETED", "TO DATE"):
         assert name in text, name
-    # Multi-word headers wrap between words, never inside one.
-    for word in ("PREVIOUS", "CHANGE", "ORDERS", "APPLICATIONS", "COMPLETE", "APPLICATION"):
-        assert word in text.split(), word
+    # U-793a labels. Multi-word headers wrap between words, never inside one.
+    words = text.split()
+    for word in ("PREVIOUS", "CURRENT", "ADJUSTMENT", "PERCENT", "COMPLETE", "BALANCE", "FINISH"):
+        assert word in words, word
+    assert words.count("ADJUSTMENT") == 2 and words.count("CURRENT") == 2
+    joined = " ".join(words)   # wraps become spaces, so a wrapped old label still matches
+    for old in ("CHANGE ORDERS", "APPLICATIONS", "THIS APPLICATION", "% COMPLETE"):
+        assert old not in joined, old
     for amount in ("$10,000.00", "$350.00", "$400.00", "$10,750.00"):
         assert amount in text, amount
 

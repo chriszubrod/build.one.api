@@ -119,6 +119,7 @@ def build_sov_rows(sov: list, draws: list, current_label: str,
     # application's date is a PREVIOUS change order; after it and on/before this
     # application's date, THIS PERIOD; after this application, not yet in effect for
     # it (left out of the revised value). An undated change order counts as previous.
+    # Printed as the Previous / Current Adjustment columns (U-793a).
     cur_cutoff = (current_date or (normalize_draw_date(current.get("date")) if current else None)) or None
     prev_cutoff = max((normalize_draw_date(d.get("date")) for d in prior), default=None) or None
     if prev_cutoff and cur_cutoff and prev_cutoff > cur_cutoff:
@@ -254,7 +255,7 @@ def build_schedule_of_values_pdf(header: dict, rows: list[dict], grand: dict) ->
     def P(text: str, style: ParagraphStyle) -> Paragraph:
         return Paragraph(_html.escape(text) if text else "", style)
 
-    # Header words must not split inside the narrow money columns ("APPLICATIONS").
+    # Header words must not split inside the narrow money columns ("ADJUSTMENT").
     band_style = ParagraphStyle("sov_band", fontName=SERIF_BOLD, fontSize=7,
                                 leading=8.5, alignment=TA_CENTER)
     band_left = ParagraphStyle("sov_band_l", parent=band_style, alignment=TA_LEFT)
@@ -269,7 +270,7 @@ def build_schedule_of_values_pdf(header: dict, rows: list[dict], grand: dict) ->
     buf = io.BytesIO()
     doc, usable_w = landscape_doc(buf, "Schedule of Values")
 
-    # ITEM | DESCRIPTION | SCHEDULED VALUE x4 | WORK COMPLETED x3 | % | BALANCE.
+    # ITEM | DESCRIPTION | SCHEDULED VALUE x4 | WORK COMPLETED x3 | PERCENT COMPLETE | BALANCE TO FINISH.
     # Each money column fits "$99,999,999.99" at 7.5pt on one line.
     item_w = 0.55 * inch
     pct_w = 0.7 * inch
@@ -291,16 +292,16 @@ def build_schedule_of_values_pdf(header: dict, rows: list[dict], grand: dict) ->
         P("ITEM", band_style), P("DESCRIPTION", band_left),
         P("SCHEDULED VALUE", band_style), "", "", "",
         P("WORK COMPLETED", band_style), "", "",
-        P("% COMPLETE", band_style), P("BALANCE TO FINISH", band_style),
+        P("PERCENT COMPLETE", band_style), P("BALANCE TO FINISH", band_style),
     ]
     sub = [
         "", "",
         P("ORIGINAL", band_style),
-        P("PREVIOUS CHANGE ORDERS", band_style),
-        P("THIS PERIOD CHANGE ORDERS", band_style),
+        P("PREVIOUS ADJUSTMENT", band_style),
+        P("CURRENT ADJUSTMENT", band_style),
         P("REVISED", band_style),
-        P("PREVIOUS APPLICATIONS", band_style),
-        P("THIS APPLICATION", band_style),
+        P("PREVIOUS", band_style),
+        P("CURRENT", band_style),
         P("TO DATE", band_style),
         "", "",
     ]

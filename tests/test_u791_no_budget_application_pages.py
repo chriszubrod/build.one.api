@@ -119,7 +119,7 @@ def test_sov_pdf_renders_blanks_not_negative_balances():
 
     assert "$23,179.03" in text and "$20,075.00" in text
     assert "($" not in text                          # no negative balance anywhere
-    assert not re.search(r"\d%", text)                # no % values (the header's "% COMPLETE" aside)
+    assert not re.search(r"\d%", text)                # no % values (the "PERCENT COMPLETE" header aside)
     assert "10/15/2026" in text
 
 

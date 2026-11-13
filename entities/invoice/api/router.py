@@ -977,7 +977,7 @@ def _generate_invoice_packet(public_id: str):
     application_bytes = None
     sov_bytes = None
     # Only build them when the invoice being packeted is itself a coded draw —
-    # otherwise the schedule's "This Application" column would silently render all-$0.
+    # otherwise the schedule's Current (work completed) column would silently render all-$0.
     current_is_coded_draw = any(d.get("label") == invoice.invoice_number for d in draws)
     if draws and not current_is_coded_draw:
         logger.info(f"Packet [{public_id}]: current invoice not a coded draw — skipping Application/Schedule of Values")

@@ -39,6 +39,8 @@ from shared.api.money import to_decimal_or_none as _dec_or_none
 BLOCK_FONT = 9
 WRITE_ROW_H = 0.32 * 72  # 0.32in, in points
 FIELD_GAP = 6  # points between two fields on one writing row
+NAME_LINE_GAP = 3  # points between a block's text and its signer-name line
+BLOCK_GAP = 4  # points after each block
 
 
 def build_application_lines(grand: dict, retainage_rate: Any = Decimal("0"),
@@ -174,7 +176,9 @@ def build_application_pdf(header: dict, lines: dict, blocks: Any) -> bytes:
     # Figures always take the left column and the blocks the right, even when every
     # block is off (Chris, U-792b) — the page keeps one shape across projects.
     gutter = 0.3 * inch
-    figures_w = usable_w * 0.55
+    # 45/55: the signature column gets the extra width — signatures and State/County
+    # need room to write (Chris, U-792c); the figures need far less than half the page.
+    figures_w = usable_w * 0.45
     blocks_w = usable_w - figures_w - gutter
 
     # ---- optional blocks (per-project switches) -----------------------------
@@ -206,12 +210,12 @@ def build_application_pdf(header: dict, lines: dict, blocks: Any) -> bytes:
         t.setStyle(TableStyle(style))
         return t
 
-    by_date = [("By:", 2), ("Date:", 1)]
+    by_date = [("By:", 2.5), ("Date:", 1)]
 
     block_groups: list = []
 
     def block(title: str, parts: list) -> list:
-        group = [Paragraph(esc(title), block_head), *parts, Spacer(1, 0.08 * inch)]
+        group = [Paragraph(esc(title), block_head), *parts, Spacer(1, BLOCK_GAP)]
         block_groups.append(group)
         return group
 
@@ -223,7 +227,7 @@ def build_application_pdf(header: dict, lines: dict, blocks: Any) -> bytes:
                 "were furnished for this project as described, that the amounts shown reflect "
                 "costs incurred, and that the amount due this application is now payable.",
                 block_body),
-            Spacer(1, 5),
+            Spacer(1, NAME_LINE_GAP),
             Paragraph(esc(contractor), block_body),
             field_row(by_date),
         ])
@@ -232,12 +236,13 @@ def build_application_pdf(header: dict, lines: dict, blocks: Any) -> bytes:
             field_row([("State of:", 1), ("County of:", 1)]),
             field_row([("Subscribed and sworn to before me on:", 1)]),
             field_row([("by:", 1)]),
-            field_row([("Notary Public:", 2), ("Commission expires:", 1)]),
+            field_row([("Notary Public:", 1)]),
+            field_row([("Commission expires:", 1)]),
         ])
     if blocks.owner_approval:
         block_flowables += block("Owner Approval", [
             field_row([("Approved amount: $", 1)]),
-            Spacer(1, 5),
+            Spacer(1, NAME_LINE_GAP),
             Paragraph(esc(owner) if owner else "Owner", block_body),
             field_row(by_date),
         ])
@@ -292,7 +297,7 @@ def build_application_pdf(header: dict, lines: dict, blocks: Any) -> bytes:
     def render(body: list) -> bytes:
         buf = io.BytesIO()
         doc, _ = landscape_doc(buf, "Application for Payment")
-        doc.build([head, Spacer(1, 0.12 * inch), *body])
+        doc.build([head, Spacer(1, 0.1 * inch), *body])
         return buf.getvalue()
 
     # The two-column row cannot split, so when an unusually long name or address

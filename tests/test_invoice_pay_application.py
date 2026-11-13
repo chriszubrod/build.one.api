@@ -196,13 +196,38 @@ def test_fill_ins_are_drawn_rules_not_typed_underscores():
 
 def _figures_right_edge(blocks) -> float:
     """x of the AMOUNT band label — where the figures column ends."""
-    page = PdfReader(io.BytesIO(build_application_pdf(_header(), _lines(), blocks))).pages[0]
-    xs = []
-    page.extract_text(visitor_text=lambda t, cm, tm, *_: xs.append(tm[4]) if t.strip() == "AMOUNT" else None)
-    assert xs, "AMOUNT label not found"
-    return xs[0]
+    xs = _label_xs(blocks)
+    assert "AMOUNT" in xs, "AMOUNT label not found"
+    return xs["AMOUNT"][0]
 
 
 def test_figures_keep_the_left_column_with_or_without_blocks():
     assert _figures_right_edge(ALL_OFF) == pytest.approx(_figures_right_edge(ALL_ON), abs=1)
     assert _figures_right_edge(ALL_OFF) < 792 * 0.6   # left column, not full width
+
+
+# U-792c: room to write. Measured from where the labels print: a rule runs from the end
+# of its label to the start of the next label on the same row.
+def _label_xs(blocks=ALL_ON) -> dict:
+    page = PdfReader(io.BytesIO(build_application_pdf(_header(), _lines(), blocks))).pages[0]
+    xs: dict = {}
+    # Table cells are placed by the current transformation matrix, so x = cm + tm.
+    page.extract_text(visitor_text=lambda t, cm, tm, *_: xs.setdefault(t.strip(), []).append(cm[4] + tm[4]))
+    return xs
+
+
+def test_signature_lines_have_room_to_sign():
+    xs = _label_xs()
+    by, date = xs["By:"][0], xs["Date:"][0]
+    assert date - by >= 3.4 * 72          # "By:" label + a ≥ ~3.3in signature rule
+
+
+def test_state_and_county_lines_have_room():
+    xs = _label_xs()
+    assert xs["County of:"][0] - xs["State of:"][0] >= 2.3 * 72   # label + ≥ ~2in rule
+
+
+def test_the_signature_column_is_wider_than_the_figures_column():
+    blocks_x = _label_xs()["Contractor's Statement"][0]
+    left, right = 36, 792 - 36                     # the 0.5in landscape frame
+    assert right - blocks_x > blocks_x - left      # signature column wider than figures + gutter

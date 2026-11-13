@@ -3,8 +3,10 @@
 Shares the packet house style — serif type, the Rogers Build mark top-right, a gray
 column-header band, 3-decimal Category numbers, and split ``$ | amount`` money cells
 (an empty cell renders ``$  -``). Landscape, with a FIXED column geometry (U-793c):
-every page lays out DRAWS_PER_PAGE draw columns plus a Total column, whatever the
-draw count, so a 1-draw project prints normal-width columns instead of stretched ones.
+every data column has a fixed width (DRAWS_PER_PAGE draw columns plus a Total column
+fill a page) and the money columns are anchored to the right edge. A blank spacer
+column between Description and the money columns absorbs the slack (U-793d) — no
+data column ever stretches, so a 1-draw project prints normal-width columns.
 Draws 1-12 print on page 1, 13-24 on page 2, and so on; every page carries the same
 cost-code rows (the union over ALL draws) and the Total column — project to date —
 prints once, on the last page.
@@ -163,8 +165,11 @@ def build_trend_pdf(header: dict, draws: list[dict]) -> bytes:
         return header_table
 
     # ---- matrix: each money group is two physical columns ($, value) -------
-    # Fixed geometry: DRAWS_PER_PAGE draw groups + one wider Total group fill the
-    # page whatever the draw count; a page with fewer draws is simply narrower.
+    # Fixed geometry: no data column stretches. Category + Description sit on the
+    # left edge, the money groups (DRAWS_PER_PAGE draw groups + one wider Total
+    # group fill the page) are anchored to the right edge, and a blank SPACER
+    # column between them absorbs the slack on a page with fewer draws (U-793d).
+    # The table always spans the full page, so the gray band does too.
     cat_w = 0.65 * inch          # "CATEGORY" on one line
     desc_w = 1.35 * inch         # "Grading/Sitework/Demolition" on one line
     dollar_w = 5                 # points, like total_group_w
@@ -188,11 +193,12 @@ def build_trend_pdf(header: dict, draws: list[dict]) -> bytes:
     def page_table(page_draws: list[dict], with_total: bool) -> Table:
         groups = len(page_draws) + (1 if with_total else 0)
         group_widths = [group_w] * len(page_draws) + ([total_group_w] if with_total else [])
-        col_widths = [cat_w, desc_w]
+        spacer_w = usable_w - cat_w - desc_w - sum(group_widths)  # 0 on a full page
+        col_widths = [cat_w, desc_w, spacer_w]
         for gw in group_widths:
             col_widths += [dollar_w, gw - dollar_w]
 
-        band_row: list = [Paragraph("CATEGORY", band_style), Paragraph("DESCRIPTION", band_style)]
+        band_row: list = [Paragraph("CATEGORY", band_style), Paragraph("DESCRIPTION", band_style), ""]
         for draw in page_draws:
             band_row += [Paragraph(esc(draw.get("label") or ""), band_right), ""]
         if with_total:
@@ -201,7 +207,7 @@ def build_trend_pdf(header: dict, draws: list[dict]) -> bytes:
 
         for number, name in cost_codes:
             row: list = [Paragraph(esc(format_cc_number(number, 3)), cat_style),
-                         Paragraph(esc(name), wrap_style)]
+                         Paragraph(esc(name), wrap_style), ""]
             for draw in page_draws:
                 row += money_cells(amounts[(id(draw), number)])
             if with_total:
@@ -209,7 +215,7 @@ def build_trend_pdf(header: dict, draws: list[dict]) -> bytes:
             table_data.append(row)
 
         def figures_row(first, label_para, key, grand, *, bold):
-            row = [first, label_para]
+            row = [first, label_para, ""]
             for draw in page_draws:
                 row += money_cells(_as_decimal(draw.get(key, 0)), bold=bold)
             if with_total:
@@ -235,10 +241,21 @@ def build_trend_pdf(header: dict, draws: list[dict]) -> bytes:
             ("LEFTPADDING", (0, 0), (-1, -1), 3),
             ("RIGHTPADDING", (0, 0), (-1, -1), 3),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            # the spacer is blank and may be 0 wide (a full page): no padding
+            ("LEFTPADDING", (2, 0), (2, -1), 0),
+            ("RIGHTPADDING", (2, 0), (2, -1), 0),
+            # ...and its empty cells must not take the table's default 10pt leading,
+            # which would make every row taller than the 7pt figures need
+            ("FONTSIZE", (2, 0), (2, -1), FONT_SIZE),
+            ("LEADING", (2, 0), (2, -1), FONT_SIZE + 2),
+            # Subtotal / Total Due labels span Description + spacer so they sit
+            # against their figures, as on the Draw Request page
+            ("SPAN", (1, subtotal_idx), (2, subtotal_idx)),
+            ("SPAN", (1, total_idx), (2, total_idx)),
         ]
         # each money group: SPAN its band label across ($, value); hug $ to value
         for g in range(groups):
-            dcol = 2 + 2 * g
+            dcol = 3 + 2 * g
             vcol = dcol + 1
             style_cmds += [
                 ("SPAN", (dcol, 0), (vcol, 0)),
@@ -252,7 +269,7 @@ def build_trend_pdf(header: dict, draws: list[dict]) -> bytes:
                 ("LINEABOVE", (dcol, subtotal_idx), (vcol, subtotal_idx), 0.6, BLACK),
                 ("LINEABOVE", (dcol, total_idx), (vcol, total_idx), 0.6, BLACK),
             ]
-        table = Table(table_data, colWidths=col_widths, repeatRows=1, hAlign="LEFT")
+        table = Table(table_data, colWidths=col_widths, repeatRows=1)
         table.setStyle(TableStyle(style_cmds))
         return table
 

@@ -184,13 +184,38 @@ def test_exactly_twelve_draws_is_one_page():
 
 
 def test_draw_column_width_does_not_stretch_with_fewer_draws():
-    """The bug: one draw spread across the whole page. A draw column's position is
-    now fixed by its index, whatever the draw count."""
+    """The bug: one draw spread across the whole page. Money columns have a fixed
+    width and are anchored to the right edge (U-793d) — Description takes the slack."""
     one = _streams(build_trend_pdf(_header(), _n_draws(1)))[0]
     twelve = _streams(build_trend_pdf(_header(), _n_draws(12)))[0]
-    # x of the second label cell in a 12-draw page vs the TOTAL cell after 1 draw:
-    # both sit in group slot 2, so a narrow 1-draw page puts TOTAL where D-02 is.
-    assert abs(_origins(one, "TOTAL")[0] - _origins(twelve, "D-02")[0]) < 0.5
+    group_w = _origins(twelve, "D-02")[0] - _origins(twelve, "D-01")[0]
+    # TOTAL sits at the same right-anchored x whatever the draw count ...
+    assert abs(_origins(one, "TOTAL")[0] - _origins(twelve, "TOTAL")[0]) < 0.5
+    # ... and the single draw column is exactly one fixed group wide, not stretched
+    assert abs((_origins(one, "TOTAL")[0] - _origins(one, "D-01")[0]) - group_w) < 0.5
+
+
+def test_no_data_column_stretches_a_blank_spacer_takes_the_slack():
+    """U-793d: Category and Description keep their fixed widths whatever the draw
+    count; the slack is a blank spacer between Description and the money columns,
+    and the Subtotal / Total Due labels still sit against their figures."""
+    one_pdf = build_trend_pdf(_header(), _n_draws(1))
+    twelve_pdf = build_trend_pdf(_header(), _n_draws(12))
+    one, twelve = _streams(one_pdf)[0], _streams(twelve_pdf)[0]
+    for label in ("CATEGORY", "DESCRIPTION"):
+        assert abs(_origins(one, label)[0] - _origins(twelve, label)[0]) < 0.5
+    # Description is NOT stretched on a 1-draw page: a long name still wraps
+    long_name = "Grading Sitework Demolition Excavation Hauling Backfill Compaction"
+    d = [_draw("D-01", [_cat("1", long_name, Decimal("1"))], Decimal("1"), Decimal("0"), Decimal("1"))]
+    page_lines = _pages(build_trend_pdf(_header(), d))[0].split("\n")
+    first = next(ln for ln in page_lines if "Grading" in ln)
+    assert "Compaction" not in first
+    # Subtotal label ends where the first draw group begins, on a 1-draw page too
+    m = re.search(r"1 0 0 1 ([\d.]+) [\d.]+ cm\s+q\s+[^()]*?([\d.]+) 0 Td \(Subtotal\) Tj", one)
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    subtotal_right = float(m.group(1)) + float(m.group(2)) + stringWidth("Subtotal", "Times-Bold", 7)
+    first_dollar = min(_origins(one, "$"))
+    assert 0 <= first_dollar - subtotal_right < 10
 
 
 def test_category_numbers_right_aligned():
@@ -229,3 +254,19 @@ def test_large_credit_figure_never_breaks_mid_number():
     draws = _n_draws(12, amount=Decimal("-1765728.00"))
     content = _streams(build_trend_pdf(_header(), draws))[0]
     assert content.count("(\\(1,765,728.00\\)) Tj") >= 12 * 3
+
+
+def test_spacer_does_not_make_rows_taller():
+    """The blank spacer's empty cells must not raise the row height: a cost-code row
+    is its 7pt text (9pt leading) + 3pt top + 3pt bottom padding = 15pt — not the
+    18pt an empty cell at the table's default 10pt/12pt leading would force."""
+    def gap(n):
+        d = [_draw(f"D-{i:02d}", [_cat("1", "Permits", Decimal("1")), _cat("2", "Dumpsters", Decimal("1"))],
+                   Decimal("2"), Decimal("0"), Decimal("2")) for i in range(1, n + 1)]
+        content = _streams(build_trend_pdf(_header(), d))[0]
+        ys = []
+        for text in ("1.000", "2.000"):
+            m = re.search(r"1 0 0 1 [\d.]+ ([\d.]+) cm\s+q\s+[^()]*?\(" + re.escape(text) + r"\) Tj", content)
+            ys.append(float(m.group(1)))
+        return ys[0] - ys[1]
+    assert abs(gap(1) - 15) < 0.5 and abs(gap(12) - 15) < 0.5

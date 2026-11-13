@@ -102,3 +102,19 @@ def test_total_never_prints_alone_on_a_page():
             last = {ln.strip() for ln in pages[-1].extract_text().splitlines()}
             assert sum(f"Vendor {i}" in last for i in range(n)) >= need, (build.__name__, n)
     assert multi > 20  # the sweep really crosses page breaks
+
+
+@pytest.mark.parametrize("build", [_build_toc_basic_pdf, _build_toc_expanded_pdf])
+def test_dates_print_like_the_rest_of_the_packet(build):
+    """U-793g: M/D/YYYY (as in the header strip), not the stored MM-DD-YYYY."""
+    lines = {ln.strip() for ln in _lines(build(ROWS, HEADER))}
+    assert "9/3/2026" in lines
+    assert "09-03-2026" not in lines
+
+
+def test_unparseable_date_prints_unchanged():
+    from entities.invoice.api.router import _toc_display_date
+    assert _toc_display_date("09-18-2026") == "9/18/2026"
+    assert _toc_display_date("") == ""
+    assert _toc_display_date(None) == ""
+    assert _toc_display_date("sometime") == "sometime"

@@ -603,6 +603,18 @@ def _toc_base_style(total_idx: int) -> list:
     ]
 
 
+def _toc_display_date(value: str) -> str:
+    """A TOC row's date in the packet's M/D/YYYY form (U-793g). Enrichment hands the
+    TOCs `source_date` as MM-DD-YYYY — kept, because `_period_to_date` parses it — so
+    reformat at render time only. Anything unparseable prints unchanged."""
+    from datetime import datetime
+    try:
+        d = datetime.strptime(str(value or "").strip(), "%m-%d-%Y")
+    except ValueError:
+        return value or ""
+    return f"{d.month}/{d.day}/{d.year}"
+
+
 def _toc_line_cells(r: dict, st, type_label: str) -> list:
     """DATE | VENDOR | INVOICE | DESCRIPTION | TYPE | AMOUNT for one row."""
     import html as _html
@@ -612,7 +624,7 @@ def _toc_line_cells(r: dict, st, type_label: str) -> list:
         return Paragraph(_html.escape(str(text)) if text not in (None, "") else "", style)
 
     return [
-        P(r.get("source_date", "")),
+        P(_toc_display_date(r.get("source_date", ""))),
         P(r.get("vendor_name", "")),
         P(r.get("parent_number", "")),
         # Prefer the sub cost code name; fall back to the work description so the

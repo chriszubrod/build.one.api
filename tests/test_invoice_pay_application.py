@@ -146,7 +146,7 @@ def test_no_blocks_leaves_only_the_figures():
 def test_statement_names_the_contractor_and_owner_block_names_the_owner():
     text = _pdf_text(build_application_pdf(_header(), _lines(), ALL_ON)).replace("\n", " ")
     assert "Rogers Build, Inc. states that the work and materials billed" in text
-    assert "Approved for payment in the amount of" in text
+    assert "Approved amount: $" in text
     assert text.count("Acme Development LLC") >= 2   # the To block + the approval line
 
 
@@ -162,7 +162,8 @@ def test_the_page_is_landscape_letter():
 
 
 def test_a_long_owner_name_still_fits_one_page():
-    header = _header(to_name="Chesnut Infill GP dba Craftsman Residential " * 3)
+    # A real long owner name (WR-01's) with retainage rows and all four blocks on.
+    header = _header(to_name="Chesnut Infill GP dba Craftsman Residential")
     assert _pages(build_application_pdf(header, _lines(retainage=Decimal("42000.00")), ALL_ON)) == 1
 
 
@@ -172,6 +173,7 @@ def test_a_long_owner_name_still_fits_one_page():
 @pytest.mark.parametrize("overrides", [
     {"from_lines": ["X " * 200]},                                   # LayoutError case
     {"to_lines": ["123 Main Street"] * 8},                          # whole row jumped to p2
+    {"to_name": "Chesnut Infill GP dba Craftsman Residential " * 3},  # blocks overflow
 ])
 def test_an_overlong_header_falls_back_to_the_stacked_layout(overrides):
     pdf = build_application_pdf(_header(**overrides), _lines(retainage=Decimal("5")), ALL_ON)
@@ -180,3 +182,27 @@ def test_an_overlong_header_falls_back_to_the_stacked_layout(overrides):
     text = "".join(p.extract_text() for p in pages)
     for title in _BLOCK_TITLES.values():
         assert title in text
+
+
+# U-792b: drawn writing lines, and one page shape whatever the switches say.
+def test_fill_ins_are_drawn_rules_not_typed_underscores():
+    text = _pdf_text(build_application_pdf(_header(), _lines(), ALL_ON))
+    assert "___" not in text
+    for label in ("By:", "Date:", "State of:", "County of:", "Notary Public:",
+                  "Commission expires:", "Approved amount: $", "Recommended amount: $",
+                  "Architect:"):
+        assert label in text, label
+
+
+def _figures_right_edge(blocks) -> float:
+    """x of the AMOUNT band label — where the figures column ends."""
+    page = PdfReader(io.BytesIO(build_application_pdf(_header(), _lines(), blocks))).pages[0]
+    xs = []
+    page.extract_text(visitor_text=lambda t, cm, tm, *_: xs.append(tm[4]) if t.strip() == "AMOUNT" else None)
+    assert xs, "AMOUNT label not found"
+    return xs[0]
+
+
+def test_figures_keep_the_left_column_with_or_without_blocks():
+    assert _figures_right_edge(ALL_OFF) == pytest.approx(_figures_right_edge(ALL_ON), abs=1)
+    assert _figures_right_edge(ALL_OFF) < 792 * 0.6   # left column, not full width

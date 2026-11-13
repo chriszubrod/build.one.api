@@ -398,35 +398,62 @@ def _build_application_pages(invoice, draws: list, toc_items: list, to_name: str
 
 
 def _budget_sov_for_project(project_id: Optional[int]) -> Optional[list]:
-    """The project's schedule of values (scheduled value per cost code) from the LIVE Budget: one
-    entry per cost code {cost_code_number, cost_code_name, scheduled_value}.
+    """The project's schedule of values from the LIVE Budget: one entry per cost code
+    {cost_code_number, cost_code_name, scheduled_value, original_value, change_orders}.
+
+    ``original_value`` is the approved Rev 0 (original) price; ``change_orders`` lists
+    each approved change order's delta for that cost code as {"date", "amount"} (the
+    revision's effective date, else its approval date) so the Schedule of Values can
+    split previous from this-period change orders (U-793). ``scheduled_value`` is the
+    live total (original + every approved change order) and must equal the variance's
+    budget price — a mismatch is a lookup failure, never a silently wrong schedule.
 
     Returns [] when the project has no budget — the Application for Payment and
     Schedule of Values still render, with the contract-dependent fields blank (U-791).
-    Returns None when the lookup FAILS, so a transient error skips those pages instead of silently printing a no-budget
-    version of a budgeted project (failure-isolated — the packet still generates)."""
+    Returns None when the lookup FAILS, so a transient error skips those pages instead
+    of silently printing a no-budget version of a budgeted project (failure-isolated —
+    the packet still generates)."""
     if not project_id:
         return []
     try:
-        from entities.project.business.service import ProjectService
         from entities.budget.business.service import BudgetService
+        from entities.project.business.service import ProjectService
 
         project = ProjectService().read_by_id(project_id)
         if not project:
             return None
-        budget = BudgetService().read_by_project_public_id(project.public_id)
+        budgets = BudgetService()
+        budget = budgets.read_by_project_public_id(project.public_id)
         if not budget:
             return []
-        variance = BudgetService().variance_by_public_id(budget.public_id)
-        return [
-            {
-                "cost_code_number": cc.get("cost_code_number"),
+        variance = budgets.variance_by_public_id(budget.public_id)
+        breakdown = budgets.revision_breakdown_by_cost_code(budget, variance)
+
+        sov = []
+        for cc in (variance.get("cost_codes") or []):
+            total = Decimal(cc.get("budget_price") or "0")
+            number = cc.get("cost_code_number")
+            if not number:
+                # Uncategorized budget money has no schedule line; printing a contract
+                # sum without it would silently understate it.
+                if total != 0:
+                    logger.error(f"Budget SoV for project {project_id}: {total} of budget "
+                                 "price has no cost code")
+                    return None
+                continue
+            split = breakdown.get(cc.get("cost_code_id"), {"original": Decimal("0"), "change_orders": []})
+            if split["original"] + sum((c["amount"] for c in split["change_orders"]), Decimal("0")) != total:
+                logger.error(f"Budget SoV for project {project_id}: cost code {number} revisions "
+                             f"do not add to the budget price {total}")
+                return None
+            sov.append({
+                "cost_code_number": number,
                 "cost_code_name": cc.get("cost_code_name"),
-                "scheduled_value": Decimal(cc.get("budget_price") or "0"),
-            }
-            for cc in (variance.get("cost_codes") or [])
-            if cc.get("cost_code_number")
-        ]
+                "scheduled_value": total,
+                "original_value": split["original"],
+                "change_orders": split["change_orders"],
+            })
+        return sov
     except Exception:
         logger.warning(f"Budget SoV lookup failed for project {project_id}", exc_info=True)
         return None

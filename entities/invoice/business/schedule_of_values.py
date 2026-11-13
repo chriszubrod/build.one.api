@@ -72,8 +72,12 @@ def build_sov_rows(sov: list, draws: list, current_label: str,
     """Assemble the Schedule of Values (rows, grand) from the live Budget schedule +
     the draw-financials.
 
-    ``sov``: [{cost_code_number, cost_code_name, scheduled_value}] — the budget
-    schedule (``scheduled``). ``draws``: the project's coded draws (ordered), each
+    ``sov``: [{cost_code_number, cost_code_name, scheduled_value, original_value,
+    change_orders: [{date, amount}]}] — the budget schedule. Each row carries the
+    ``original`` value, the ``co_prev`` / ``co_this`` change orders (split by date
+    against the previous and this application, U-793) and ``scheduled`` = the revised
+    value as of this application (original + both), which drives % and balance. An
+    entry without ``original_value`` is treated as all original. ``draws``: the project's coded draws (ordered), each
     {label, date, categories, subtotal, builders_fee, total}. ``current_label``: the
     invoice being packeted — splits prior draws (``prev``, previous applications) from
     this one (``this_period``). ``current_date``: that invoice's date — normalized
@@ -94,8 +98,8 @@ def build_sov_rows(sov: list, draws: list, current_label: str,
     current draw's fee.
 
     No schedule of values (U-791): an empty ``sov`` means the project has no budget.
-    The rows then come from the draws alone, and ``scheduled``, ``pct`` and
-    ``balance`` are None on every row and on the grand total — they render blank
+    The rows then come from the draws alone, and ``original``, ``co_prev``,
+    ``co_this``, ``scheduled``, ``pct`` and ``balance`` are None on every row and on the grand total — they render blank
     rather than as $0 / a negative balance. prev / this_period / total_to_date are
     unaffected.
     """
@@ -111,13 +115,43 @@ def build_sov_rows(sov: list, draws: list, current_label: str,
     prior = draws[:cur_idx]
     current: Optional[dict] = draws[cur_idx] if cur_idx < len(draws) else None
 
+    # Change-order periods (U-793): a change order dated on/before the previous
+    # application's date is a PREVIOUS change order; after it and on/before this
+    # application's date, THIS PERIOD; after this application, not yet in effect for
+    # it (left out of the revised value). An undated change order counts as previous.
+    cur_cutoff = (current_date or (normalize_draw_date(current.get("date")) if current else None)) or None
+    prev_cutoff = max((normalize_draw_date(d.get("date")) for d in prior), default=None) or None
+    if prev_cutoff and cur_cutoff and prev_cutoff > cur_cutoff:
+        prev_cutoff = cur_cutoff  # an out-of-order prior draw never reaches past this one
+    co_prev: dict = {}
+    co_this: dict = {}
+
+    def _bucket(date: Any) -> Optional[dict]:
+        day = normalize_draw_date(date) or None
+        if day is None or (prev_cutoff and day <= prev_cutoff):
+            return co_prev
+        if cur_cutoff is None or day <= cur_cutoff:
+            return co_this
+        return None
+
     names: dict = {}
-    scheduled: dict = {}
+    original: dict = {}
     for s in sov:
         num = str(s.get("cost_code_number") or "")
-        scheduled[num] = _dec(s.get("scheduled_value"))
+        if "original_value" in s:
+            original[num] = _dec(s.get("original_value"))
+            for co in s.get("change_orders") or []:
+                bucket = _bucket(co.get("date"))
+                if bucket is not None:
+                    bucket[num] = bucket.get(num, Decimal("0")) + _dec(co.get("amount"))
+        else:  # legacy/test contract: an entry without revision detail is all original
+            original[num] = _dec(s.get("scheduled_value"))
         if s.get("cost_code_name") and num not in names:
             names[num] = s.get("cost_code_name")
+    zero = Decimal("0")
+    # The revised scheduled value as of THIS application.
+    scheduled: dict = {num: original[num] + co_prev.get(num, zero) + co_this.get(num, zero)
+                       for num in original}
 
     def _absorb_names(draw):
         for c in draw.get("categories") or []:
@@ -155,6 +189,9 @@ def build_sov_rows(sov: list, draws: list, current_label: str,
         to_date = prev_amt + this_amt
         return {
             "item_no": num, "description": name or "",
+            "original": original.get(num, zero) if has_schedule else None,
+            "co_prev": co_prev.get(num, zero) if has_schedule else None,
+            "co_this": co_this.get(num, zero) if has_schedule else None,
             "scheduled": scheduled_value if has_schedule else None,
             "prev": prev_amt, "this_period": this_amt,
             "total_to_date": to_date,
@@ -180,12 +217,16 @@ def build_sov_rows(sov: list, draws: list, current_label: str,
     grand_this = sum((r["this_period"] for r in rows), Decimal("0"))
     grand_total = grand_prev + grand_this
     grand = {
+        "original": None, "co_prev": None, "co_this": None,
         "scheduled": None, "prev": grand_prev, "this_period": grand_this,
         "total_to_date": grand_total, "pct": None, "balance": None,
     }
     if has_schedule:
         grand_scheduled = sum((r["scheduled"] for r in rows), Decimal("0"))
-        grand.update(scheduled=grand_scheduled,
+        grand.update(original=sum((r["original"] for r in rows), zero),
+                     co_prev=sum((r["co_prev"] for r in rows), zero),
+                     co_this=sum((r["co_this"] for r in rows), zero),
+                     scheduled=grand_scheduled,
                      pct=_fmt_pct(grand_total, grand_scheduled),
                      balance=grand_scheduled - grand_total)
     return rows, grand
@@ -207,14 +248,15 @@ def build_schedule_of_values_pdf(header: dict, rows: list[dict], grand: dict) ->
 
     BLACK = colors.black
     BAND = colors.HexColor(BAND_FILL)
-    FONT_SIZE = 8
+    FONT_SIZE = 7.5  # eight money columns (U-793)
     LEADING = FONT_SIZE + 2
 
     def P(text: str, style: ParagraphStyle) -> Paragraph:
         return Paragraph(_html.escape(text) if text else "", style)
 
-    band_style = ParagraphStyle("sov_band", fontName=SERIF_BOLD, fontSize=FONT_SIZE,
-                                leading=LEADING, alignment=TA_CENTER)
+    # Header words must not split inside the narrow money columns ("APPLICATIONS").
+    band_style = ParagraphStyle("sov_band", fontName=SERIF_BOLD, fontSize=7,
+                                leading=8.5, alignment=TA_CENTER)
     band_left = ParagraphStyle("sov_band_l", parent=band_style, alignment=TA_LEFT)
     cell_style = ParagraphStyle("sov_cell", fontName=SERIF, fontSize=FONT_SIZE,
                                 leading=LEADING, alignment=TA_LEFT)
@@ -227,11 +269,13 @@ def build_schedule_of_values_pdf(header: dict, rows: list[dict], grand: dict) ->
     buf = io.BytesIO()
     doc, usable_w = landscape_doc(buf, "Schedule of Values")
 
-    item_w = 0.6 * inch
-    desc_w = 2.4 * inch
-    pct_w = 0.85 * inch
-    money_w = (usable_w - item_w - desc_w - pct_w) / 5.0
-    col_widths = [item_w, desc_w, money_w, money_w, money_w, money_w, pct_w, money_w]
+    # ITEM | DESCRIPTION | SCHEDULED VALUE x4 | WORK COMPLETED x3 | % | BALANCE.
+    # Each money column fits "$99,999,999.99" at 7.5pt on one line.
+    item_w = 0.55 * inch
+    pct_w = 0.7 * inch
+    money_w = 0.83 * inch
+    desc_w = usable_w - item_w - pct_w - 8 * money_w
+    col_widths = [item_w, desc_w] + [money_w] * 7 + [pct_w, money_w]
 
     head = document_header(
         title="Schedule of Values",
@@ -242,53 +286,67 @@ def build_schedule_of_values_pdf(header: dict, rows: list[dict], grand: dict) ->
         usable_w=usable_w,
     )
 
+    # Two header rows: the group bands, then the column names under them.
     band = [
-        P("ITEM", band_style),
-        P("DESCRIPTION", band_left),
-        P("SCHEDULED VALUE", band_style),
+        P("ITEM", band_style), P("DESCRIPTION", band_left),
+        P("SCHEDULED VALUE", band_style), "", "", "",
+        P("WORK COMPLETED", band_style), "", "",
+        P("% COMPLETE", band_style), P("BALANCE TO FINISH", band_style),
+    ]
+    sub = [
+        "", "",
+        P("ORIGINAL", band_style),
+        P("PREVIOUS CHANGE ORDERS", band_style),
+        P("THIS PERIOD CHANGE ORDERS", band_style),
+        P("REVISED", band_style),
         P("PREVIOUS APPLICATIONS", band_style),
         P("THIS APPLICATION", band_style),
-        P("COMPLETED TO DATE", band_style),
-        P("% COMPLETE", band_style),
-        P("BALANCE TO FINISH", band_style),
+        P("TO DATE", band_style),
+        "", "",
     ]
-    table_data: list[list] = [band]
+    table_data: list[list] = [band, sub]
+
+    def money_cells(r: dict, style: ParagraphStyle) -> list:
+        return [
+            P(_money_or_blank(r.get("original")), style),
+            P(_money_or_blank(r.get("co_prev")), style),
+            P(_money_or_blank(r.get("co_this")), style),
+            P(_money_or_blank(r["scheduled"]), style),
+            P(_money(r["prev"]), style),
+            P(_money(r["this_period"]), style),
+            P(_money(r["total_to_date"]), style),
+            P(r.get("pct") or "", style),
+            P(_money_or_blank(r["balance"]), style),
+        ]
+
     for row in rows:
         table_data.append([
             P(format_cc_number(row.get("item_no"), 3), item_style),
             P(row.get("description") or "", cell_style),
-            P(_money_or_blank(row["scheduled"]), money_style),
-            P(_money(row["prev"]), money_style),
-            P(_money(row["this_period"]), money_style),
-            P(_money(row["total_to_date"]), money_style),
-            P(row.get("pct") or "", money_style),
-            P(_money_or_blank(row["balance"]), money_style),
+            *money_cells(row, money_style),
         ])
 
     total_idx = len(table_data)
-    table_data.append([
-        "",
-        P("Totals", bold_left),
-        P(_money_or_blank(grand["scheduled"]), bold_right),
-        P(_money(grand["prev"]), bold_right),
-        P(_money(grand["this_period"]), bold_right),
-        P(_money(grand["total_to_date"]), bold_right),
-        P(grand.get("pct") or "", bold_right),
-        P(_money_or_blank(grand["balance"]), bold_right),
-    ])
+    table_data.append(["", P("Totals", bold_left), *money_cells(grand, bold_right)])
 
-    table = LongTable(table_data, colWidths=col_widths, repeatRows=1)
+    table = LongTable(table_data, colWidths=col_widths, repeatRows=2)
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), BAND),
-        ("VALIGN", (0, 0), (-1, 0), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, 0), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
-        ("VALIGN", (0, 1), (-1, -1), "TOP"),
-        ("TOPPADDING", (0, 1), (-1, -1), 2),
-        ("BOTTOMPADDING", (0, 1), (-1, -1), 2),
-        ("LEFTPADDING", (0, 0), (-1, -1), 3),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
-        ("LINEBELOW", (0, 1), (-1, total_idx - 1), 0.25, colors.HexColor("#D9D9D9")),
+        ("BACKGROUND", (0, 0), (-1, 1), BAND),
+        ("SPAN", (0, 0), (0, 1)), ("SPAN", (1, 0), (1, 1)),
+        ("SPAN", (2, 0), (5, 0)), ("SPAN", (6, 0), (8, 0)),
+        ("SPAN", (9, 0), (9, 1)), ("SPAN", (10, 0), (10, 1)),
+        # a hairline under each group band, so its columns read as one group
+        ("LINEBELOW", (2, 0), (5, 0), 0.5, colors.white),
+        ("LINEBELOW", (6, 0), (8, 0), 0.5, colors.white),
+        ("VALIGN", (0, 0), (-1, 1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, 1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, 1), 3),
+        ("VALIGN", (0, 2), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 2), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 2), (-1, -1), 2),
+        ("LEFTPADDING", (0, 0), (-1, -1), 2),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+        ("LINEBELOW", (0, 2), (-1, total_idx - 1), 0.25, colors.HexColor("#D9D9D9")),
         ("LINEABOVE", (2, total_idx), (-1, total_idx), 0.75, BLACK),
         ("TOPPADDING", (0, total_idx), (-1, total_idx), 4),
     ]))

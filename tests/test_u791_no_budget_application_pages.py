@@ -183,12 +183,28 @@ def _patch(monkeypatch, *, project=_PROJECT, budget=None, raises=False):
                 raise RuntimeError("db down")
             return budget
 
+        # the real revision rollup, over the fake revision/line services below
+        from entities.budget.business.service import BudgetService as _Real
+        revision_breakdown_by_cost_code = _Real.revision_breakdown_by_cost_code
+
         def variance_by_public_id(self, public_id):
-            return {"cost_codes": [{"cost_code_number": "06", "cost_code_name": "Grading",
-                                    "budget_price": "40150"}]}
+            return {"cost_codes": [{"cost_code_id": 6, "cost_code_number": "06",
+                                    "cost_code_name": "Grading", "budget_price": "40150"}],
+                    "rows": [{"sub_cost_code_id": 601, "cost_code_id": 6, "cost_code_number": "06"}]}
+
+    class _Revisions:
+        def read_by_budget_id(self, budget_id):
+            return [SimpleNamespace(id=1, status="approved", type="original",
+                                    effective_date=None, approved_datetime="2026-01-01")]
+
+    class _Lines:
+        def read_by_budget_revision_id(self, revision_id):
+            return [SimpleNamespace(sub_cost_code_id=601, price=Decimal("40150"))]
 
     monkeypatch.setattr("entities.project.business.service.ProjectService", _Projects)
     monkeypatch.setattr("entities.budget.business.service.BudgetService", _Budgets)
+    monkeypatch.setattr("entities.budget_revision.business.service.BudgetRevisionService", _Revisions)
+    monkeypatch.setattr("entities.budget_line_item.business.service.BudgetLineItemService", _Lines)
 
 
 def test_no_budget_is_an_empty_schedule(monkeypatch):
@@ -207,9 +223,10 @@ def test_an_unreadable_project_is_none(monkeypatch):
 
 
 def test_a_budget_returns_its_schedule(monkeypatch):
-    _patch(monkeypatch, budget=SimpleNamespace(public_id="B1"))
+    _patch(monkeypatch, budget=SimpleNamespace(id=9, public_id="B1"))
     assert router._budget_sov_for_project(203) == [
-        {"cost_code_number": "06", "cost_code_name": "Grading", "scheduled_value": Decimal("40150")}]
+        {"cost_code_number": "06", "cost_code_name": "Grading", "scheduled_value": Decimal("40150"),
+         "original_value": Decimal("40150"), "change_orders": []}]
 
 
 # ---- the packet route's helper (the wiring) ------------------------------------

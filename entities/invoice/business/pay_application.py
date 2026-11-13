@@ -49,24 +49,31 @@ def build_application_lines(grand: dict, retainage_rate: Any = Decimal("0"),
     totals so the two pages reconcile by construction.
 
     ``grand`` is the second return of ``schedule_of_values.build_sov_rows`` (keys:
-    scheduled, prev, this_period, total_to_date). ``contract_sum`` is the live-Budget
-    schedule total and ``net_change_orders`` is $0 — override the contract sum via
-    ``original_contract_sum`` once the Budget models a real original baseline.
-    Retainage defaults to 0. Identities: contract_sum_to_date = contract_sum +
-    net_change_orders; earned_less_retainage = completed_to_date - retainage;
-    amount_due = earned_less_retainage - previous_applications (= grand this_period
-    when retainage is 0); balance_to_finish = contract_sum_to_date -
-    earned_less_retainage.
+    original, co_prev, co_this, scheduled, prev, this_period, total_to_date).
+    ``contract_sum`` is the original schedule total and ``net_change_orders`` the
+    approved change orders through this application (previous + this period, U-793),
+    so ``contract_sum_to_date`` equals the schedule's revised total. Override the
+    original via ``original_contract_sum``. Retainage defaults to 0. Identities:
+    contract_sum_to_date = contract_sum + net_change_orders; earned_less_retainage =
+    completed_to_date - retainage; amount_due = earned_less_retainage -
+    previous_applications (= grand this_period when retainage is 0);
+    balance_to_finish = contract_sum_to_date - earned_less_retainage.
 
-    No contract sum (U-791): when ``grand["scheduled"]`` is None (the project has no
-    schedule) and no ``original_contract_sum`` is given, contract_sum,
-    contract_sum_to_date and balance_to_finish are None and render blank — a $0
-    contract would print a negative balance to finish. The payment figures are
-    unaffected.
+    No contract sum (U-791): when the grand has no schedule (``scheduled`` is None)
+    and no ``original_contract_sum`` is given, contract_sum, contract_sum_to_date and
+    balance_to_finish are None and render blank — a $0 contract would print a negative
+    balance to finish. The payment figures are unaffected.
     """
-    change_orders = Decimal("0")
-    contract = original_contract_sum if original_contract_sum is not None else grand.get("scheduled")
-    contract_sum = _dec_or_none(contract)
+    has_schedule = grand.get("scheduled") is not None
+    change_orders = (_dec(grand.get("co_prev")) + _dec(grand.get("co_this"))
+                     if has_schedule else Decimal("0"))
+    if original_contract_sum is not None:
+        contract_sum = _dec(original_contract_sum)
+    elif has_schedule:
+        # A grand without the U-793 split (original absent) is all original.
+        contract_sum = _dec(grand["original"] if grand.get("original") is not None else grand["scheduled"])
+    else:
+        contract_sum = None
     contract_to_date = contract_sum + change_orders if contract_sum is not None else None
     completed = _dec(grand.get("total_to_date"))
     rate = _dec(retainage_rate)

@@ -243,6 +243,44 @@ class BudgetService:
             "totals": totals_out,
         }
 
+    def revision_breakdown_by_cost_code(self, budget: Budget, variance: dict) -> dict:
+        """Per cost code, the approved Rev 0 (original) price and each approved change
+        order's delta: {cost_code_id: {"original": Decimal, "change_orders": [{"date",
+        "amount"}]}} (U-793, the draw packet's Schedule of Values). Drafts never count.
+
+        Keyed by cost_code_id (two cost codes may share a number). Sub cost codes map to
+        cost codes through ``variance["rows"]`` (``variance_by_public_id`` of the same
+        budget); a line with no sub cost code is Uncategorized and not mapped. A change
+        order is dated by its effective date, else its approval time converted from UTC
+        to the company's local day (an evening approval must not land a day late).
+        """
+        from entities.budget_line_item.business.service import BudgetLineItemService
+        from entities.budget_revision.business.service import BudgetRevisionService
+
+        cc_of_scc = {
+            r.get("sub_cost_code_id"): r.get("cost_code_id")
+            for r in (variance.get("rows") or [])
+            if r.get("sub_cost_code_id") is not None and r.get("cost_code_id") is not None
+        }
+        lines = BudgetLineItemService()
+        out: dict = {}
+        for rev in BudgetRevisionService().read_by_budget_id(int(budget.id)):
+            if rev.status != "approved":
+                continue
+            date = _revision_local_date(rev)
+            per_cc: dict = {}
+            for li in lines.read_by_budget_revision_id(int(rev.id)):
+                cc_id = cc_of_scc.get(li.sub_cost_code_id)
+                if cc_id is not None:
+                    per_cc[cc_id] = per_cc.get(cc_id, Decimal("0")) + Decimal(str(li.price or 0))
+            for cc_id, amount in per_cc.items():
+                entry = out.setdefault(cc_id, {"original": Decimal("0"), "change_orders": []})
+                if rev.type == "original":
+                    entry["original"] += amount
+                else:
+                    entry["change_orders"].append({"date": date, "amount": amount})
+        return out
+
     def read_by_id(self, id: int) -> Optional[Budget]:
         budget = self.repo.read_by_id(id)
         if budget is None:
@@ -424,3 +462,21 @@ class BudgetService:
                 "by another user. Refresh and retry."
             )
         return activated
+
+
+# The company's local day for an approval timestamp stored as UTC (SYSUTCDATETIME).
+_LOCAL_TZ = "America/Chicago"
+
+
+def _revision_local_date(rev) -> Optional[str]:
+    """'YYYY-MM-DD' for a revision: its effective date, else its UTC approval time
+    converted to the local day. None when it has neither."""
+    if rev.effective_date:
+        return str(rev.effective_date)[:10]
+    if not rev.approved_datetime:
+        return None
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    stamp = datetime.fromisoformat(str(rev.approved_datetime)[:19]).replace(tzinfo=timezone.utc)
+    return stamp.astimezone(ZoneInfo(_LOCAL_TZ)).date().isoformat()

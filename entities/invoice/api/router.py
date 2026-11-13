@@ -344,8 +344,30 @@ def _draw_packet_blocks(project_id: Optional[int], public_id: str):
         return DrawPacketBlocks()
 
 
+def _packet_header(invoice, toc_items: list, to_name: str, to_lines: list) -> dict:
+    """The header the Application for Payment, Schedule of Values and both Tables of
+    Contents share (U-793f): project, application no. (the invoice number), date,
+    period to, From / To. One dict, so the four pages' header strips agree by
+    construction."""
+    from entities.project.business.service import ProjectService
+
+    project = ProjectService().read_by_id(invoice.project_id) if invoice.project_id else None
+    return {
+        "project": project.name if project else "",
+        "application_no": invoice.invoice_number or "",
+        "application_date": _format_invoice_date(invoice.invoice_date),
+        "period_to": _format_invoice_date(_period_to_date(toc_items) or invoice.invoice_date),
+        # Name + mailing address only (no phone/email — those belong on the
+        # Draw Request/Trend).
+        "from_lines": _CONTRACTOR_BLOCK[:3],
+        "to_name": to_name,
+        "to_lines": list(to_lines),
+    }
+
+
 def _build_application_pages(invoice, draws: list, toc_items: list, to_name: str,
-                             to_lines: list, public_id: str) -> tuple:
+                             to_lines: list, public_id: str,
+                             header: Optional[dict] = None) -> tuple:
     """(application_bytes, sov_bytes) for the packet, or (None, None) when the budget
     lookup fails. The caller has already checked that the invoice is a coded draw
     and isolates exceptions.
@@ -355,6 +377,7 @@ def _build_application_pages(invoice, draws: list, toc_items: list, to_name: str
     source-document date on the draw (``_period_to_date``), else the invoice date.
     U-792: our own Application for Payment + Schedule of Values (no industry-form
     branding); the Application's optional blocks follow the project's settings.
+    U-793f: ``header`` is the packet's shared `_packet_header`; built here when absent.
     """
     from entities.invoice.business.pay_application import build_application_lines, build_application_pdf
     from entities.invoice.business.schedule_of_values import (
@@ -362,8 +385,6 @@ def _build_application_pages(invoice, draws: list, toc_items: list, to_name: str
         build_sov_rows,
         normalize_draw_date,
     )
-    from entities.project.business.service import ProjectService
-
     # [] = no budget: the pages still render, contract fields blank (U-791).
     # None = the lookup failed: skip rather than mislabel a budgeted project.
     sov = _budget_sov_for_project(invoice.project_id)
@@ -373,21 +394,8 @@ def _build_application_pages(invoice, draws: list, toc_items: list, to_name: str
     current_date = normalize_draw_date(invoice.invoice_date)
     rows, grand = build_sov_rows(sov, draws, invoice.invoice_number or "",
                                  current_date=current_date)
-    date_str = _format_invoice_date(invoice.invoice_date)
-    period_to_str = _format_invoice_date(
-        _period_to_date(toc_items) or invoice.invoice_date)
-    project = ProjectService().read_by_id(invoice.project_id) if invoice.project_id else None
-    header = {
-        "project": project.name if project else "",
-        "application_no": invoice.invoice_number or "",
-        "application_date": date_str,
-        "period_to": period_to_str,
-        # Name + mailing address only (no phone/email — those belong on the
-        # Draw Request/Trend).
-        "from_lines": _CONTRACTOR_BLOCK[:3],
-        "to_name": to_name,
-        "to_lines": list(to_lines),
-    }
+    if header is None:
+        header = _packet_header(invoice, toc_items, to_name, to_lines)
     sov_bytes = build_schedule_of_values_pdf(header, rows, grand)
     application_bytes = build_application_pdf(
         header,
@@ -502,48 +510,130 @@ def _consolidate_basic_toc_rows(rows: list[dict]) -> list[dict]:
     return out
 
 
-def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
-    """
-    Generate the basic Table of Contents PDF page.
-    rows must be pre-sorted (Bill → Credit → Expense, then vendor name).
-    """
-    import html as _html
+def _toc_document(title: str, header: Optional[dict], table) -> bytes:
+    """Render a Table of Contents page in the packet house style (U-793f): the shared
+    document header (title, From / To, logo, project strip) over the table, portrait
+    letter at the packet-wide margins. ``header`` None (a header lookup failed, or a
+    unit test) still renders the title."""
     from reportlab.lib.pagesizes import letter
-    from reportlab.lib.units import inch
-    from reportlab.lib import colors
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
     from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+    from reportlab.lib.units import inch
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
-    BLUE = colors.HexColor("#1F3864")
-
-    wrap_style = ParagraphStyle("toc_wrap", fontName="Helvetica", fontSize=8, leading=10)
-    wrap_hdr = ParagraphStyle("toc_wrap_hdr", fontName="Helvetica-Bold", fontSize=8, leading=10, textColor=BLUE)
-    bold_right = ParagraphStyle("toc_bold_right", fontName="Helvetica-Bold", fontSize=8, leading=10, alignment=TA_RIGHT)
-    hdr_right = ParagraphStyle("toc_hdr_right", fontName="Helvetica-Bold", fontSize=8, leading=10, textColor=BLUE, alignment=TA_RIGHT)
-
-    def W(text):
-        """Wrapping Paragraph for Vendor / Description columns. HTML-escape so & < > are safe in ReportLab XML."""
-        return Paragraph(_html.escape(str(text)) if text else "", wrap_style)
-
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=letter,
-        leftMargin=0.75 * inch, rightMargin=0.75 * inch,
-        topMargin=0.5 * inch, bottomMargin=0.5 * inch,
+    from entities.invoice.business.packet_render import (
+        PAGE_SIDE_MARGIN_IN, PAGE_TOPBOTTOM_MARGIN_IN, SERIF_BOLD,
+        application_header_fields, document_header,
     )
 
-    # Columns: Date(65) Vendor(110) Invoice(80) Description(120) Type(52) Amount(77) = 504pt
-    # The "Description" column shows the sub cost code name (not the work paragraph).
-    # Date/Invoice/Type/Amount sized to fit content on one line; Vendor/Description wrap.
-    col_widths = [65, 110, 80, 120, 52, 77]
-    headers = [
-        Paragraph("Date", wrap_hdr), Paragraph("Vendor", wrap_hdr), Paragraph("Invoice", wrap_hdr),
-        Paragraph("Description", wrap_hdr), Paragraph("Type", wrap_hdr), Paragraph("Amount", hdr_right),
+    buf = io.BytesIO()
+    margin = PAGE_SIDE_MARGIN_IN * inch
+    doc = SimpleDocTemplate(
+        buf, pagesize=letter, title=title,
+        leftMargin=margin, rightMargin=margin,
+        topMargin=PAGE_TOPBOTTOM_MARGIN_IN * inch, bottomMargin=PAGE_TOPBOTTOM_MARGIN_IN * inch,
+    )
+    usable_w = letter[0] - 2 * margin
+    if header is not None:
+        head = document_header(
+            title=title, from_lines=header.get("from_lines") or [],
+            to_name=header.get("to_name") or "", to_lines=header.get("to_lines") or [],
+            fields=application_header_fields(header), usable_w=usable_w,
+        )
+    else:
+        head = Paragraph(title, ParagraphStyle("toc_title", fontName=SERIF_BOLD, fontSize=15, leading=18))
+    doc.build([head, Spacer(1, 0.18 * inch), table])
+    return buf.getvalue()
+
+
+def _toc_styles():
+    """Paragraph styles + column geometry shared by both Tables of Contents."""
+    from reportlab.lib.enums import TA_RIGHT
+    from reportlab.lib.styles import ParagraphStyle
+
+    from entities.invoice.business.packet_render import SERIF, SERIF_BOLD
+
+    size = 8
+    return {
+        "cell": ParagraphStyle("toc_cell", fontName=SERIF, fontSize=size, leading=size + 2),
+        "money": ParagraphStyle("toc_money", fontName=SERIF, fontSize=size, leading=size + 2,
+                                alignment=TA_RIGHT, splitLongWords=0),
+        "band": ParagraphStyle("toc_band", fontName=SERIF_BOLD, fontSize=size, leading=size + 2),
+        "band_r": ParagraphStyle("toc_band_r", fontName=SERIF_BOLD, fontSize=size, leading=size + 2,
+                                 alignment=TA_RIGHT),
+        "bold": ParagraphStyle("toc_bold", fontName=SERIF_BOLD, fontSize=size, leading=size + 2),
+        "bold_r": ParagraphStyle("toc_bold_r", fontName=SERIF_BOLD, fontSize=size, leading=size + 2,
+                                 alignment=TA_RIGHT, splitLongWords=0),
+    }
+
+
+# DATE | VENDOR | INVOICE | DESCRIPTION | TYPE | AMOUNT — 504pt (7in at 0.75in sides).
+# Times at 8pt: the widest live description ("Grading/Sitework/Demolition", ~102pt)
+# sits on one line in DESCRIPTION, which the old Helvetica 100pt column split mid-word;
+# AMOUNT holds a bold "($1,234,567.89)" (a $1M+ invoice total is live data).
+_TOC_COL_WIDTHS = [56, 128, 76, 132, 46, 66]
+_TOC_ROW_RULE = "#D9D9D9"   # hairline under each line row (as on the Schedule of Values)
+_TOC_HEADERS = ("DATE", "VENDOR", "INVOICE", "DESCRIPTION", "TYPE", "AMOUNT")
+
+
+def _toc_band_row(st) -> list:
+    from reportlab.platypus import Paragraph
+    return [Paragraph(h, st["band"]) for h in _TOC_HEADERS[:-1]] + [Paragraph(_TOC_HEADERS[-1], st["band_r"])]
+
+
+def _toc_base_style(total_idx: int) -> list:
+    from reportlab.lib import colors
+
+    from entities.invoice.business.packet_render import BAND_FILL
+
+    return [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BAND_FILL)),
+        ("TOPPADDING", (0, 0), (-1, 0), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
+        ("TOPPADDING", (0, 1), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 1), (-1, -1), 2),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        # Total: rule above the amount, and it never prints alone on a page. On the
+        # Detail this range may overlap a category heading's own NOSPLIT; ReportLab
+        # takes the union, which is what we want (proven on a 200-row, 67-group run).
+        ("LINEABOVE", (-1, total_idx), (-1, total_idx), 0.75, colors.black),
+        ("TOPPADDING", (0, total_idx), (-1, total_idx), 4),
+        ("NOSPLIT", (0, max(1, total_idx - 3)), (-1, total_idx)),
     ]
 
+
+def _toc_line_cells(r: dict, st, type_label: str) -> list:
+    """DATE | VENDOR | INVOICE | DESCRIPTION | TYPE | AMOUNT for one row."""
+    import html as _html
+    from reportlab.platypus import Paragraph
+
+    def P(text, style=st["cell"]):
+        return Paragraph(_html.escape(str(text)) if text not in (None, "") else "", style)
+
+    return [
+        P(r.get("source_date", "")),
+        P(r.get("vendor_name", "")),
+        P(r.get("parent_number", "")),
+        # Prefer the sub cost code name; fall back to the work description so the
+        # column is never blank when a source line has no SCC.
+        P(r.get("sub_cost_code_name") or r.get("description") or ""),
+        P(type_label),
+        P(_toc_format_money(_toc_signed_amount(r)), st["money"]),
+    ]
+
+
+def _build_toc_basic_pdf(rows: list[dict], header: Optional[dict] = None) -> bytes:
+    """
+    The Table of Contents Summary page: one row per source document.
+    rows must be pre-sorted (Bill → Credit → Expense, then vendor name).
+    """
+    from reportlab.lib import colors
+    from reportlab.platypus import Paragraph, Table, TableStyle
+
+    st = _toc_styles()
     # One row per SOURCE ENTITY (bill / credit / expense) on this invoice; the
-    # expanded TOC is the per-sub-cost-code view. A bill split across sub cost
+    # Detail TOC is the per-line view. A bill split across sub cost
     # codes prints once, at the sum of ITS LINES BILLED ON THIS INVOICE — never
     # the bill's own TotalAmount, so a partially billed bill (Clark Crane
     # NV-13543: one $267.58 line deliberately unbilled) still prints only what
@@ -553,193 +643,78 @@ def _build_toc_basic_pdf(rows: list[dict]) -> bytes:
     # pre-sorted `rows` BEFORE this function and dedupes by attachment id.
     line_rows = _consolidate_basic_toc_rows(rows)
 
-    table_data = [headers]
+    table_data = [_toc_band_row(st)]
     for r in line_rows:
-        amt_str = _toc_format_money(_toc_signed_amount(r))
-        table_data.append([
-            r.get("source_date", ""),
-            W(r.get("vendor_name", "")),
-            r.get("parent_number", ""),
-            # Prefer the sub cost code name; fall back to the work-description
-            # so the column is never blank when a source line has no SCC.
-            W(r.get("sub_cost_code_name") or r.get("description") or ""),
-            r.get("type_label", ""),
-            amt_str,
-        ])
+        table_data.append(_toc_line_cells(r, st, r.get("type_label", "")))
 
     grand_total = sum((_toc_signed_amount(r) or 0) for r in line_rows)
-    table_data.append(["", "", "", "", Paragraph("Total", bold_right), Paragraph(_toc_format_money(grand_total), bold_right)])
-    n = len(table_data)
+    table_data.append(["", "", "", "", Paragraph("Total", st["bold_r"]),
+                       Paragraph(_toc_format_money(grand_total), st["bold_r"])])
+    total_idx = len(table_data) - 1
 
-    table = Table(table_data, colWidths=col_widths)
-    table.setStyle(TableStyle([
-        # Header row
-        ("FONTNAME",     (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE",     (0, 0), (-1, 0), 8),
-        ("TEXTCOLOR",    (0, 0), (-1, 0), BLUE),
-        ("TOPPADDING",   (0, 0), (-1, 0), 4),
-        ("BOTTOMPADDING",(0, 0), (-1, 0), 5),
-        ("LINEBELOW",    (0, 0), (-1, 0), 0.75, BLUE),
-        # Data rows
-        ("FONTNAME",     (0, 1), (-1, n - 2), "Helvetica"),
-        ("FONTSIZE",     (0, 1), (-1, n - 2), 8),
-        ("TOPPADDING",   (0, 1), (-1, n - 2), 3),
-        ("BOTTOMPADDING",(0, 1), (-1, n - 2), 3),
-        ("LINEBELOW",    (0, 1), (-1, n - 2), 0.25, colors.HexColor("#CCCCCC")),
-        # Total row
-        ("FONTNAME",     (0, n - 1), (-1, n - 1), "Helvetica-Bold"),
-        ("FONTSIZE",     (0, n - 1), (-1, n - 1), 8),
-        ("TOPPADDING",   (0, n - 1), (-1, n - 1), 5),
-        ("BOTTOMPADDING",(0, n - 1), (-1, n - 1), 4),
-        ("LINEABOVE",    (0, n - 1), (-1, n - 1), 0.75, colors.black),
-        # Amount col right-aligned (plain string cells)
-        ("ALIGN",        (-1, 0), (-1, -1), "RIGHT"),
-        # Padding
-        ("LEFTPADDING",  (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        # Top-align so wrapped rows don't look odd
-        ("VALIGN",       (0, 0), (-1, -1), "TOP"),
-    ]))
-
-    doc.build([
-        Paragraph("Table Of Contents", ParagraphStyle(
-            "TOCTitle", fontName="Helvetica-Bold", fontSize=12,
-            textColor=BLUE, alignment=TA_CENTER, spaceAfter=8,
-        )),
-        table,
-    ])
-    return buf.getvalue()
+    style = _toc_base_style(total_idx) + [
+        ("LINEBELOW", (0, 1), (-1, total_idx - 1), 0.25, colors.HexColor(_TOC_ROW_RULE)),
+    ]
+    table = Table(table_data, colWidths=_TOC_COL_WIDTHS, repeatRows=1)
+    table.setStyle(TableStyle(style))
+    return _toc_document("Table of Contents Summary", header, table)
 
 
-def _build_toc_expanded_pdf(rows: list[dict]) -> bytes:
+def _build_toc_expanded_pdf(rows: list[dict], header: Optional[dict] = None) -> bytes:
     """
-    Generate the expanded Table of Contents PDF (grouped by cost code, subtotals per group).
+    The Table of Contents Detail page: every line, grouped by cost code (Category),
+    each group under a "2.000  Dumpsters" heading and closed by its Subtotal.
     rows must be pre-sorted (cost_code_num, then type, then vendor).
     """
     import html as _html
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib.units import inch
-    from reportlab.lib import colors
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph
-    from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.enums import TA_CENTER, TA_RIGHT
     from itertools import groupby
 
-    BLUE = colors.HexColor("#1F3864")
+    from reportlab.lib import colors
+    from reportlab.platypus import Paragraph, Table, TableStyle
 
-    wrap_style = ParagraphStyle("toc_ewrap", fontName="Helvetica", fontSize=8, leading=10)
-    wrap_hdr = ParagraphStyle("toc_ewrap_hdr", fontName="Helvetica-Bold", fontSize=8, leading=10, textColor=BLUE)
-    bold_right = ParagraphStyle("toc_ebold_right", fontName="Helvetica-Bold", fontSize=8, leading=10, alignment=TA_RIGHT)
-    hdr_right = ParagraphStyle("toc_ehdr_right", fontName="Helvetica-Bold", fontSize=8, leading=10, textColor=BLUE, alignment=TA_RIGHT)
+    from entities.invoice.business.packet_render import format_cc_number
 
-    def W(text):
-        """Wrapping Paragraph for Vendor / Description columns. HTML-escape so & < > are safe in ReportLab XML."""
-        return Paragraph(_html.escape(str(text)) if text else "", wrap_style)
-
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=letter,
-        leftMargin=0.75 * inch, rightMargin=0.75 * inch,
-        topMargin=0.5 * inch, bottomMargin=0.5 * inch,
-    )
-
-    # Columns: CostCode(45) Date(62) Vendor(95) Invoice(78) Description(100) Type(52) Amount(72) = 504pt
-    # The "Description" column shows the sub cost code name (not the work paragraph).
-    # Date/Invoice/Type/Amount sized to fit content on one line; Vendor/Description wrap.
-    col_widths = [45, 62, 95, 78, 100, 52, 72]
-    headers = [
-        Paragraph("Cost Code", wrap_hdr), Paragraph("Date", wrap_hdr), Paragraph("Vendor", wrap_hdr),
-        Paragraph("Invoice", wrap_hdr), Paragraph("Description", wrap_hdr),
-        Paragraph("Type", wrap_hdr), Paragraph("Amount", hdr_right),
-    ]
-
-    table_data = [headers]
-    subtotal_indices: list[int] = []
-    spacer_indices: list[int] = []
+    st = _toc_styles()
+    table_data = [_toc_band_row(st)]
+    style: list = []
 
     for cc, group_iter in groupby(rows, key=lambda r: r.get("cost_code_number") or ""):
         group_items = list(group_iter)
+        name = next((r.get("cost_code_name") for r in group_items if r.get("cost_code_name")), "")
+        heading = "&nbsp;&nbsp;&nbsp;".join(
+            _html.escape(part) for part in (format_cc_number(cc, 3), name) if part
+        ) or "Uncategorized"
+        head_idx = len(table_data)
+        table_data.append([Paragraph(heading, st["bold"]), "", "", "", "", ""])
+        style += [
+            ("SPAN", (0, head_idx), (-1, head_idx)),
+            ("TOPPADDING", (0, head_idx), (-1, head_idx), 7 if head_idx > 1 else 4),
+            ("LINEBELOW", (0, head_idx), (-1, head_idx), 0.5, colors.black),
+            # a heading never ends a page: it travels with its first line
+            ("NOSPLIT", (0, head_idx), (-1, head_idx + 1)),
+        ]
         for r in group_items:
-            amt_str = _toc_format_money(_toc_signed_amount(r))
-            table_data.append([
-                cc,
-                r.get("source_date", ""),
-                W(r.get("vendor_name", "")),
-                r.get("parent_number", ""),
-                # Prefer the sub cost code name; fall back to the work-description
-                # so the column is never blank when a source line has no SCC.
-                W(r.get("sub_cost_code_name") or r.get("description") or ""),
-                _toc_source_label(r.get("source_type", "")),
-                amt_str,
-            ])
+            table_data.append(_toc_line_cells(r, st, _toc_source_label(r.get("source_type", ""))))
+            style.append(("LINEBELOW", (0, len(table_data) - 1), (-1, len(table_data) - 1),
+                          0.25, colors.HexColor(_TOC_ROW_RULE)))
         subtotal = sum((_toc_signed_amount(r) or 0) for r in group_items)
-        table_data.append(["", "", "", "", "", Paragraph("Subtotal", bold_right), Paragraph(_toc_format_money(subtotal), bold_right)])
-        subtotal_indices.append(len(table_data) - 1)
-        # Blank spacer row between groups
-        table_data.append(["", "", "", "", "", "", ""])
-        spacer_indices.append(len(table_data) - 1)
-
-    # Remove trailing spacer
-    if spacer_indices and spacer_indices[-1] == len(table_data) - 1:
-        table_data.pop()
-        spacer_indices.pop()
+        sub_idx = len(table_data)
+        table_data.append(["", "", "", "", Paragraph("Subtotal", st["bold_r"]),
+                           Paragraph(_toc_format_money(subtotal), st["bold_r"])])
+        style += [
+            ("LINEABOVE", (-1, sub_idx), (-1, sub_idx), 0.5, colors.black),
+            ("TOPPADDING", (0, sub_idx), (-1, sub_idx), 3),
+        ]
 
     grand_total = sum((_toc_signed_amount(r) or 0) for r in rows)
-    table_data.append(["", "", "", "", "", Paragraph("Total", bold_right), Paragraph(_toc_format_money(grand_total), bold_right)])
+    table_data.append(["", "", "", "", Paragraph("Total", st["bold_r"]),
+                       Paragraph(_toc_format_money(grand_total), st["bold_r"])])
     total_idx = len(table_data) - 1
-    n = len(table_data)
+    style += [("TOPPADDING", (0, total_idx), (-1, total_idx), 8)]
 
-    style_cmds = [
-        # Header
-        ("FONTNAME",     (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE",     (0, 0), (-1, 0), 8),
-        ("TEXTCOLOR",    (0, 0), (-1, 0), BLUE),
-        ("TOPPADDING",   (0, 0), (-1, 0), 4),
-        ("BOTTOMPADDING",(0, 0), (-1, 0), 5),
-        ("LINEBELOW",    (0, 0), (-1, 0), 0.75, BLUE),
-        # All non-header rows default
-        ("FONTNAME",     (0, 1), (-1, n - 1), "Helvetica"),
-        ("FONTSIZE",     (0, 1), (-1, n - 1), 8),
-        ("TOPPADDING",   (0, 1), (-1, n - 1), 3),
-        ("BOTTOMPADDING",(0, 1), (-1, n - 1), 3),
-        ("LINEBELOW",    (0, 1), (-1, n - 1), 0.25, colors.HexColor("#CCCCCC")),
-        # Amount col right-aligned (plain string cells)
-        ("ALIGN",        (-1, 0), (-1, -1), "RIGHT"),
-        # Padding
-        ("LEFTPADDING",  (0, 0), (-1, -1), 4),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        # Top-align so wrapped rows don't look odd
-        ("VALIGN",       (0, 0), (-1, -1), "TOP"),
-        # Total row
-        ("FONTNAME",     (0, total_idx), (-1, total_idx), "Helvetica-Bold"),
-        ("LINEABOVE",    (0, total_idx), (-1, total_idx), 0.75, colors.black),
-        ("TOPPADDING",   (0, total_idx), (-1, total_idx), 5),
-        ("BOTTOMPADDING",(0, total_idx), (-1, total_idx), 4),
-    ]
-    for idx in subtotal_indices:
-        style_cmds.extend([
-            ("FONTNAME",     (0, idx), (-1, idx), "Helvetica-Bold"),
-            ("LINEABOVE",    (0, idx), (-1, idx), 0.5, colors.HexColor("#888888")),
-            ("TOPPADDING",   (0, idx), (-1, idx), 4),
-        ])
-    for idx in spacer_indices:
-        style_cmds.extend([
-            ("TOPPADDING",   (0, idx), (-1, idx), 2),
-            ("BOTTOMPADDING",(0, idx), (-1, idx), 2),
-            ("LINEBELOW",    (0, idx), (-1, idx), 0, colors.white),
-        ])
-
-    table = Table(table_data, colWidths=col_widths)
-    table.setStyle(TableStyle(style_cmds))
-
-    doc.build([
-        Paragraph("Table Of Contents", ParagraphStyle(
-            "TOCTitle", fontName="Helvetica-Bold", fontSize=12,
-            textColor=BLUE, alignment=TA_CENTER, spaceAfter=8,
-        )),
-        table,
-    ])
-    return buf.getvalue()
+    table = Table(table_data, colWidths=_TOC_COL_WIDTHS, repeatRows=1)
+    table.setStyle(TableStyle(_toc_base_style(total_idx) + style))
+    return _toc_document("Table of Contents Detail", header, table)
 
 
 @router.post("/create/invoice")
@@ -916,7 +891,17 @@ def _generate_invoice_packet(public_id: str):
         (r.get("vendor_name") or "").lower(),
         (r.get("parent_number") or "").lower(),
     ))
-    basic_toc_bytes = _build_toc_basic_pdf(basic_toc_rows)
+    # Recipient (To block) + the header shared by the TOCs and the Application /
+    # Schedule of Values (U-793f). A failed header lookup prints title-only TOCs
+    # rather than failing the packet.
+    to_name, to_lines = _resolve_draw_request_recipient(invoice.project_id)
+    packet_header = None
+    try:
+        packet_header = _packet_header(invoice, toc_items, to_name, to_lines)
+    except Exception:
+        logger.exception(f"Packet [{public_id}]: packet header lookup failed — TOCs print title-only")
+
+    basic_toc_bytes = _build_toc_basic_pdf(basic_toc_rows, packet_header)
 
     def _expanded_sort_key(r):
         cc = (r.get("cost_code_number") or "").strip()
@@ -927,11 +912,10 @@ def _generate_invoice_packet(public_id: str):
         return (cc_num, cc.lower(), _type_order_map.get(r.get("source_type", ""), 9), (r.get("vendor_name") or "").lower())
 
     expanded_toc_rows = sorted(toc_items, key=_expanded_sort_key)
-    expanded_toc_bytes = _build_toc_expanded_pdf(expanded_toc_rows)
+    expanded_toc_bytes = _build_toc_expanded_pdf(expanded_toc_rows, packet_header)
 
-    # Recipient (To block) + fee rate — shared by the Draw Request and Trend pages.
+    # Fee rate — shared by the Draw Request and Trend pages.
     fee_rate = _resolve_builders_fee_rate(invoice.project_id)
-    to_name, to_lines = _resolve_draw_request_recipient(invoice.project_id)
 
     # Draw Request page (U-204): the client-facing per-cost-code rollup of THIS
     # draw carrying the Builder's Fee line — replaces the U-191 cover. Built from
@@ -984,7 +968,7 @@ def _generate_invoice_packet(public_id: str):
     if draws and current_is_coded_draw:
         try:
             application_bytes, sov_bytes = _build_application_pages(
-                invoice, draws, toc_items, to_name, to_lines, public_id)
+                invoice, draws, toc_items, to_name, to_lines, public_id, header=packet_header)
         except Exception:
             logger.exception(f"Packet [{public_id}]: Application/Schedule of Values generation failed — continuing without it")
 

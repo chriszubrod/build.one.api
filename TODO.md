@@ -7639,3 +7639,34 @@ convention for mapping tables already stated in `scripts/migrations/u225_qbo_map
 ## U-794/U-795/U-796 follow-up (booked 2026-11-13)
 
 - [ ] **Dedupe identity-conflict ReconciliationIssues on the 15-minute reference pulls.** The vendor, customer and item pulls now run every 15 minutes (scheduler U-794/U-795/U-796). When a record fails projection (e.g. `duplicate_qbo_item` / duplicate identity), the run holds the watermark and re-pulls the window every tick until `QBO_WATERMARK_HOLD_BOUND_SECONDS` (7200 s) force-advances it. `integrations/intuit/qbo/base/reconciliation_recorder.py::record_mapping_issue` does not dedupe, so one persistent failure now writes ~8 `qbo.ReconciliationIssue` rows per hold cycle instead of 1. Route these through the existing `_record_deduped` helper in the same file (key on drift_type + entity + qbo_id). Bounded and harmless otherwise — noise in the issue list, not wrong data.
+
+## U-166a/b/c + U-652d2/d3 follow-ups (booked 2026-11-10; batch LIVE 2026-11-13 api b585476d)
+
+- [ ] **[U-166b] Fallback can show the wrong vendor invoice (P3).** A bill that combines several vendor invoices, with only one PDF linked so far, makes every unlinked line show that PDF in the packet. `COUNT(DISTINCT)=1` can't tell "one PDF for the whole bill" from "only one linked so far". U-166 inheritance makes the same assumption.
+- [ ] **[U-166a] Batched link-read route.** BillEdit's re-home, BillEdit's load walk and BillView's walk make N sequential `GET by-bill-line-item` probes. `BillLineItemAttachmentService.read_by_bill_line_item_ids` exists but has no HTTP route. A `GET .../by-bill/{id}` route would replace them.
+- [ ] **[U-166c] Residuals.**
+  - The email bridge `read_by_hash` dedup returns another user's Attachment row (BlobUrl and metadata) on a byte-identical match.
+  - The ILIA list and get routes are module-gated only. They return link metadata, not content.
+  - The invoice packet regenerate deletes the old packet blob before its row; U-446b's row-first order is not applied there.
+  - A project creator with no UserProject row can open the invoice but not its BLIA attachments. `UserCanAccessBill` has no project-creator clause.
+  - Attachments linked only through tables outside the nine (COI, CodingSuggestion, BillIntakePrediction, box/ms) count as "unlinked", so only admins, Owners, Controllers and the uploader see them.
+  - The Owner/Controller role check is not CompanyId-scoped (Phase 5b).
+- [ ] **[U-166c] Indexes.** Seven link tables have no index leading on AttachmentId: BCLIA (62 rows), InvoiceAttachment (93), ILIA (6), Taxpayer (68), BusinessLicense (40), ContractorsLicense (9), Asset (0). Each UDF EXISTS scans them. That's trivial today; add the indexes if the tables grow.
+- [ ] **[U-166c] Cross-cutting tidy-ups (not now).**
+  - Move routers off `except Exception as e: raise HTTPException(500, detail=str(e))` to `raise_server_error`. That removes ~20 `except EntityNotAccessibleError: raise` clauses and the `str(e)` leak.
+  - Use typed business refusals instead of string-prefix matching (the LS-01 retirement plan in shared/api/responses.py).
+- [ ] **[U-652d2] Dead projected columns (SQL apply needed).**
+  - `ReadExpenseCodingQueue` still returns `QboPurchaseLineId` and `QboLineId`, which Python no longer maps. Keep `QboPurchaseLineId` in the CTE: `Rn` orders by it.
+  - `ReadUncodedCompletedExpenseCandidates` still returns `QboPurchaseLineId`; it is pinned by test_u491.
+  - TODO.md's stale `str(qbo_purchase_line_id)` fallback entry is obsolete.
+- [ ] **[U-652d3] Residuals.**
+  - (a) F1 + F3 can adopt a human's identical QBO recode as "written" by us. This is misattribution only; QBO is correct and later repoints are token-fenced.
+  - (b) The multi-line drain maps a transient ELI read failure (`resolve_failed`) to the sticky `_MULTI_LINE_UNMAPPED_ERROR`. The single-line path now retries.
+  - (c) The Python predicate treats `ItemRefValue == ""` as uncoded; SQL `IS NULL` treats it as coded. Prod has 0 such rows on 2026-11-10.
+  - (d) The submit skip reason `line_mapping_missing` is misleading when every line is already recoded.
+  - (e) tests_sqlserver was updated but not run (it needs a live SQL Server).
+  - (f) The retryable raise reads as `QboServerError` in last_error; a dedicated subclass would make triage clearer.
+- [ ] **[U-652d3] Repository move (not now).**
+  - Move `QboOutboxWorker._read_uncategorized_staging_line_ids`, `CodingSuggestionService._uncategorized_staging_qbo_line_ids` and `_count_uncategorized_purchase_lines` into `QboPurchaseLineRepository`.
+  - Share one SQLite and T-SQL DDL constant for the computed column across the five test fixtures.
+- [ ] **TB3 multi-PDF bills.** Bill 16967 line 23780 and bill 17037 line 21706 stay unlinked by design: the fallback treats two or more PDFs as ambiguous. Chris decides which PDF each line gets.

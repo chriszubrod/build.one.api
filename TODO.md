@@ -7635,3 +7635,7 @@ convention for mapping tables already stated in `scripts/migrations/u225_qbo_map
 ("deliberately NOT the Purchase-family precedent, which CASCADEs on the qbo-staging side"). ⛔ Do not "fix" a
 422 from `DeleteAddressTypeById` by adding a cascade — the 422 is the feature.
 
+
+## U-794/U-795/U-796 follow-up (booked 2026-11-13)
+
+- [ ] **Dedupe identity-conflict ReconciliationIssues on the 15-minute reference pulls.** The vendor, customer and item pulls now run every 15 minutes (scheduler U-794/U-795/U-796). When a record fails projection (e.g. `duplicate_qbo_item` / duplicate identity), the run holds the watermark and re-pulls the window every tick until `QBO_WATERMARK_HOLD_BOUND_SECONDS` (7200 s) force-advances it. `integrations/intuit/qbo/base/reconciliation_recorder.py::record_mapping_issue` does not dedupe, so one persistent failure now writes ~8 `qbo.ReconciliationIssue` rows per hold cycle instead of 1. Route these through the existing `_record_deduped` helper in the same file (key on drift_type + entity + qbo_id). Bounded and harmless otherwise — noise in the issue list, not wrong data.

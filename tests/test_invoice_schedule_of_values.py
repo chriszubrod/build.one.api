@@ -217,3 +217,23 @@ def test_sov_rows_current_absent_yields_zero_this_period():
     rows, grand = build_sov_rows(sov, draws, "HA-99")  # current_label not in draws
     assert grand["this_period"] == Decimal("0")
     assert grand["prev"] == Decimal("10000")
+
+
+def test_totals_row_never_prints_alone_on_a_page():
+    """U-793e: HA-09 (61 lines) put only its Totals row on page 3 once the packet
+    moved to 0.5in top/bottom margins. Whatever the line count, a page break may
+    not fall within the last 3 cost-code rows, so Totals always travels with them."""
+    from entities.invoice.business.schedule_of_values import ROWS_KEPT_WITH_TOTALS
+
+    multi_page = 0
+    for n in range(20, 110):
+        rows = [_line(item_no=str(i), description=f"Cost code {i}") for i in range(1, n + 1)]
+        pages = PdfReader(io.BytesIO(build_schedule_of_values_pdf(_header(), rows, _grand()))).pages
+        if len(pages) == 1:
+            continue
+        multi_page += 1
+        last = pages[-1].extract_text()
+        assert "Totals" in last
+        on_last = sum(f"Cost code {i}" in last for i in range(1, n + 1))
+        assert on_last >= ROWS_KEPT_WITH_TOTALS, (n, on_last)
+    assert multi_page > 20  # the sweep really crosses page breaks

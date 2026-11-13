@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from pypdf import PdfReader
 
+from entities.invoice.business.cover import build_cover_rollup
 from entities.invoice.business.packet_render import money_number
 from entities.invoice.business.trend import build_trend_pdf
 
@@ -179,18 +180,31 @@ def test_twelve_draws_per_page_total_on_last_page_only():
         assert "April 1, 2026" in page and "Permits" in page and "CATEGORY" in page
 
 
-def test_exactly_twelve_draws_is_one_page():
-    assert len(_pages(build_trend_pdf(_header(), _n_draws(12)))) == 1
+def test_eleven_draws_plus_total_fit_one_page():
+    pages = _pages(build_trend_pdf(_header(), _n_draws(11)))
+    assert len(pages) == 1 and "D-11" in pages[0] and "TOTAL" in pages[0]
+
+
+def test_twelve_draws_fill_page_one_and_total_gets_its_own_page():
+    """U-793e: at 0.75in margins a page holds 12 draws OR 11 + TOTAL. Draws never
+    move pages as a project accrues them, so a full last page pushes TOTAL on."""
+    pages = _pages(build_trend_pdf(_header(), _n_draws(12)))
+    assert len(pages) == 2
+    assert all(f"D-{i:02d}" in pages[0] for i in range(1, 13)) and "TOTAL" not in pages[0]
+    assert "TOTAL" in pages[1] and "D-" not in pages[1]
+    assert money_number(Decimal("1200.00")) in pages[1]
+    assert len(_pages(build_trend_pdf(_header(), _n_draws(24)))) == 3
+    assert len(_pages(build_trend_pdf(_header(), _n_draws(25)))) == 3
 
 
 def test_draw_column_width_does_not_stretch_with_fewer_draws():
     """The bug: one draw spread across the whole page. Money columns have a fixed
     width and are anchored to the right edge (U-793d) — Description takes the slack."""
     one = _streams(build_trend_pdf(_header(), _n_draws(1)))[0]
-    twelve = _streams(build_trend_pdf(_header(), _n_draws(12)))[0]
-    group_w = _origins(twelve, "D-02")[0] - _origins(twelve, "D-01")[0]
+    eleven = _streams(build_trend_pdf(_header(), _n_draws(11)))[0]
+    group_w = _origins(eleven, "D-02")[0] - _origins(eleven, "D-01")[0]
     # TOTAL sits at the same right-anchored x whatever the draw count ...
-    assert abs(_origins(one, "TOTAL")[0] - _origins(twelve, "TOTAL")[0]) < 0.5
+    assert abs(_origins(one, "TOTAL")[0] - _origins(eleven, "TOTAL")[0]) < 0.5
     # ... and the single draw column is exactly one fixed group wide, not stretched
     assert abs((_origins(one, "TOTAL")[0] - _origins(one, "D-01")[0]) - group_w) < 0.5
 
@@ -233,19 +247,21 @@ def test_category_numbers_right_aligned():
 
 def test_million_dollar_draw_and_long_label_stay_in_their_columns():
     """Live data: the largest single draw is $1,765,728.00 and labels run to
-    'ONT-MAIN-POST-01'. The figure must render as one unwrapped run; the label may
-    wrap at its hyphens but must not lose characters."""
-    draws = _n_draws(12, amount=Decimal("1765728.00"), label="ONT-MAIN-POST-{:02d}")
-    pdf = build_trend_pdf(_header(), draws)
-    pages = _pages(pdf)
-    assert len(pages) == 1
-    content = _streams(pdf)[0]
-    assert content.count("(1,765,728.00) Tj") >= 12 * 3  # row + subtotal + total due
+    'ONT-MAIN-POST-01'. Each figure must render as one unwrapped run, on a full
+    12-draw page and on an 11 + TOTAL page; the label may wrap at its hyphens but
+    must not lose characters."""
+    amount = Decimal("1765728.00")
+    for n in (11, 12):
+        draws = _n_draws(n, amount=amount, label="ONT-MAIN-POST-{:02d}")
+        pdf = build_trend_pdf(_header(), draws)
+        content = _streams(pdf)[0]
+        assert content.count("(1,765,728.00) Tj") >= n * 3  # row + subtotal + total due
+        flat = _pages(pdf)[0].replace("\n", "")
+        for i in range(1, n + 1):
+            assert f"ONT-MAIN-POST-{i:02d}" in flat
     # the project-to-date column holds 8 digits (live max is $19,954,088.97)
-    assert content.count("(21,188,736.00) Tj") == 3
-    flat = pages[0].replace("\n", "")
-    for i in range(1, 13):
-        assert f"ONT-MAIN-POST-{i:02d}" in flat
+    content = _streams(build_trend_pdf(_header(), _n_draws(11, amount=amount)))[0]
+    assert content.count("(19,423,008.00) Tj") == 3
 
 
 def test_large_credit_figure_never_breaks_mid_number():
@@ -270,3 +286,31 @@ def test_spacer_does_not_make_rows_taller():
             ys.append(float(m.group(1)))
         return ys[0] - ys[1]
     assert abs(gap(1) - 15) < 0.5 and abs(gap(12) - 15) < 0.5
+
+
+def _page_x(pdf: bytes, text: str) -> float:
+    """Absolute x where a LEFT-aligned run starts (pypdf's accumulated cm + tm).
+    Only for left-aligned text: a right-aligned Paragraph's Td offset is not reported."""
+    xs = []
+    def visit(t, cm, tm, *_):
+        if t.strip() == text:
+            xs.append(cm[4] + tm[4])
+    PdfReader(io.BytesIO(pdf)).pages[0].extract_text(visitor_text=visit)
+    return xs[0]
+
+
+def test_trend_and_invoice_share_the_packet_margins():
+    """U-793e: every packet page uses 0.75in sides / 0.5in top-bottom. The gray
+    band's CATEGORY cell starts at the 54pt left margin on the Trend (3pt cell
+    padding) and on the Draw Request / Invoice page (4pt cell padding)."""
+    from entities.invoice.business import packet_render as pr
+    from entities.invoice.business.draw_request import build_draw_request_pdf
+
+    assert (pr.PAGE_SIDE_MARGIN_IN, pr.PAGE_TOPBOTTOM_MARGIN_IN) == (0.75, 0.5)
+    trend = build_trend_pdf(_header(), _n_draws(1))
+    assert abs(_page_x(trend, "CATEGORY") - 3 - 54) < 0.5
+    invoice = build_draw_request_pdf(
+        {"from_lines": ["A"], "to_name": "B", "to_lines": [], "draw_number": "X-01", "date": "1/1/2026"},
+        build_cover_rollup([], fee_rate=None),
+    )
+    assert abs(_page_x(invoice, "CATEGORY") - 4 - 54) < 0.5

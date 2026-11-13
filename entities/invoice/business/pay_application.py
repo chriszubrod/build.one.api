@@ -183,9 +183,11 @@ def build_application_pdf(header: dict, lines: dict, blocks: Any) -> bytes:
     # Figures always take the left column and the blocks the right, even when every
     # block is off (Chris, U-792b) — the page keeps one shape across projects.
     gutter = 0.3 * inch
-    # 45/55: the signature column gets the extra width — signatures and State/County
+    # 42/58: the signature column gets the extra width — signatures and State/County
     # need room to write (Chris, U-792c); the figures need far less than half the page.
-    figures_w = usable_w * 0.45
+    # Was 45/55 at 0.5in sides; at the packet's 0.75in sides (U-793e) 42% keeps the
+    # blocks column at its old ~5.2in so the signature rules keep their length.
+    figures_w = usable_w * 0.42
     blocks_w = usable_w - figures_w - gutter
 
     # ---- optional blocks (per-project switches) -----------------------------

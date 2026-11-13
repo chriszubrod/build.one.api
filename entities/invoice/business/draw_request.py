@@ -12,6 +12,8 @@ from decimal import Decimal
 
 from entities.invoice.business.cover import CoverRollup
 from entities.invoice.business.packet_render import (
+    PAGE_SIDE_MARGIN_IN,
+    PAGE_TOPBOTTOM_MARGIN_IN,
     BAND_FILL,
     SERIF,
     SERIF_BOLD,
@@ -70,7 +72,7 @@ def build_draw_request_pdf(header: dict, cover_model: CoverRollup) -> bytes:
     from_lines = list(header.get("from_lines") or [])
     to_lines = list(header.get("to_lines") or [])
 
-    margin = 0.75 * inch
+    margin = PAGE_SIDE_MARGIN_IN * inch
     usable_w = letter[0] - 2 * margin
 
     # ---- header: Date over From/To, logo top-right ------------------------
@@ -188,7 +190,7 @@ def build_draw_request_pdf(header: dict, cover_model: CoverRollup) -> bytes:
     doc = SimpleDocTemplate(
         buf, pagesize=letter,
         leftMargin=margin, rightMargin=margin,
-        topMargin=0.6 * inch, bottomMargin=0.6 * inch,
+        topMargin=PAGE_TOPBOTTOM_MARGIN_IN * inch, bottomMargin=PAGE_TOPBOTTOM_MARGIN_IN * inch,
     )
     doc.build([header_table, Spacer(1, 0.2 * inch), table, Spacer(1, 0.4 * inch), remit])
     return buf.getvalue()

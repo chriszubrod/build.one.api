@@ -3,13 +3,16 @@
 Shares the packet house style — serif type, the Rogers Build mark top-right, a gray
 column-header band, 3-decimal Category numbers, and split ``$ | amount`` money cells
 (an empty cell renders ``$  -``). Landscape, with a FIXED column geometry (U-793c):
-every data column has a fixed width (DRAWS_PER_PAGE draw columns plus a Total column
-fill a page) and the money columns are anchored to the right edge. A blank spacer
+every data column has a fixed width (a page holds DRAWS_PER_PAGE draw columns, or
+DRAWS_PER_PAGE - 1 plus the Total column) and the money columns are anchored to the
+right edge. A blank spacer
 column between Description and the money columns absorbs the slack (U-793d) — no
 data column ever stretches, so a 1-draw project prints normal-width columns.
 Draws 1-12 print on page 1, 13-24 on page 2, and so on; every page carries the same
 cost-code rows (the union over ALL draws) and the Total column — project to date —
-prints once, on the last page.
+prints once, on the last page. When the last page already holds 12 draws, the Total
+column gets a page of its own (U-793e) so a draw never moves pages as draws accrue.
+Margins are the packet-wide PAGE_SIDE_MARGIN_IN / PAGE_TOPBOTTOM_MARGIN_IN (0.75in / 0.5in).
 """
 
 from __future__ import annotations
@@ -20,6 +23,8 @@ from typing import Optional
 
 from entities.invoice.business.cover import _cost_code_sort_key
 from entities.invoice.business.packet_render import (
+    PAGE_SIDE_MARGIN_IN,
+    PAGE_TOPBOTTOM_MARGIN_IN,
     BAND_FILL,
     SERIF,
     SERIF_BOLD,
@@ -32,6 +37,8 @@ from entities.invoice.business.packet_render import (
 FEE_ITEM_NUMBER = "90"
 
 # Draw columns per page (U-793c): pay applications 1-12 on page 1, 13-24 on page 2...
+# At the packet's 0.75in side margins a page fits 12 draw columns OR 11 + the wider
+# Total column (U-793e), so the Total takes a page of its own when the last page is full.
 DRAWS_PER_PAGE = 12
 
 
@@ -85,7 +92,7 @@ def build_trend_pdf(header: dict, draws: list[dict]) -> bytes:
 
     BLACK = colors.black
     BAND = colors.HexColor(BAND_FILL)
-    # 7pt: a $1M+ draw (live max $1,765,728.00) must fit one of 12 fixed draw columns.
+    # 7pt: a $1M+ draw (live max $1,765,728.00) must fit a fixed draw column.
     FONT_SIZE = 7
 
     def esc(text) -> str:
@@ -124,7 +131,7 @@ def build_trend_pdf(header: dict, draws: list[dict]) -> bytes:
     to_lines = list(header.get("to_lines") or [])
 
     page_w = landscape(letter)[0]
-    margin = 0.4 * inch
+    margin = PAGE_SIDE_MARGIN_IN * inch
     usable_w = page_w - 2 * margin
 
     # ---- header: Date over From/To, logo top-right (no page title) ---------
@@ -166,15 +173,15 @@ def build_trend_pdf(header: dict, draws: list[dict]) -> bytes:
 
     # ---- matrix: each money group is two physical columns ($, value) -------
     # Fixed geometry: no data column stretches. Category + Description sit on the
-    # left edge, the money groups (DRAWS_PER_PAGE draw groups + one wider Total
-    # group fill the page) are anchored to the right edge, and a blank SPACER
+    # left edge, the money groups (12 draw groups, or 11 + one wider Total group,
+    # fill the page) are anchored to the right edge, and a blank SPACER
     # column between them absorbs the slack on a page with fewer draws (U-793d).
     # The table always spans the full page, so the gray band does too.
     cat_w = 0.65 * inch          # "CATEGORY" on one line
     desc_w = 1.35 * inch         # "Grading/Sitework/Demolition" on one line
     dollar_w = 5                 # points, like total_group_w
     total_group_w = 52           # project to date: live max $19,954,088.97 -> to $99,999,999.99
-    group_w = (usable_w - cat_w - desc_w - total_group_w) / DRAWS_PER_PAGE
+    group_w = (usable_w - cat_w - desc_w - total_group_w) / (DRAWS_PER_PAGE - 1)
 
     def money_cells(value, *, bold=False):
         dsty = bold_dollar if bold else dollar_style
@@ -274,6 +281,8 @@ def build_trend_pdf(header: dict, draws: list[dict]) -> bytes:
         return table
 
     chunks = [draws[i:i + DRAWS_PER_PAGE] for i in range(0, len(draws), DRAWS_PER_PAGE)] or [[]]
+    if len(chunks[-1]) == DRAWS_PER_PAGE:
+        chunks.append([])  # a full last page has no room for the Total column
     story: list = []
     for page_no, chunk in enumerate(chunks):
         if page_no:
@@ -285,7 +294,7 @@ def build_trend_pdf(header: dict, draws: list[dict]) -> bytes:
     doc = SimpleDocTemplate(
         buf, pagesize=landscape(letter),
         leftMargin=margin, rightMargin=margin,
-        topMargin=0.5 * inch, bottomMargin=0.5 * inch,
+        topMargin=PAGE_TOPBOTTOM_MARGIN_IN * inch, bottomMargin=PAGE_TOPBOTTOM_MARGIN_IN * inch,
     )
     doc.build(story)
     return buf.getvalue()

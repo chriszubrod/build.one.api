@@ -94,19 +94,26 @@ def money_number(value: Optional[Decimal]) -> str:
     return f"{value:,.2f}"
 
 
+# One outside margin for every packet page (U-793e): Application for Payment,
+# Schedule of Values, Draw Request (Invoice) and Trend.
+PAGE_SIDE_MARGIN_IN = 0.75
+PAGE_TOPBOTTOM_MARGIN_IN = 0.5
+
+
 def landscape_doc(buf, title: str):
     """The landscape letter frame the Application for Payment and Schedule of Values
-    share (0.5in sides, 0.45in top/bottom). Returns ``(doc, usable_w)``."""
+    share. Every packet page uses the same outside margins — PAGE_SIDE_MARGIN_IN sides,
+    PAGE_TOPBOTTOM_MARGIN_IN top/bottom (U-793e). Returns ``(doc, usable_w)``."""
     from reportlab.lib.pagesizes import landscape, letter
     from reportlab.lib.units import inch
     from reportlab.platypus import SimpleDocTemplate
 
     page_size = landscape(letter)
-    margin = 0.5 * inch
+    margin = PAGE_SIDE_MARGIN_IN * inch
     doc = SimpleDocTemplate(
         buf, pagesize=page_size,
         leftMargin=margin, rightMargin=margin,
-        topMargin=0.45 * inch, bottomMargin=0.45 * inch,
+        topMargin=PAGE_TOPBOTTOM_MARGIN_IN * inch, bottomMargin=PAGE_TOPBOTTOM_MARGIN_IN * inch,
         title=title,
     )
     return doc, page_size[0] - 2 * margin

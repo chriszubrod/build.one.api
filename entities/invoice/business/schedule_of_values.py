@@ -233,6 +233,10 @@ def build_sov_rows(sov: list, draws: list, current_label: str,
     return rows, grand
 
 
+# Cost-code rows that stay on the same page as the Totals row (U-793e).
+ROWS_KEPT_WITH_TOTALS = 3
+
+
 def build_schedule_of_values_pdf(header: dict, rows: list[dict], grand: dict) -> bytes:
     """Landscape letter Schedule of Values in the Draw Request style.
 
@@ -331,6 +335,11 @@ def build_schedule_of_values_pdf(header: dict, rows: list[dict], grand: dict) ->
     table_data.append(["", P("Totals", bold_left), *money_cells(grand, bold_right)])
 
     table = LongTable(table_data, colWidths=col_widths, repeatRows=2)
+    # The Totals row never prints alone (U-793e): NOSPLIT forbids a page break within
+    # the last ROWS_KEPT_WITH_TOTALS cost-code rows + Totals, so they move together.
+    # (Not rowSplitRange: ReportLab drops it from the continuation part, so it only
+    # guards the FIRST page break.)
+    keep_from = max(2, total_idx - ROWS_KEPT_WITH_TOTALS)
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 1), BAND),
         ("SPAN", (0, 0), (0, 1)), ("SPAN", (1, 0), (1, 1)),
@@ -350,6 +359,7 @@ def build_schedule_of_values_pdf(header: dict, rows: list[dict], grand: dict) ->
         ("LINEBELOW", (0, 2), (-1, total_idx - 1), 0.25, colors.HexColor("#D9D9D9")),
         ("LINEABOVE", (2, total_idx), (-1, total_idx), 0.75, BLACK),
         ("TOPPADDING", (0, total_idx), (-1, total_idx), 4),
+        ("NOSPLIT", (0, keep_from), (-1, total_idx)),
     ]))
 
     doc.build([head, Spacer(1, 0.18 * inch), table])

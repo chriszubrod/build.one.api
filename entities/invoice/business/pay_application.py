@@ -7,9 +7,11 @@ sum, the work completed to date, what earlier applications billed, the amount du
 now and the balance to finish. The totals come from the Schedule of Values grand
 totals, so the two pages reconcile by construction.
 
-Four optional blocks follow the figures, each switched per project
+The page is landscape (U-792a): the figures on the left and, stacked beside them,
+up to four optional blocks, each switched per project
 (``entities/project_draw_packet_setting``): the contractor's statement, a notary
-block, an owner approval line and an architect review.
+block, an owner approval line and an architect review. With every block off the
+figures take the full width.
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from entities.invoice.business.packet_render import (
     application_header_fields,
     dec as _dec,
     document_header,
+    landscape_doc,
     money_number,
 )
 from shared.api.money import to_decimal_or_none as _dec_or_none
@@ -79,7 +82,9 @@ def build_application_lines(grand: dict, retainage_rate: Any = Decimal("0"),
 
 
 def build_application_pdf(header: dict, lines: dict, blocks: Any) -> bytes:
-    """Portrait letter Application for Payment.
+    """Landscape letter Application for Payment (U-792a): the figures on the left, the
+    project's optional blocks stacked on the right; with every block off the figures
+    take the full width.
 
     ``header``: project, application_no, application_date, period_to, from_lines
     (the first line is the contractor's name), to_name, to_lines. ``lines``: from ``build_application_lines``.
@@ -90,10 +95,9 @@ def build_application_pdf(header: dict, lines: dict, blocks: Any) -> bytes:
 
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_RIGHT
-    from reportlab.lib.pagesizes import letter
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import inch
-    from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
 
     BLACK = colors.black
     BAND = colors.HexColor(BAND_FILL)
@@ -115,8 +119,7 @@ def build_application_pdf(header: dict, lines: dict, blocks: Any) -> bytes:
     block_head = ParagraphStyle("pa_block_h", fontName=SERIF_BOLD, fontSize=9.5, leading=12)
     block_body = ParagraphStyle("pa_block_b", fontName=SERIF, fontSize=9, leading=12.5)
 
-    margin = 0.75 * inch
-    usable_w = letter[0] - 2 * margin
+    _, usable_w = landscape_doc(io.BytesIO(), "Application for Payment")
     from_lines = header.get("from_lines") or []
     contractor = from_lines[0] if from_lines else "The Contractor"
     owner = header.get("to_name") or ""
@@ -158,9 +161,59 @@ def build_application_pdf(header: dict, lines: dict, blocks: Any) -> bytes:
     data.append(row("Amount Due This Application", _dec(lines.get("amount_due")), bold=True))
     data.append(row("Balance to Finish", _dec_or_none(lines.get("balance_to_finish"))))
 
+    # ---- optional blocks (per-project switches) -----------------------------
+    blank = "_" * 24
+    short = "_" * 12
+    by_date = f"By: {blank}&nbsp;&nbsp;&nbsp;Date: {short}"
+
+    def block(title: str, body_lines: list[str]) -> list:
+        return [
+            Paragraph(esc(title), block_head),
+            Spacer(1, 2),
+            Paragraph("<br/>".join(body_lines), block_body),
+            Spacer(1, 0.14 * inch),
+        ]
+
+    block_flowables: list = []
+    if blocks.contractor_statement:
+        block_flowables += block("Contractor's Statement", [
+            f"{esc(contractor)} states that the work and materials billed in this application "
+            "were furnished for this project as described, that the amounts shown reflect "
+            "costs incurred, and that the amount due this application is now payable.",
+            "",
+            esc(contractor),
+            by_date,
+        ])
+    if blocks.notary:
+        block_flowables += block("Notary", [
+            f"State of: {short}&nbsp;&nbsp;&nbsp;County of: {short}",
+            f"Subscribed and sworn to before me on {short},",
+            f"by {blank}.",
+            f"Notary Public: {blank}",
+            f"My commission expires: {short}",
+        ])
+    if blocks.owner_approval:
+        owner_label = esc(owner) if owner else "Owner"
+        block_flowables += block("Owner Approval", [
+            f"Approved for payment in the amount of $ {blank}",
+            "",
+            owner_label,
+            by_date,
+        ])
+    if blocks.architect_certificate:
+        block_flowables += block("Architect Review", [
+            "The architect has reviewed this application and recommends payment in the "
+            f"amount of $ {blank}",
+            "",
+            f"Architect: {blank}",
+            by_date,
+        ])
+
+    gutter = 0.3 * inch
+    figures_w = usable_w * 0.55 if block_flowables else usable_w
     dollar_w = 0.22 * inch
     amount_w = 1.45 * inch
-    figures = Table(data, colWidths=[usable_w - dollar_w - amount_w, dollar_w, amount_w])
+    figures = Table(data, colWidths=[figures_w - dollar_w - amount_w, dollar_w, amount_w])
     figures.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), BAND),
         ("SPAN", (1, 0), (2, 0)),
@@ -176,63 +229,45 @@ def build_application_pdf(header: dict, lines: dict, blocks: Any) -> bytes:
         ("LINEABOVE", (1, due_idx), (2, due_idx), 0.75, BLACK),
         ("LINEBELOW", (1, due_idx), (2, due_idx), 0.75, BLACK),
     ]))
-
-    story = [
-        head,
-        Spacer(1, 0.18 * inch),
+    figures_col = [
         figures,
         Spacer(1, 4),
         Paragraph("The attached Schedule of Values details these amounts by cost code.",
                   note_style),
     ]
 
-    # ---- optional blocks (per-project switches) -----------------------------
-    blank = "_" * 26
-    short = "_" * 14
+    def two_column() -> list:
+        body = Table([[figures_col, block_flowables]],
+                     colWidths=[figures_w + gutter, usable_w - figures_w - gutter])
+        body.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (0, 0), gutter),
+            ("RIGHTPADDING", (1, 0), (1, 0), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        return [body]
 
-    def block(title: str, body_lines: list[str]):
-        return KeepTogether([
-            Spacer(1, 0.16 * inch),
-            Paragraph(esc(title), block_head),
-            Spacer(1, 2),
-            Paragraph("<br/>".join(body_lines), block_body),
-        ])
+    def render(body: list) -> bytes:
+        buf = io.BytesIO()
+        doc, _ = landscape_doc(buf, "Application for Payment")
+        doc.build([head, Spacer(1, 0.18 * inch), *body])
+        return buf.getvalue()
 
-    if blocks.contractor_statement:
-        story.append(block("Contractor's Statement", [
-            f"{esc(contractor)} states that the work and materials billed in this application "
-            "were furnished for this project as described, that the amounts shown reflect "
-            "costs incurred, and that the amount due this application is now payable.",
-            "",
-            f"{esc(contractor)}&nbsp;&nbsp;&nbsp;By: {blank}&nbsp;&nbsp;&nbsp;Date: {short}",
-        ]))
-    if blocks.notary:
-        story.append(block("Notary", [
-            f"State of: {short}&nbsp;&nbsp;&nbsp;County of: {short}",
-            f"Subscribed and sworn to before me on {short} by {blank}.",
-            f"Notary Public: {blank}&nbsp;&nbsp;&nbsp;My commission expires: {short}",
-        ]))
-    if blocks.owner_approval:
-        owner_label = esc(owner) if owner else "Owner"
-        story.append(block("Owner Approval", [
-            f"Approved for payment in the amount of $ {blank}",
-            "",
-            f"{owner_label}&nbsp;&nbsp;&nbsp;By: {blank}&nbsp;&nbsp;&nbsp;Date: {short}",
-        ]))
-    if blocks.architect_certificate:
-        story.append(block("Architect Review", [
-            "The architect has reviewed this application and recommends payment in the "
-            f"amount of $ {blank}",
-            "",
-            f"Architect: {blank}&nbsp;&nbsp;&nbsp;By: {blank}&nbsp;&nbsp;&nbsp;Date: {short}",
-        ]))
+    if not block_flowables:
+        return render(figures_col)
+    # The two-column row cannot split, so when an unusually long name or address
+    # makes it taller than the page (LayoutError) or pushes it whole onto page 2,
+    # fall back to stacking the blocks under the figures, which split normally
+    # (U-792a review F1/F2).
+    from pypdf import PdfReader
+    from reportlab.platypus.doctemplate import LayoutError
 
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=letter,
-        leftMargin=margin, rightMargin=margin,
-        topMargin=0.6 * inch, bottomMargin=0.6 * inch,
-        title="Application for Payment",
-    )
-    doc.build(story)
-    return buf.getvalue()
+    try:
+        pdf = render(two_column())
+        if len(PdfReader(io.BytesIO(pdf)).pages) == 1:
+            return pdf
+    except LayoutError:
+        pass
+    return render([*figures_col, Spacer(1, 0.18 * inch), *block_flowables])

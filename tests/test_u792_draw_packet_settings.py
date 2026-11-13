@@ -35,7 +35,8 @@ def _setting(**switches):
 # ---- defaults + resolution ------------------------------------------------------
 
 def test_house_defaults():
-    assert DrawPacketBlocks() == DrawPacketBlocks(contractor_statement=True, owner_approval=True,
+    # U-792a: owner approval is OFF by default (owners almost never sign).
+    assert DrawPacketBlocks() == DrawPacketBlocks(contractor_statement=True, owner_approval=False,
                                                   architect_certificate=False, notary=True)
 
 
@@ -44,9 +45,9 @@ def test_null_switches_follow_the_defaults():
 
 
 def test_a_stored_false_beats_a_true_default_and_true_beats_false():
-    blocks = _setting(show_contractor_statement=False, show_owner_approval=False,
+    blocks = _setting(show_contractor_statement=False, show_owner_approval=True,
                       show_architect_certificate=True, show_notary=False).blocks()
-    assert blocks == DrawPacketBlocks(contractor_statement=False, owner_approval=False,
+    assert blocks == DrawPacketBlocks(contractor_statement=False, owner_approval=True,
                                       architect_certificate=True, notary=False)
 
 

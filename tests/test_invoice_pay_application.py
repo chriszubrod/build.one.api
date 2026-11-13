@@ -120,11 +120,11 @@ _BLOCK_TITLES = {
 }
 
 
-def test_default_blocks_are_statement_notary_owner_not_architect():
+def test_default_blocks_are_statement_and_notary_only():
     text = _pdf_text(build_application_pdf(_header(), _lines(), DrawPacketBlocks()))
     assert "Contractor's Statement" in text
     assert "Notary" in text and "Subscribed and sworn" in text
-    assert "Owner Approval" in text
+    assert "Owner Approval" not in text   # U-792a: off by default
     assert "Architect" not in text
 
 
@@ -152,3 +152,31 @@ def test_statement_names_the_contractor_and_owner_block_names_the_owner():
 
 def test_all_blocks_fit_one_page():
     assert _pages(build_application_pdf(_header(), _lines(), ALL_ON)) == 1
+
+
+def test_the_page_is_landscape_letter():
+    # U-792a: printed landscape, like the Schedule of Values.
+    for blocks in (ALL_ON, ALL_OFF, DrawPacketBlocks()):
+        box = PdfReader(io.BytesIO(build_application_pdf(_header(), _lines(), blocks))).pages[0].mediabox
+        assert (round(float(box.width)), round(float(box.height))) == (792, 612)
+
+
+def test_a_long_owner_name_still_fits_one_page():
+    header = _header(to_name="Chesnut Infill GP dba Craftsman Residential " * 3)
+    assert _pages(build_application_pdf(header, _lines(retainage=Decimal("42000.00")), ALL_ON)) == 1
+
+
+# U-792a review F1/F2: the two-column row cannot split. An unusually long name or
+# address must fall back to the stacked layout — never raise (which would drop the
+# Application AND the Schedule of Values from the packet) and never orphan the header.
+@pytest.mark.parametrize("overrides", [
+    {"from_lines": ["X " * 200]},                                   # LayoutError case
+    {"to_lines": ["123 Main Street"] * 8},                          # whole row jumped to p2
+])
+def test_an_overlong_header_falls_back_to_the_stacked_layout(overrides):
+    pdf = build_application_pdf(_header(**overrides), _lines(retainage=Decimal("5")), ALL_ON)
+    pages = PdfReader(io.BytesIO(pdf)).pages
+    assert "Amount Due This Application" in pages[0].extract_text()
+    text = "".join(p.extract_text() for p in pages)
+    for title in _BLOCK_TITLES.values():
+        assert title in text

@@ -94,6 +94,24 @@ def money_number(value: Optional[Decimal]) -> str:
     return f"{value:,.2f}"
 
 
+def landscape_doc(buf, title: str):
+    """The landscape letter frame the Application for Payment and Schedule of Values
+    share (0.5in sides, 0.45in top/bottom). Returns ``(doc, usable_w)``."""
+    from reportlab.lib.pagesizes import landscape, letter
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate
+
+    page_size = landscape(letter)
+    margin = 0.5 * inch
+    doc = SimpleDocTemplate(
+        buf, pagesize=page_size,
+        leftMargin=margin, rightMargin=margin,
+        topMargin=0.45 * inch, bottomMargin=0.45 * inch,
+        title=title,
+    )
+    return doc, page_size[0] - 2 * margin
+
+
 def application_header_fields(header: dict) -> list:
     """The field strip the Application for Payment and Schedule of Values share, so the
     two pages' headers agree by construction."""

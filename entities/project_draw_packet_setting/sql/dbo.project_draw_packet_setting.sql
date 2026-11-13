@@ -5,7 +5,7 @@
 -- =============================================================================
 -- Which optional blocks print on a project's Application for Payment (draw packet).
 -- A NULL switch means "use the house default" (application code owns the defaults:
--- contractor statement ON, owner approval ON, architect certificate OFF, notary ON),
+-- contractor statement ON, owner approval OFF, architect certificate OFF, notary ON),
 -- so a project with no row — or a row with NULLs — follows the default even if the
 -- default later changes. Re-runnable: table/constraints are guarded, sprocs are
 -- CREATE OR ALTER. This file is the SOLE home of both sprocs.

@@ -7,7 +7,8 @@ from typing import Optional
 # project with no settings row, or a NULL switch, follows these — so a later change
 # here reaches every project that never chose otherwise.
 DEFAULT_SHOW_CONTRACTOR_STATEMENT = True
-DEFAULT_SHOW_OWNER_APPROVAL = True
+# U-792a: off by default — owners almost never sign the application (Chris, 2026-11-13).
+DEFAULT_SHOW_OWNER_APPROVAL = False
 DEFAULT_SHOW_ARCHITECT_CERTIFICATE = False
 DEFAULT_SHOW_NOTARY = True
 

@@ -22,6 +22,7 @@ from entities.invoice.business.packet_render import (
     dec as _dec,
     document_header,
     format_cc_number,
+    landscape_doc,
 )
 
 # Schedule-of-values line number for the Builder's Fee. It is driven by each draw's
@@ -200,10 +201,9 @@ def build_schedule_of_values_pdf(header: dict, rows: list[dict], grand: dict) ->
 
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
-    from reportlab.lib.pagesizes import landscape, letter
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.lib.units import inch
-    from reportlab.platypus import LongTable, Paragraph, SimpleDocTemplate, Spacer, TableStyle
+    from reportlab.platypus import LongTable, Paragraph, Spacer, TableStyle
 
     BLACK = colors.black
     BAND = colors.HexColor(BAND_FILL)
@@ -224,9 +224,8 @@ def build_schedule_of_values_pdf(header: dict, rows: list[dict], grand: dict) ->
                                 leading=LEADING, alignment=TA_RIGHT)
     bold_left = ParagraphStyle("sov_bold_l", parent=bold_right, alignment=TA_LEFT)
 
-    page_size = landscape(letter)
-    margin = 0.5 * inch
-    usable_w = page_size[0] - 2 * margin
+    buf = io.BytesIO()
+    doc, usable_w = landscape_doc(buf, "Schedule of Values")
 
     item_w = 0.6 * inch
     desc_w = 2.4 * inch
@@ -294,12 +293,5 @@ def build_schedule_of_values_pdf(header: dict, rows: list[dict], grand: dict) ->
         ("TOPPADDING", (0, total_idx), (-1, total_idx), 4),
     ]))
 
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=page_size,
-        leftMargin=margin, rightMargin=margin,
-        topMargin=0.45 * inch, bottomMargin=0.45 * inch,
-        title="Schedule of Values",
-    )
     doc.build([head, Spacer(1, 0.18 * inch), table])
     return buf.getvalue()

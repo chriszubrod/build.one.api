@@ -40,7 +40,11 @@ BLOCK_FONT = 9
 WRITE_ROW_H = 0.32 * 72  # 0.32in, in points
 FIELD_GAP = 6  # points between two fields on one writing row
 NAME_LINE_GAP = 3  # points between a block's text and its signer-name line
-BLOCK_GAP = 4  # points after each block
+BLOCK_GAP = 4  # points between blocks
+# The Notary is a separate signer from the Contractor's Statement above it, so it gets
+# more air (Chris, U-793h). Only this one gap grows: with all four blocks on, the
+# page has no room for every gap to.
+NOTARY_GAP = 14
 
 
 def build_application_lines(grand: dict, retainage_rate: Any = Decimal("0"),
@@ -223,8 +227,11 @@ def build_application_pdf(header: dict, lines: dict, blocks: Any) -> bytes:
 
     block_groups: list = []
 
-    def block(title: str, parts: list) -> list:
-        group = [Paragraph(esc(title), block_head), *parts, Spacer(1, BLOCK_GAP)]
+    def block(title: str, parts: list, gap_above: float = BLOCK_GAP) -> list:
+        # The gap goes BETWEEN blocks, not after the last one — with all four blocks on,
+        # a trailing gap is the room the page does not have (U-793h).
+        gap = [Spacer(1, gap_above)] if block_groups else []
+        group = [*gap, Paragraph(esc(title), block_head), *parts]
         block_groups.append(group)
         return group
 
@@ -247,7 +254,7 @@ def build_application_pdf(header: dict, lines: dict, blocks: Any) -> bytes:
             field_row([("by:", 1)]),
             field_row([("Notary Public:", 1)]),
             field_row([("Commission expires:", 1)]),
-        ])
+        ], gap_above=NOTARY_GAP)
     if blocks.owner_approval:
         block_flowables += block("Owner Approval", [
             field_row([("Approved amount: $", 1)]),
@@ -279,6 +286,9 @@ def build_application_pdf(header: dict, lines: dict, blocks: Any) -> bytes:
         ("RIGHTPADDING", (0, 0), (-1, -1), 4),
         ("RIGHTPADDING", (1, 0), (1, -1), 0),
         ("LEFTPADDING", (2, 1), (2, -1), 0),
+        # The AMOUNT band spans $ + figure and takes its padding from the $ cell (0);
+        # pad it back so AMOUNT ends where the figures end (U-793h).
+        ("RIGHTPADDING", (1, 0), (1, 0), 4),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LINEABOVE", (1, due_idx), (2, due_idx), 0.75, BLACK),
         ("LINEBELOW", (1, due_idx), (2, due_idx), 0.75, BLACK),

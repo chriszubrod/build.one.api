@@ -231,3 +231,37 @@ def test_the_signature_column_is_wider_than_the_figures_column():
     blocks_x = _label_xs()["Contractor's Statement"][0]
     left, right = 36, 792 - 36                     # the 0.5in landscape frame
     assert right - blocks_x > blocks_x - left      # signature column wider than figures + gutter
+
+
+def _right_edge(content: str, text: str, font: str, size: float) -> float:
+    """Right edge of the first right-aligned `(text) Tj` run: cell origin + the Td
+    offset of the right-aligned Paragraph + glyph width (pypdf's visitor drops the Td)."""
+    import re
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    m = re.search(r"1 0 0 1 ([\d.]+) [\d.]+ cm\s+q\s+[^()]*?([\d.]+) 0 Td \(" + re.escape(text) + r"\) Tj",
+                  content)
+    assert m, f"{text!r} not drawn as a single right-aligned run"
+    return float(m.group(1)) + float(m.group(2)) + stringWidth(text, font, size)
+
+
+def test_amount_header_ends_where_the_figures_end():
+    """U-793h: AMOUNT spans the $ and figure columns and takes its padding from the $
+    cell, whose right padding is zero so the $ hugs its number — the header sat flush
+    on the band's right edge, 4pt past the figures below it."""
+    page = PdfReader(io.BytesIO(build_application_pdf(_header(), _lines(), ALL_ON))).pages[0]
+    content = page.get_contents().get_data().decode("latin-1")
+    header = _right_edge(content, "AMOUNT", "Times-Bold", 10)
+    figure = _right_edge(content, "420,000.00", "Times-Roman", 9.5)
+    assert abs(header - figure) < 0.5, (header, figure)
+
+
+def test_notary_sits_clear_of_the_contractor_statement():
+    """U-793h: the Notary heading had 18pt from the statement's By/Date row (≈ 6pt of
+    clear space under the rule); Chris asked for padding between the two blocks."""
+    blocks = DrawPacketBlocks(contractor_statement=True, owner_approval=False,
+                              architect_certificate=False, notary=True)
+    page = PdfReader(io.BytesIO(build_application_pdf(_header(), _lines(), blocks))).pages[0]
+    ys: dict = {}
+    page.extract_text(visitor_text=lambda t, cm, tm, *_: ys.setdefault(t.strip(), []).append(cm[5] + tm[5]))
+    assert ys["By:"][0] - ys["Notary"][0] >= 26

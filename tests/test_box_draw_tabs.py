@@ -957,6 +957,22 @@ def test_d13_g702_tabs_for_older_draws_stay_allowed():
     _finish(_build(extra_sheets=("G702 01",)))
 
 
+# U-792: the de-branded tab names are the same per-draw pages and refuse the same way.
+@pytest.mark.parametrize("name", ["Pay App 02", "PAY APP 2", "PayApp-02", "Pay Application 02",
+                                  "SOV 02", "sov (02)", "Schedule of Values 02",
+                                  "Pay-App 02", "Pay_App 02", "Pay Apps 02",
+                                  "Schedule-of-Values 02", "Application for Payment 02"])
+def test_d13_pay_app_or_sov_tab_for_the_source_draw_refuses(name):
+    with pytest.raises(UnsupportedTrackerLayout) as exc:
+        _finish(_build(extra_sheets=(name,)))
+    assert "Pay App / SOV" in str(exc.value)
+
+
+@pytest.mark.parametrize("name", ["Pay App 01", "SOV 01", "Sovereign 02", "Payables 02"])
+def test_d13_older_draw_or_unrelated_tabs_stay_allowed(name):
+    _finish(_build(extra_sheets=(name,)))
+
+
 # ---- D14: the source draw tab holds only its own formulas
 
 def test_d14_source_formula_into_another_tab_refuses_naming_the_cell():
@@ -1386,7 +1402,7 @@ def test_gap_d12_date1904_spelled_true_refuses():
 
 
 def test_gap_d13_lowercase_g702_tab_refuses():
-    with pytest.raises(UnsupportedTrackerLayout, match="G702/G703 tab"):
+    with pytest.raises(UnsupportedTrackerLayout, match=r"G702/G703\) tab"):
         plan_next_draw(_build(extra_sheets=("g702 02",)), invoice_number=INVOICE)
 
 

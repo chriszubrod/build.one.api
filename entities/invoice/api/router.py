@@ -156,8 +156,8 @@ def _resolve_draw_request_recipient(project_id: Optional[int]) -> tuple:
     name + that customer's OWNER / remit-to address.
 
     NOT the property address, despite living on ProjectAddress: every consumer
-    treats these lines as the owner's. `g702.py` renders them under "TO OWNER:"
-    and renders the property separately as "PROJECT:" from `project.name`; the
+    treats these lines as the owner's. The Application for Payment renders them in
+    its "To:" block and the property separately as "Project" from `project.name`; the
     Draw Request and Trend "To:" blocks address the same owner, and `to_name` is
     the Customer.
 
@@ -168,7 +168,7 @@ def _resolve_draw_request_recipient(project_id: Optional[int]) -> tuple:
     A job's ShipAddr is the SITE, not a mailing address — the writer says so in as
     many words ("SHIPPING: job-only … a job's ShipAddr is the SITE") — so falling
     through to it renders the construction site under "TO OWNER:" on a
-    client-facing G702. That contradicts the decision U-506 P2 made when it
+    client-facing Application for Payment. That contradicts the decision U-506 P2 made when it
     removed both ShipAddr links from the billing chain: a missing address is
     visible, a plausible-but-wrong one is not. Name-only is the correct
     degradation; the job site is not a safer default than blank.
@@ -309,11 +309,12 @@ def _draw_fee_from_invoice(cover_model, invoice_total):
 
 
 def _period_to_date(toc_items: list) -> Optional["date"]:
-    """PERIOD TO for the G702/G703 (U-791): the latest source date among the packet's
+    """PERIOD TO for the Application for Payment / Schedule of Values (U-791): the
+    latest source date among the packet's
     TOC rows — the documents this draw bills. The Builder's Fee is a Manual line with
     no document, so it is never a TOC row and never sets the date. Returns a date, or
     None when no row carries a parseable date (the caller falls back to the invoice
-    date). Mirrors the tracker's G702 J10 / G703 J5 formula."""
+    date). Mirrors the tracker's Pay App J10 / SOV J5 formula."""
     from datetime import datetime
     latest = None
     for r in toc_items or []:
@@ -326,70 +327,83 @@ def _period_to_date(toc_items: list) -> Optional["date"]:
     return latest
 
 
-def _build_aia_pages(invoice, draws: list, toc_items: list, to_name: str,
-                     to_lines: list, public_id: str) -> tuple:
-    """(g702_bytes, g703_bytes) for the packet, or (None, None) when the budget
+def _draw_packet_blocks(project_id: Optional[int], public_id: str):
+    """The project's Application for Payment block switches (U-792). A failed read
+    falls back to the house defaults: an extra signature block is harmless, while a
+    missing Application for Payment page is not."""
+    from entities.project_draw_packet_setting.business.model import DrawPacketBlocks
+    from entities.project_draw_packet_setting.business.service import ProjectDrawPacketSettingService
+
+    if not project_id:
+        return DrawPacketBlocks()
+    try:
+        return ProjectDrawPacketSettingService().blocks_for_project(project_id)
+    except Exception:
+        logger.warning(f"Packet [{public_id}]: draw packet settings read failed — using defaults",
+                       exc_info=True)
+        return DrawPacketBlocks()
+
+
+def _build_application_pages(invoice, draws: list, toc_items: list, to_name: str,
+                             to_lines: list, public_id: str) -> tuple:
+    """(application_bytes, sov_bytes) for the packet, or (None, None) when the budget
     lookup fails. The caller has already checked that the invoice is a coded draw
     and isolates exceptions.
 
     U-791: a project with no budget (``_budget_sov_for_project`` -> []) still gets
     both pages, with the contract-dependent fields blank; PERIOD TO is the latest
     source-document date on the draw (``_period_to_date``), else the invoice date.
+    U-792: our own Application for Payment + Schedule of Values (no industry-form
+    branding); the Application's optional blocks follow the project's settings.
     """
-    from entities.invoice.business.g703 import build_g703_pdf, build_g703_rows, normalize_draw_date
-    from entities.invoice.business.g702 import build_g702_lines, build_g702_pdf
+    from entities.invoice.business.pay_application import build_application_lines, build_application_pdf
+    from entities.invoice.business.schedule_of_values import (
+        build_schedule_of_values_pdf,
+        build_sov_rows,
+        normalize_draw_date,
+    )
     from entities.project.business.service import ProjectService
 
     # [] = no budget: the pages still render, contract fields blank (U-791).
     # None = the lookup failed: skip rather than mislabel a budgeted project.
     sov = _budget_sov_for_project(invoice.project_id)
     if sov is None:
-        logger.warning(f"Packet [{public_id}]: budget lookup failed — skipping G702/G703")
+        logger.warning(f"Packet [{public_id}]: budget lookup failed — skipping Application/Schedule of Values")
         return None, None
     current_date = normalize_draw_date(invoice.invoice_date)
-    rows, grand = build_g703_rows(sov, draws, invoice.invoice_number or "",
-                                  current_date=current_date)
+    rows, grand = build_sov_rows(sov, draws, invoice.invoice_number or "",
+                                 current_date=current_date)
     date_str = _format_invoice_date(invoice.invoice_date)
     period_to_str = _format_invoice_date(
         _period_to_date(toc_items) or invoice.invoice_date)
-    g703_bytes = build_g703_pdf(
-        {
-            "application_no": invoice.invoice_number or "",
-            "application_date": date_str,
-            "period_to": period_to_str,
-            "architect_project_no": "N/A",
-        },
-        rows,
-        grand,
-    )
     project = ProjectService().read_by_id(invoice.project_id) if invoice.project_id else None
-    g702_bytes = build_g702_pdf(
-        {
-            # TO OWNER = the project's Customer; Architect + Contract Date
-            # are left blank until the minimal Contract fields are stored.
-            "owner_lines": ([to_name] if to_name else []) + list(to_lines),
-            "project": project.name if project else "",
-            "application_no": invoice.invoice_number or "",
-            "period_to": period_to_str,
-            # The AIA G702 contractor block is name + mailing address only
-            # (no phone/email — those belong on the Draw Request/Trend).
-            "contractor_lines": _CONTRACTOR_BLOCK[:3],
-            "architect_lines": [],
-            "contract_for": "",
-            "contract_date": "",
-        },
-        build_g702_lines(grand),
+    header = {
+        "project": project.name if project else "",
+        "application_no": invoice.invoice_number or "",
+        "application_date": date_str,
+        "period_to": period_to_str,
+        # Name + mailing address only (no phone/email — those belong on the
+        # Draw Request/Trend).
+        "from_lines": _CONTRACTOR_BLOCK[:3],
+        "to_name": to_name,
+        "to_lines": list(to_lines),
+    }
+    sov_bytes = build_schedule_of_values_pdf(header, rows, grand)
+    application_bytes = build_application_pdf(
+        header,
+        build_application_lines(grand),
+        _draw_packet_blocks(invoice.project_id, public_id),
     )
-    return g702_bytes, g703_bytes
+    return application_bytes, sov_bytes
 
 
 def _budget_sov_for_project(project_id: Optional[int]) -> Optional[list]:
-    """The project's schedule of values (G703 col C) from the LIVE Budget: one
+    """The project's schedule of values (scheduled value per cost code) from the LIVE Budget: one
     entry per cost code {cost_code_number, cost_code_name, scheduled_value}.
 
-    Returns [] when the project has no budget — the G702/G703 still render, with the
-    contract-dependent fields blank (U-791). Returns None when the lookup FAILS, so a
-    transient error skips the AIA pages instead of silently printing a no-budget
+    Returns [] when the project has no budget — the Application for Payment and
+    Schedule of Values still render, with the contract-dependent fields blank (U-791).
+    Returns None when the lookup FAILS, so a transient error skips those pages instead of silently printing a no-budget
     version of a budgeted project (failure-isolated — the packet still generates)."""
     if not project_id:
         return []
@@ -896,7 +910,7 @@ def _generate_invoice_packet(public_id: str):
     # draw carrying the Builder's Fee line — replaces the U-191 cover. Built from
     # the SAME `toc_items` the expanded TOC totals, so its subtotal reconciles to
     # the expanded TOC (and the invoice total) by construction. Followed by the
-    # Trend page; later units prepend G702/G703 ahead of the Draw Request.
+    # Trend page; the Application for Payment + Schedule of Values precede it.
     # Failure-isolated — a render error logs and the packet still generates.
     draw_request_bytes = None
     try:
@@ -921,39 +935,38 @@ def _generate_invoice_packet(public_id: str):
         logger.exception(f"Packet [{public_id}]: draw request page generation failed — continuing without it")
 
     # The project's CODED draws (fee = subtotal x the Contract rate) — computed once
-    # and shared by the multi-draw pages (Trend + G703). Failure-isolated.
+    # and shared by the multi-draw pages (Trend + Schedule of Values). Failure-isolated.
     draws = []
     try:
         from entities.invoice.business.draw_financials import DrawFinancialsService
         draws = DrawFinancialsService().coded_draws_for_project(invoice.project_id, fee_rate)
     except Exception:
-        logger.exception(f"Packet [{public_id}]: coded-draws lookup failed — Trend/G703 skipped")
+        logger.exception(f"Packet [{public_id}]: coded-draws lookup failed — Trend/Schedule of Values skipped")
 
-    # G703 Continuation Sheet (U-207): AIA schedule of values — live Budget (col C) x
-    # prior/current coded draws (cols D/E) + synthetic fee line 90. Prepended ahead of
-    # the Draw Request (G702 slots in front of it later). Failure-isolated.
-    # G702 (Application for Payment) is derived from the SAME G703 grand totals, so
-    # the two AIA pages reconcile by construction; it's prepended ahead of the G703.
-    g703_bytes = None
-    g702_bytes = None
-    # Only build G702/G703 when the invoice being packeted is itself a coded draw —
-    # otherwise the G703 "This Period" (col E) would silently render all-$0.
+    # Application for Payment + Schedule of Values (U-207/U-208, de-branded U-792):
+    # the schedule is the live Budget (scheduled value) x prior/current coded draws +
+    # the synthetic fee line 90; the Application's figures derive from the SAME grand
+    # totals, so the two pages reconcile by construction. Failure-isolated.
+    application_bytes = None
+    sov_bytes = None
+    # Only build them when the invoice being packeted is itself a coded draw —
+    # otherwise the schedule's "This Application" column would silently render all-$0.
     current_is_coded_draw = any(d.get("label") == invoice.invoice_number for d in draws)
     if draws and not current_is_coded_draw:
-        logger.info(f"Packet [{public_id}]: current invoice not a coded draw — skipping G702/G703")
+        logger.info(f"Packet [{public_id}]: current invoice not a coded draw — skipping Application/Schedule of Values")
     if draws and current_is_coded_draw:
         try:
-            g702_bytes, g703_bytes = _build_aia_pages(
+            application_bytes, sov_bytes = _build_application_pages(
                 invoice, draws, toc_items, to_name, to_lines, public_id)
         except Exception:
-            logger.exception(f"Packet [{public_id}]: G702/G703 generation failed — continuing without it")
+            logger.exception(f"Packet [{public_id}]: Application/Schedule of Values generation failed — continuing without it")
 
     # Trend page (U-206): per-cost-code x per-draw matrix across the coded draws,
     # following the Draw Request in the packet. Failure-isolated.
     #
     # The Trend consumes ALL historical pay applications (U-271) — including early
     # draws whose cost codes live only in QBO (migrated in as all-Manual lines) —
-    # so every draw is a column. G702/G703 above deliberately keep using the coded
+    # so every draw is a column. The Application/Schedule of Values above deliberately keep using the coded
     # `draws` (they reconcile to the Budget SoV, a coded-only surface). Falls back
     # to `draws` if the richer lookup fails.
     trend_bytes = None
@@ -1008,11 +1021,11 @@ def _generate_invoice_packet(public_id: str):
     storage = AzureBlobStorage()
     writer = PdfWriter()
 
-    # Packet page order: G702 -> G703 -> Draw Request -> Trend -> TOC pages ->
-    # attachment images.
+    # Packet page order: Application for Payment -> Schedule of Values -> Draw
+    # Request -> Trend -> TOC pages -> attachment images.
     prepend_pdfs = (
-        ([g702_bytes] if g702_bytes else [])
-        + ([g703_bytes] if g703_bytes else [])
+        ([application_bytes] if application_bytes else [])
+        + ([sov_bytes] if sov_bytes else [])
         + ([draw_request_bytes] if draw_request_bytes else [])
         + ([trend_bytes] if trend_bytes else [])
         + [basic_toc_bytes, expanded_toc_bytes]

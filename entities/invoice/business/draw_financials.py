@@ -2,8 +2,8 @@
 
 Selects a project's CODED draws — invoices whose source-linked cost-code rollup is
 non-empty — and computes each draw's Builder's Fee from the Contract rate. This is
-the shared data layer the multi-draw packet pages consume (Trend now; G702/G703
-later), so their numbers reconcile by construction.
+the shared data layer the multi-draw packet pages consume (the Trend, the Schedule
+of Values and the Application for Payment), so their numbers reconcile by construction.
 
 Canonical-draw rule: an invoice counts as a draw only if its non-Manual rollup has
 cost codes. That excludes (a) QBO Manual-only duplicate invoices — re-entries of a
@@ -24,7 +24,8 @@ source FKs), rolled up via `QboInvoiceService.cost_coded_lines_for_invoice` (U-2
 the dbo-native seam that resolves each QBO invoice line's cost code by ID (QboItem ->
 ItemSubCostCode -> SubCostCode -> CostCode) rather than parsing the QBO Item's display
 name. It is used by the Trend so every historical pay application is a column;
-G702/G703 keep consuming `coded_draws_for_project` (coded draws only).
+the Application for Payment / Schedule of Values keep consuming
+`coded_draws_for_project` (coded draws only).
 """
 
 from __future__ import annotations
@@ -167,7 +168,7 @@ class DrawFinancialsService:
         untouched. Two live shapes make "invoice fee wins" unsafe as a general rule:
           * a draw whose fee was never entered on its coded invoice (HA-01, HA-02,
             BR-MAIN-20, OHR2-32, SSC2-03 — invoice total == subtotal) depends on the
-            computed rate fee for its G702/G703 numbers, per this module's
+            computed rate fee for its Application for Payment numbers, per this module's
             fee-is-computed-not-read contract; and
           * a trivial rounding residue must never displace a real fee — BR-MAIN-21
             bills $0.02 over its subtotal against a $95,159.92 rate fee.
@@ -203,7 +204,7 @@ class DrawFinancialsService:
 
     @staticmethod
     def _draw_from_rollup(invoice, rollup) -> dict:
-        """The canonical draw dict the Trend/G703 renderers consume."""
+        """The canonical draw dict the Trend/Schedule of Values renderers consume."""
         return {
             "label": invoice.invoice_number or "",
             "date": str(invoice.invoice_date or "")[:10],
@@ -224,8 +225,8 @@ class DrawFinancialsService:
         """Ordered (by invoice date, then number) list of the project's coded draws.
 
         Each entry: ``{label, date, categories:[{cost_code_number, cost_code_name,
-        amount}], subtotal, builders_fee, total}`` — the exact shape the Trend (and
-        later G703/Trend) renderers consume. ``builders_fee = subtotal * fee_rate``
+        amount}], subtotal, builders_fee, total}`` — the exact shape the Trend and
+        Schedule of Values renderers consume. ``builders_fee = subtotal * fee_rate``
         (0 when ``fee_rate`` is None). Invoices whose coded rollup is empty are
         skipped (the canonical-draw rule).
         """

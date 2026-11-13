@@ -34,6 +34,7 @@ COVERED_ENTITIES = [
     "user",
     "user_role",
     "role_module",
+    "project_draw_packet_setting",
 ]
 
 # Shrink-only ledger: entities with business/service.py not yet in COVERED_ENTITIES.

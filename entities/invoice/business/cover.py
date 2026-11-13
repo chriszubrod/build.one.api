@@ -36,7 +36,7 @@ def is_packet_row(row: dict) -> bool:
     **The ONE definition.** The router's `_generate_invoice_packet` imports it
     for `toc_items`, `build_cover_rollup` applies it below, and
     `DrawFinancialsService._coded_rollup` reaches it through that rollup — so
-    the Draw Request, the AIA/Trend pages and the merged pages cannot disagree
+    the Draw Request, the Application/Schedule of Values/Trend pages and the merged pages cannot disagree
     about membership. Each of those three used to carry its own hand-copy.
 
     - A **source-linked** line is always in: it has a parent document the

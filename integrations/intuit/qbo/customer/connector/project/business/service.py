@@ -51,9 +51,9 @@ ADDRESS_TYPE_SHIPPING = 2
 #    breaks if someone flips it, not because the question is still open.
 #
 #   True  — the OWNER'S MAILING / REMIT-TO address   ← SHIPPED + DECIDED
-#       Evidence: `entities/invoice/business/g702.py` renders this block under
-#       the literal label "TO OWNER:" and renders the property SEPARATELY as
-#       "PROJECT:" from `project.name`; the Draw Request "To:" name is
+#       Evidence: `entities/invoice/business/pay_application.py` renders this block
+#       in its "To:" block (U-792; before it, the G702 renderer's "TO OWNER:") and
+#       renders the property SEPARATELY as "Project" from `project.name`; the Draw Request "To:" name is
 #       `customer.name`. Pairing a customer's NAME with a property STREET is
 #       incoherent. Under this reading the parent customer's BillAddr IS the
 #       owner's mailing address, so inheriting it is correct for all 61

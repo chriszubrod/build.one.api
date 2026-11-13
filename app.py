@@ -93,6 +93,7 @@ from entities.asset_attachment.api.router import router as asset_attachment_api_
 from entities.contractors_license_attachment.api.router import router as contractors_license_attachment_api_router
 from entities.payment_term.api.router import router as payment_term_api_router
 from entities.contract.api.router import router as contract_api_router
+from entities.project_draw_packet_setting.api.router import router as project_draw_packet_setting_api_router
 from entities.contract_labor.api.router import router as contract_labor_api_router
 from entities.time_entry.api.router import router as time_entry_api_router
 from entities.time_entry.api.router import time_log_router as time_log_api_router
@@ -320,6 +321,7 @@ app.include_router(asset_attachment_api_router)
 app.include_router(contractors_license_attachment_api_router)
 app.include_router(payment_term_api_router)
 app.include_router(contract_api_router)
+app.include_router(project_draw_packet_setting_api_router)
 app.include_router(contract_labor_api_router)
 app.include_router(time_entry_api_router)
 app.include_router(time_log_api_router)

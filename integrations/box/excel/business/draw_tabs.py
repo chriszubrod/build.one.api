@@ -17,8 +17,8 @@ WHAT: pure functions over xlsx bytes, no I/O:
 SUPPORTED LAYOUT (v1): the Draw Request tab's G cost-code rows hold exactly
   SUMIFS(<ledger>!N:N,<ledger>!B:B,'<tab>'!A<r>,<ledger>!H:H,$E$10|$D$4)
   and SUM(<range>) / VLOOKUP(A<r>,'<tab>'!A:G,7,FALSE) on the Trend. Shared and
-  array formulas are refused. Any other formula shape, a G702/G703 tab for the
-  source draw, a Trend with conditional formatting or data validation, or a
+  array formulas are refused. Any other formula shape, a G702/G703 (or Pay App / SOV) tab
+  for the source draw, a Trend with conditional formatting or data validation, or a
   Trend whose last draw column reads another tab, raises UnsupportedTrackerLayout.
   The module refuses rather than guesses.
 
@@ -1032,6 +1032,16 @@ def _text(m, sheet, col, row):
 
 # ---------------------------------------------------------------- planning
 
+# D13: the per-draw pay-application tabs v1 does not copy. The legacy G702/G703 names
+# plus the U-792 house names ("Pay App NN" / "SOV NN" — the de-branded Application for
+# Payment and Schedule of Values). The prefix is consumed before the draw integers are
+# read, so the "702"/"703" in a legacy name is never mistaken for a draw number.
+_PAY_APP_TAB_PREFIX = re.compile(
+    r"(?i)\s*(?:g70[23]|pay[\s_-]*app(?:s|lication)?(?![a-z])|sov(?![a-z])"
+    r"|schedule[\s_-]+of[\s_-]+values|application[\s_-]+for[\s_-]+payment)"
+)
+
+
 @_tracker_boundary
 def plan_next_draw(pkg: bytes, *, invoice_number: str) -> DrawTabPlan:
     wb = _Workbook(_Pkg(pkg))
@@ -1074,11 +1084,12 @@ def plan_next_draw(pkg: bytes, *, invoice_number: str) -> DrawTabPlan:
     new_tab = source[: sm.start()] + str(draw_no).zfill(len(suffix))  # D15: width of the source token
     _check_sheet_name(new_tab)
     _check_new_tab_free(wb, new_tab)
-    for s in wb.sheets:  # D13: any G702/G703 tab whose trailing integers include this draw
-        if s.name.casefold().startswith(("g702", "g703")):
-            if int(suffix) in {int(x) for x in re.findall(r"\d+", s.name[4:])}:
+    for s in wb.sheets:  # D13: any per-draw pay-application tab whose trailing integers include this draw
+        pm = _PAY_APP_TAB_PREFIX.match(s.name)
+        if pm:
+            if int(suffix) in {int(x) for x in re.findall(r"\d+", s.name[pm.end():])}:
                 raise UnsupportedTrackerLayout(
-                    f"{echo_text(source)} has a G702/G703 tab for draw {suffix} ({echo_text(s.name)}); v1 copies only the Draw Request tab"
+                    f"{echo_text(source)} has a Pay App / SOV (or G702/G703) tab for draw {suffix} ({echo_text(s.name)}); v1 copies only the Draw Request tab"
                 )
     return DrawTabPlan(
         invoice_number=invoice_number,

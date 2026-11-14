@@ -3,6 +3,10 @@
 -- qbo.PurchaseLine.IsUncodedPlaceholder column (label AND no ItemRef, U-652d3). Do NOT loosen to
 -- NULL / NEED TO UPDATE (that wrongly sweeps item-based lines).
 --
+-- Access (U-652d8): every scan uses the assert_accessible rule — admin; else the row's Expense
+-- (CodingSuggestion.ExpenseId, else dbo.Expense by the purchase's QBO identity); else its project;
+-- else (no expense, no project, incl. an unseeded line with no Expense) admin only.
+--
 -- Run: ./.venv/bin/python scripts/run_sql.py integrations/intuit/qbo/purchase/sql/qbo.expense_coding_queue.sql
 
 GO
@@ -88,13 +92,21 @@ BEGIN
         ON cs.[TargetKind] = N'expense'
        AND cs.[RealmId] = r.[RealmId]
        AND cs.[QboPurchaseQboId] = r.[QboPurchaseQboId]
+    LEFT JOIN [dbo].[Expense] e  -- at most one: UQ_Expense_QboId_RealmId
+        ON e.[QboId] = r.[QboPurchaseQboId]
+       AND e.[RealmId] = r.[RealmId]
     WHERE r.[Rn] = 1
       AND (
+          -- U-652d8: the same scope as CodingSuggestionService.assert_accessible (U-652d7): admin; else the
+          -- row's Expense (the suggestion's, else the purchase's by QBO identity); else its project; else admin only.
           @ActorIsSystemAdmin = 1
-          OR COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId]) IS NULL
-          OR dbo.UserCanAccessProject(
-                 @ActorUserId, @ActorIsSystemAdmin,
-                 COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId])) = 1
+          OR (COALESCE(cs.[ExpenseId], e.[Id]) IS NOT NULL
+              AND dbo.UserCanAccessExpense(@ActorUserId, @ActorIsSystemAdmin, COALESCE(cs.[ExpenseId], e.[Id])) = 1)
+          OR (COALESCE(cs.[ExpenseId], e.[Id]) IS NULL
+              AND COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId]) IS NOT NULL
+              AND dbo.UserCanAccessProject(
+                      @ActorUserId, @ActorIsSystemAdmin,
+                      COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId])) = 1)
       )
       AND (cs.[Status] IS NULL OR cs.[Status] NOT IN (N'written', N'resolved_externally'))
     ORDER BY TRY_CONVERT(DATE, r.[TxnDate], 23) DESC, r.[DocNumber], r.[LineNum];
@@ -127,14 +139,22 @@ BEGIN
                 ON cs.[TargetKind] = N'expense'
                AND cs.[RealmId] = p.[RealmId]
                AND cs.[QboPurchaseQboId] = p.[QboId]
+            LEFT JOIN [dbo].[Expense] e
+                ON e.[QboId] = p.[QboId]
+               AND e.[RealmId] = p.[RealmId]
             WHERE pl.[IsUncodedPlaceholder] = 1
               AND (@RealmId IS NULL OR p.[RealmId] = @RealmId)
               AND (
+                  -- U-652d8: the same scope as CodingSuggestionService.assert_accessible (U-652d7): admin; else the
+                  -- row's Expense (the suggestion's, else the purchase's by QBO identity); else its project; else admin only.
                   @ActorIsSystemAdmin = 1
-                  OR COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId]) IS NULL
-                  OR dbo.UserCanAccessProject(
-                         @ActorUserId, @ActorIsSystemAdmin,
-                         COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId])) = 1
+                  OR (COALESCE(cs.[ExpenseId], e.[Id]) IS NOT NULL
+                      AND dbo.UserCanAccessExpense(@ActorUserId, @ActorIsSystemAdmin, COALESCE(cs.[ExpenseId], e.[Id])) = 1)
+                  OR (COALESCE(cs.[ExpenseId], e.[Id]) IS NULL
+                      AND COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId]) IS NOT NULL
+                      AND dbo.UserCanAccessProject(
+                              @ActorUserId, @ActorIsSystemAdmin,
+                              COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId])) = 1)
               )
         ) AS [TotalTargetLines],
         COUNT(CASE WHEN cs.[Status] = N'pending' THEN 1 END) AS [PendingCount],
@@ -149,15 +169,23 @@ BEGIN
         COUNT(CASE WHEN cs.[Status] = N'written' AND cs.[WasOverridden] = 0 THEN 1 END) AS [AcceptedCount],
         COUNT(CASE WHEN cs.[Status] = N'written' AND cs.[WasOverridden] = 1 THEN 1 END) AS [OverriddenCount]
     FROM [dbo].[CodingSuggestion] cs
+    LEFT JOIN [dbo].[Expense] e
+        ON e.[QboId] = cs.[QboPurchaseQboId]
+       AND e.[RealmId] = cs.[RealmId]
     WHERE cs.[TargetKind] = N'expense'
       AND (@RealmId IS NULL OR cs.[RealmId] = @RealmId)
       AND (@SinceCutoff IS NULL OR cs.[CreatedDatetime] >= @SinceCutoff)
       AND (
+          -- U-652d8: the same scope as CodingSuggestionService.assert_accessible (U-652d7): admin; else the
+          -- row's Expense (the suggestion's, else the purchase's by QBO identity); else its project; else admin only.
           @ActorIsSystemAdmin = 1
-          OR COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId]) IS NULL
-          OR dbo.UserCanAccessProject(
-                 @ActorUserId, @ActorIsSystemAdmin,
-                 COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId])) = 1
+          OR (COALESCE(cs.[ExpenseId], e.[Id]) IS NOT NULL
+              AND dbo.UserCanAccessExpense(@ActorUserId, @ActorIsSystemAdmin, COALESCE(cs.[ExpenseId], e.[Id])) = 1)
+          OR (COALESCE(cs.[ExpenseId], e.[Id]) IS NULL
+              AND COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId]) IS NOT NULL
+              AND dbo.UserCanAccessProject(
+                      @ActorUserId, @ActorIsSystemAdmin,
+                      COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId])) = 1)
       );
 END;
 GO

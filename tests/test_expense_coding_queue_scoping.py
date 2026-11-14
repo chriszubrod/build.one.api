@@ -65,6 +65,12 @@ def test_all_three_scans_retain_userproject_scoping():
     metrics leaking every realm's counts while the queue stays scoped, or vice
     versa). Same discipline as the U-057/U-062 copy-paste-drift guards."""
     sql = _SQL_FILE.read_text()
+    # U-652d8: the assert_accessible rule in all three scans (expense -> project -> admin only); the old
+    # "no project = visible to everyone" arm must not come back.
     assert sql.count("dbo.UserCanAccessProject(") == 3
-    assert sql.count("COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId]) IS NULL") == 3
+    assert sql.count("dbo.UserCanAccessExpense(@ActorUserId, @ActorIsSystemAdmin, COALESCE(cs.[ExpenseId], e.[Id])) = 1") == 3
+    assert sql.count("OR (COALESCE(cs.[ExpenseId], e.[Id]) IS NULL") == 3
+    assert sql.count("AND COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId]) IS NOT NULL") == 3
+    assert "OR COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId]) IS NULL" not in sql
+    assert sql.count("LEFT JOIN [dbo].[Expense] e") == 3
     assert sql.count("@ActorIsSystemAdmin = 1") == 3

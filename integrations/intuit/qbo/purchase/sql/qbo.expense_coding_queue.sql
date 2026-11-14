@@ -3,9 +3,10 @@
 -- qbo.PurchaseLine.IsUncodedPlaceholder column (label AND no ItemRef, U-652d3). Do NOT loosen to
 -- NULL / NEED TO UPDATE (that wrongly sweeps item-based lines).
 --
--- Access (U-652d8): every scan uses the assert_accessible rule — admin; else the row's Expense
--- (CodingSuggestion.ExpenseId, else dbo.Expense by the purchase's QBO identity); else its project;
--- else (no expense, no project, incl. an unseeded line with no Expense) admin only.
+-- Access (U-652d8): every scan uses the assert_accessible rule — admin; else CodingSuggestion.ExpenseId
+-- via UserCanAccessExpense; else its project; else admin only. A line with NO suggestion row yet (cs.Id
+-- NULL; nothing to write to) is scoped by its purchase's dbo.Expense, by QBO identity. A seeded row never
+-- uses that fallback, so read and write agree exactly (the heal sweeper stamps ExpenseId within 15 min).
 --
 -- Run: ./.venv/bin/python scripts/run_sql.py integrations/intuit/qbo/purchase/sql/qbo.expense_coding_queue.sql
 
@@ -98,11 +99,11 @@ BEGIN
     WHERE r.[Rn] = 1
       AND (
           -- U-652d8: the same scope as CodingSuggestionService.assert_accessible (U-652d7): admin; else the
-          -- row's Expense (the suggestion's, else the purchase's by QBO identity); else its project; else admin only.
+          -- suggestion's Expense (an UNSEEDED line: the purchase's, by QBO identity); else its project; else admin only.
           @ActorIsSystemAdmin = 1
-          OR (COALESCE(cs.[ExpenseId], e.[Id]) IS NOT NULL
-              AND dbo.UserCanAccessExpense(@ActorUserId, @ActorIsSystemAdmin, COALESCE(cs.[ExpenseId], e.[Id])) = 1)
-          OR (COALESCE(cs.[ExpenseId], e.[Id]) IS NULL
+          OR (COALESCE(cs.[ExpenseId], CASE WHEN cs.[Id] IS NULL THEN e.[Id] END) IS NOT NULL
+              AND dbo.UserCanAccessExpense(@ActorUserId, @ActorIsSystemAdmin, COALESCE(cs.[ExpenseId], CASE WHEN cs.[Id] IS NULL THEN e.[Id] END)) = 1)
+          OR (COALESCE(cs.[ExpenseId], CASE WHEN cs.[Id] IS NULL THEN e.[Id] END) IS NULL
               AND COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId]) IS NOT NULL
               AND dbo.UserCanAccessProject(
                       @ActorUserId, @ActorIsSystemAdmin,
@@ -146,11 +147,11 @@ BEGIN
               AND (@RealmId IS NULL OR p.[RealmId] = @RealmId)
               AND (
                   -- U-652d8: the same scope as CodingSuggestionService.assert_accessible (U-652d7): admin; else the
-                  -- row's Expense (the suggestion's, else the purchase's by QBO identity); else its project; else admin only.
+                  -- suggestion's Expense (an UNSEEDED line: the purchase's, by QBO identity); else its project; else admin only.
                   @ActorIsSystemAdmin = 1
-                  OR (COALESCE(cs.[ExpenseId], e.[Id]) IS NOT NULL
-                      AND dbo.UserCanAccessExpense(@ActorUserId, @ActorIsSystemAdmin, COALESCE(cs.[ExpenseId], e.[Id])) = 1)
-                  OR (COALESCE(cs.[ExpenseId], e.[Id]) IS NULL
+                  OR (COALESCE(cs.[ExpenseId], CASE WHEN cs.[Id] IS NULL THEN e.[Id] END) IS NOT NULL
+                      AND dbo.UserCanAccessExpense(@ActorUserId, @ActorIsSystemAdmin, COALESCE(cs.[ExpenseId], CASE WHEN cs.[Id] IS NULL THEN e.[Id] END)) = 1)
+                  OR (COALESCE(cs.[ExpenseId], CASE WHEN cs.[Id] IS NULL THEN e.[Id] END) IS NULL
                       AND COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId]) IS NOT NULL
                       AND dbo.UserCanAccessProject(
                               @ActorUserId, @ActorIsSystemAdmin,
@@ -177,11 +178,11 @@ BEGIN
       AND (@SinceCutoff IS NULL OR cs.[CreatedDatetime] >= @SinceCutoff)
       AND (
           -- U-652d8: the same scope as CodingSuggestionService.assert_accessible (U-652d7): admin; else the
-          -- row's Expense (the suggestion's, else the purchase's by QBO identity); else its project; else admin only.
+          -- suggestion's Expense (an UNSEEDED line: the purchase's, by QBO identity); else its project; else admin only.
           @ActorIsSystemAdmin = 1
-          OR (COALESCE(cs.[ExpenseId], e.[Id]) IS NOT NULL
-              AND dbo.UserCanAccessExpense(@ActorUserId, @ActorIsSystemAdmin, COALESCE(cs.[ExpenseId], e.[Id])) = 1)
-          OR (COALESCE(cs.[ExpenseId], e.[Id]) IS NULL
+          OR (COALESCE(cs.[ExpenseId], CASE WHEN cs.[Id] IS NULL THEN e.[Id] END) IS NOT NULL
+              AND dbo.UserCanAccessExpense(@ActorUserId, @ActorIsSystemAdmin, COALESCE(cs.[ExpenseId], CASE WHEN cs.[Id] IS NULL THEN e.[Id] END)) = 1)
+          OR (COALESCE(cs.[ExpenseId], CASE WHEN cs.[Id] IS NULL THEN e.[Id] END) IS NULL
               AND COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId]) IS NOT NULL
               AND dbo.UserCanAccessProject(
                       @ActorUserId, @ActorIsSystemAdmin,

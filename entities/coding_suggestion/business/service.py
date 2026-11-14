@@ -619,8 +619,8 @@ class CodingSuggestionService:
         return self.repo.read_by_public_id(public_id)
 
     def assert_accessible(self, item: CodingSuggestion) -> None:
-        """U-652d4: row-level access for a coding suggestion, the same scope as
-        ReadCodingSuggestionStateByExpenseIds. Raises EntityNotAccessibleError; system / admin callers
+        """U-652d4: row-level access for a coding suggestion. The queue / metrics reads
+        (qbo.expense_coding_queue.sql, U-652d8) apply this same rule in SQL; keep them in step. Raises EntityNotAccessibleError; system / admin callers
         bypass inside the shared access helpers.
 
         U-652d7 (Chris 2026-11-14): a suggestion with no expense AND no project is admin / system only."""

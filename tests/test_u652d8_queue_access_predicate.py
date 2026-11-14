@@ -42,7 +42,7 @@ def _db():
     con = sqlite3.connect(":memory:")
     con.create_function("can_exp", 3, lambda uid, isa, eid: 1 if (isa == 1 or (uid == 1 and eid in ACCESSIBLE_EXPENSES)) else 0)
     con.create_function("can_proj", 3, lambda uid, isa, pid: 1 if (isa == 1 or (uid == 1 and pid in ACCESSIBLE_PROJECTS)) else 0)
-    con.execute("CREATE TABLE cs (ExpenseId INT, ConfirmedProjectId INT, SuggestedProjectId INT)")
+    con.execute("CREATE TABLE cs (Id INT, ExpenseId INT, ConfirmedProjectId INT, SuggestedProjectId INT)")
     con.execute("CREATE TABLE e (Id INT)")
     return con
 
@@ -51,10 +51,10 @@ def _visible(pred: str, *, uid, isa, cs_expense=None, e_expense=None, confirmed=
              no_suggestion=False) -> bool:
     con = _db()
     if no_suggestion:
-        # an unseeded line: LEFT JOIN to CodingSuggestion yields all-NULL cs columns
-        con.execute("INSERT INTO cs VALUES (NULL, NULL, NULL)")
+        # an unseeded line: LEFT JOIN to CodingSuggestion yields all-NULL cs columns (cs.Id NULL too)
+        con.execute("INSERT INTO cs VALUES (NULL, NULL, NULL, NULL)")
     else:
-        con.execute("INSERT INTO cs VALUES (?, ?, ?)", (cs_expense, confirmed, suggested))
+        con.execute("INSERT INTO cs VALUES (1, ?, ?, ?)", (cs_expense, confirmed, suggested))
     con.execute("INSERT INTO e VALUES (?)", (e_expense,))
     row = con.execute(f"SELECT 1 FROM cs, e WHERE {pred}", {"uid": uid, "isa": isa}).fetchone()
     return row is not None
@@ -85,7 +85,32 @@ CASES = [
      "a project arm that ignores the UDF"),
     ("confirmed project wins over suggested", dict(uid=1, isa=0, confirmed=101, suggested=100), False,
      "COALESCE(Suggested, Confirmed)"),
+    # round 2 (both Pass-1 legs): a SEEDED row never falls back to the purchase's Expense, so it is scoped
+    # exactly as assert_accessible scopes it (cs.ExpenseId, else project, else admin only).
+    ("seeded, NULL ExpenseId, accessible purchase Expense, no project -> hidden",
+     dict(uid=1, isa=0, e_expense=10), False,
+     "applying the e.Id fallback to seeded rows (visible in the queue, refused on write)"),
+    ("seeded, NULL ExpenseId, inaccessible purchase Expense, accessible project -> visible",
+     dict(uid=1, isa=0, e_expense=11, suggested=100), True,
+     "applying the e.Id fallback to seeded rows (writable via the project, hidden in the queue)"),
+    ("NULL admin flag fails closed", dict(uid=1, isa=None), False, "treating a NULL flag as admin"),
+    ("NULL admin flag still scopes by expense", dict(uid=1, isa=None, cs_expense=10), True,
+     "a NULL flag that short-circuits every arm"),
+    ("dangling ExpenseId (deleted Expense) -> hidden", dict(uid=1, isa=0, cs_expense=999, suggested=100), False,
+     "falling through to the project arm when the expense row is gone"),
 ]
+
+
+def test_each_expense_join_keys_on_the_purchase_qbo_identity():
+    # kills: a join on the wrong column (e.g. the purchase's dbo-side Id) or one missing RealmId; the SQLite
+    # harness above cannot see join keys, so they are pinned as text, one per scan.
+    sql = SQL_FILE.read_text()
+    for on in (
+        "LEFT JOIN [dbo].[Expense] e  -- at most one: UQ_Expense_QboId_RealmId\n        ON e.[QboId] = r.[QboPurchaseQboId]\n       AND e.[RealmId] = r.[RealmId]",
+        "LEFT JOIN [dbo].[Expense] e\n                ON e.[QboId] = p.[QboId]\n               AND e.[RealmId] = p.[RealmId]",
+        "LEFT JOIN [dbo].[Expense] e\n        ON e.[QboId] = cs.[QboPurchaseQboId]\n       AND e.[RealmId] = cs.[RealmId]",
+    ):
+        assert sql.count(on.replace("\\n", "\n")) == 1, on
 
 
 @pytest.mark.parametrize("scan", [0, 1, 2], ids=["queue", "metrics_total", "metrics_status"])

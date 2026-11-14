@@ -120,23 +120,20 @@ class QboPurchaseService:
         if reconcile_deletes and last_updated_time is None and not start_date and not end_date:
             self._reconcile_deleted_purchases(realm_id)
 
-        # U-652d10: after the expense projection (ExpenseId resolves at write time) and after the delete
-        # reconcile, which runs on a FULL sync only: an incremental tick can still seed a purchase QBO has
-        # deleted, leaving an orphan row once the next full sync drops the staging row (pre-existing class,
-        # booked in TODO.md).
+        # U-652d10: after the delete reconcile, which runs on a FULL sync only (an incremental tick can still
+        # seed a purchase QBO has deleted; it is orphaned once the next full sync drops the staging row, a
+        # pre-existing class booked in TODO.md). With sync_to_modules=True this is also after the projection;
+        # the scheduled pull projects AFTER this returns, and the projection stamps the new ExpenseId then.
         self._seed_coding_suggestions(realm_id)
         return outcome
 
     @staticmethod
     def _seed_coding_suggestions(realm_id: str) -> None:
-        """U-652d10: give every uncoded purchase in this realm its CodingSuggestion row. Failure-isolated:
-        a seed error is logged (class name only) and never fails the pull; the next tick retries."""
-        try:
-            from entities.coding_suggestion.business.service import CodingSuggestionService
+        """U-652d10: give every uncoded purchase in this realm its CodingSuggestion row. The seed never
+        raises (`seed_unseeded_purchases`), so it cannot fail the pull; the next tick retries."""
+        from entities.coding_suggestion.business.service import CodingSuggestionService
 
-            CodingSuggestionService().seed_unseeded_purchases(realm_id=realm_id)
-        except Exception as error:
-            logger.warning("qbo_purchase.coding_seed_failed realm_id=%s error=%s", realm_id, type(error).__name__)
+        CodingSuggestionService().seed_unseeded_purchases(realm_id=realm_id)
 
     def upsert_from_external(
         self, qbo_purchase: QboPurchaseExternalSchema, realm_id: str,

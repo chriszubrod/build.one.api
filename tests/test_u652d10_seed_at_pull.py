@@ -58,13 +58,16 @@ def test_seed_passes_realm_and_default_cap():
         repo_cls.return_value.read_unseeded_coding_purchases.assert_called_once_with(realm_id="R9", limit=200)
 
 
-def test_seed_honours_an_explicit_cap():
-    # kills: ignoring the caller's limit
+def test_a_failed_read_returns_zero_and_never_raises(caplog):
+    # kills: letting the candidate read raise (it would fail the pull: the wrapper no longer catches), or
+    # logging the error TEXT instead of its class name
     svc = _service()
-    with patch(_LINE_REPO) as repo_cls:
-        repo_cls.return_value.read_unseeded_coding_purchases.return_value = []
-        svc.seed_unseeded_purchases(realm_id="R1", limit=5)
-        repo_cls.return_value.read_unseeded_coding_purchases.assert_called_once_with(realm_id="R1", limit=5)
+    with patch(_LINE_REPO) as repo_cls, caplog.at_level(logging.WARNING):
+        repo_cls.return_value.read_unseeded_coding_purchases.side_effect = RuntimeError("driver text here")
+        result = svc.seed_unseeded_purchases(realm_id="R1")
+    assert result == {"candidates": 0, "seeded": 0, "failed": 0, "read_failed": True}
+    svc.upsert_from_queue.assert_not_called()
+    assert "RuntimeError" in caplog.text and "driver text here" not in caplog.text
 
 
 def test_one_failed_upsert_is_counted_and_the_rest_still_seed(caplog):
@@ -106,8 +109,9 @@ def test_every_pull_seeds_its_realm(fetched):
 
 
 def test_seed_runs_after_the_projection_and_the_delete_reconcile():
-    # kills: seeding before the expense projection (a new purchase seeds with a NULL ExpenseId when it could
-    # have resolved one) or before the full-sync reconcile (a purchase QBO deleted gets a fresh row)
+    # kills: seeding before the full-sync reconcile (a purchase QBO deleted gets a fresh row), or, on the
+    # sync_to_modules=True path, before the projection (the row would wait for the stamp instead of resolving
+    # its ExpenseId at write time). The scheduled path projects after sync_from_qbo returns and stamps then.
     svc, client = _pull_service([SimpleNamespace(id="q1")])
     order = []
     svc._sync_to_expenses.side_effect = lambda purchases, outcome: order.append("project")
@@ -119,14 +123,11 @@ def test_seed_runs_after_the_projection_and_the_delete_reconcile():
     assert order == ["project", "reconcile", "seed"]
 
 
-def test_a_seed_error_never_fails_the_pull(caplog):
-    # kills: removing the try/except around the seed (a seed error would fail the whole pull)
-    with patch("entities.coding_suggestion.business.service.CodingSuggestionService") as svc_cls, \
-         caplog.at_level(logging.WARNING):
-        svc_cls.return_value.seed_unseeded_purchases.side_effect = RuntimeError("boom text")
-        QboPurchaseService._seed_coding_suggestions("R1")  # must not raise
+def test_the_pull_wrapper_seeds_its_realm():
+    # kills: the wrapper calling the seed for another realm, or not at all
+    with patch("entities.coding_suggestion.business.service.CodingSuggestionService") as svc_cls:
+        QboPurchaseService._seed_coding_suggestions("R1")
         svc_cls.return_value.seed_unseeded_purchases.assert_called_once_with(realm_id="R1")
-    assert "RuntimeError" in caplog.text and "boom text" not in caplog.text
 
 
 # --------------------------------------------------------------------------- repo mapping

@@ -448,21 +448,29 @@ class CodingSuggestionService:
 
     SEED_PURCHASES_PER_TICK = 200
 
-    def seed_unseeded_purchases(self, *, realm_id: Optional[str] = None, limit: Optional[int] = None) -> dict:
+    def seed_unseeded_purchases(self, *, realm_id: Optional[str] = None) -> dict:
         """U-652d10: create the suggestion row for every QBO purchase with an uncoded line and none yet.
 
         Called at the end of each QBO purchase pull (`QboPurchaseService.sync_from_qbo`). Scans ALL such
         purchases, not only the ones the pull fetched, so a seed that failed on one tick is retried on the
         next; capped per call. Each upsert is the U-652a MERGE on (RealmId, QboPurchaseQboId): it never
         duplicates a row or resets a status. DB-local (no QBO write), so the recode write gate does not
-        apply. A failed purchase is counted and skipped, never raised: the pull must not fail on a seed.
-        A purchase pulled before its Expense exists seeds with a NULL ExpenseId; the stranded sweep's
-        `heal_expense_ids` stamps it (U-652d5) and the row is admin-only until then (U-652d7).
+        apply. NEVER RAISES (the pull must not fail on a seed): a failed read returns zero candidates with
+        `read_failed`, a failed purchase is counted and skipped; both log the exception class only.
+        A purchase pulled before its Expense exists seeds with a NULL ExpenseId; the expense projection stamps
+        it when it creates the Expense (`_stamp_coding_suggestion_expense_id`, the same scheduled pass), the
+        stranded sweep's `heal_expense_ids` catches a missed stamp (U-652d5), and the row is admin-only until
+        then (U-652d7).
         """
         from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseLineRepository
 
-        cap = limit if limit is not None else self.SEED_PURCHASES_PER_TICK
-        candidates = QboPurchaseLineRepository().read_unseeded_coding_purchases(realm_id=realm_id, limit=cap)
+        try:
+            candidates = QboPurchaseLineRepository().read_unseeded_coding_purchases(
+                realm_id=realm_id, limit=self.SEED_PURCHASES_PER_TICK
+            )
+        except Exception as error:
+            logger.warning("coding_suggestion.seed_read_failed realm_id=%s error=%s", realm_id, type(error).__name__)
+            return {"candidates": 0, "seeded": 0, "failed": 0, "read_failed": True}
         result = {"candidates": len(candidates), "seeded": 0, "failed": 0}
         for candidate in candidates:
             try:

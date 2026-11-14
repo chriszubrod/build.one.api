@@ -880,7 +880,7 @@ class QboPurchaseLineRepository:
             logger.error(f"Error during read expense coding queue: {error}")
             raise map_database_error(error)
 
-    def read_unseeded_coding_purchases(self, realm_id: Optional[str] = None, limit: int = 200) -> List[dict]:
+    def read_unseeded_coding_purchases(self, *, realm_id: Optional[str], limit: int) -> List[dict]:
         """Purchases with an uncoded line and no CodingSuggestion row yet (U-652d10), oldest first, capped."""
         try:
             with get_connection() as conn:

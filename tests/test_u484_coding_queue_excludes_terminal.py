@@ -167,70 +167,41 @@ def test_queue_terminal_exclusion_and_not_or():
 
 
 # ---------------------------------------------------------------------------
-# 2 — lazy reseed still fires for unseeded rows
+# 2 — the queue read never writes (U-652d10: the QBO purchase pull seeds)
 # ---------------------------------------------------------------------------
 
 
-class _FakeLineRepoReseed:
-    def __init__(self, queue_sequences):
-        self._sequences = queue_sequences
-        self._call_index = 0
+class _FakeLineRepo:
+    def __init__(self, rows):
+        self._rows = rows
         self.queue_calls = []
 
     def read_expense_coding_queue(
         self, realm_id=None, actor_user_id=None, actor_is_system_admin=None
     ):
         self.queue_calls.append((realm_id, actor_user_id, actor_is_system_admin))
-        seq = self._sequences[min(self._call_index, len(self._sequences) - 1)]
-        self._call_index += 1
-        return seq
+        return self._rows
 
 
+@pytest.mark.parametrize("coding_item_public_id", [None, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"],
+                         ids=["unseeded", "seeded"])
 @patch("entities.coding_suggestion.business.service.CodingSuggestionService")
-def test_queue_read_never_seeds_an_unseeded_row(mock_coding_svc_cls):
-    unseeded_row = {
+def test_queue_read_never_seeds(mock_coding_svc_cls, coding_item_public_id):
+    row = {
         "qbo_purchase_id": 1,
         "qbo_purchase_line_id": 10,
-        "coding_item_public_id": None,
+        "coding_item_public_id": coding_item_public_id,
         "qbo_line_id": "1",
         "qbo_purchase_qbo_id": "p1",
         "realm_id": "R1",
         "vendor_qbo_id": "v1",
     }
-    seeded_row = {**unseeded_row, "coding_item_public_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}
+    fake = _FakeLineRepo([row])
+    result = QboPurchaseService(line_repo=fake).get_expense_coding_queue(realm_id="R1")
 
-    mock_coding_svc = MagicMock()
-    mock_coding_svc_cls.return_value = mock_coding_svc
-
-    fake = _FakeLineRepoReseed([[unseeded_row], [seeded_row]])
-    svc = QboPurchaseService(line_repo=fake)
-    result = svc.get_expense_coding_queue(realm_id="R1")
-
-    # U-652d10: the queue read never writes; the pull seeds. An unseeded row comes back as read.
     mock_coding_svc_cls.assert_not_called()
-    mock_coding_svc.upsert_from_queue.assert_not_called()
     assert len(fake.queue_calls) == 1
-    assert result == [unseeded_row]
-
-
-@patch("entities.coding_suggestion.business.service.CodingSuggestionService")
-def test_queue_read_returns_seeded_rows_without_writing(mock_coding_svc_cls):
-    seeded_row = {
-        "qbo_purchase_id": 1,
-        "qbo_purchase_line_id": 10,
-        "coding_item_public_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-    }
-
-    mock_coding_svc = MagicMock()
-    mock_coding_svc_cls.return_value = mock_coding_svc
-
-    fake = _FakeLineRepoReseed([[seeded_row]])
-    svc = QboPurchaseService(line_repo=fake)
-    result = svc.get_expense_coding_queue(realm_id="R1")
-
-    mock_coding_svc.upsert_from_queue.assert_not_called()
-    assert len(fake.queue_calls) == 1
-    assert result == [seeded_row]
+    assert result == [row]
 
 
 # ---------------------------------------------------------------------------

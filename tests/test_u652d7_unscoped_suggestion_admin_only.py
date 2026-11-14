@@ -34,8 +34,12 @@ def _svc():
 
 @pytest.fixture
 def non_admin_user():
-    with actor_context(42, False):
-        yield
+    token = current_is_system_context.set(False)  # pinned: refusal tests must not depend on test order
+    try:
+        with actor_context(42, False):
+            yield
+    finally:
+        current_is_system_context.reset(token)
 
 
 @contextmanager

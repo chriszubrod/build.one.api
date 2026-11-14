@@ -456,9 +456,10 @@ class CodingSuggestionService:
         next; capped per call. Each upsert is the U-652a MERGE on (RealmId, QboPurchaseQboId): it never
         duplicates a row or resets a status. DB-local (no QBO write), so the recode write gate does not
         apply. NEVER RAISES (the pull must not fail on a seed): a failed read returns zero candidates with
-        `read_failed`, a failed purchase is counted and skipped; both log the exception class only.
+        `read_failed`, a failed purchase is counted and skipped; this method's own log lines carry the exception
+        class only (the repo's error line logs the driver text, which U-535d's record scrubber redacts).
         A purchase pulled before its Expense exists seeds with a NULL ExpenseId; the expense projection stamps
-        it when it creates the Expense (`_stamp_coding_suggestion_expense_id`, the same scheduled pass), the
+        it when it projects the Expense (`_stamp_coding_suggestion_expense_id`, the same scheduled pass), the
         stranded sweep's `heal_expense_ids` catches a missed stamp (U-652d5), and the row is admin-only until
         then (U-652d7).
         """

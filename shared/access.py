@@ -66,7 +66,7 @@ def resolve_accessible_project_ids() -> Optional[frozenset[int]]:
 
     None = all (system admin / system context). Else the actor's UserProject projects
     (the project branch of dbo.UserCanAccessBill); fail-closed to an empty set."""
-    if _should_bypass() or current_is_system_context.get():
+    if _is_unscoped_actor():
         return None
     user_id = current_user_id.get()
     if user_id is None:
@@ -116,6 +116,11 @@ def accessible_project_ids_for_user(
 def _reset_accessible_projects_cache_for_tests() -> None:
     with _accessible_projects_cache_lock:
         _accessible_projects_cache.clear()
+
+
+def _is_unscoped_actor() -> bool:
+    """True for a system admin or a system context: the actor every project covers."""
+    return _should_bypass() or current_is_system_context.get()
 
 
 def _should_bypass() -> bool:
@@ -263,10 +268,11 @@ def assert_can_access_project(project_id: Optional[int]) -> None:
         raise EntityNotAccessibleError("Project", project_id)
 
 
-def assert_system_caller(entity: str, entity_id) -> None:
-    """Allow only a system admin or a system context. For a row with nothing to scope it by (no project, no
-    parent record): no UserProject grant can cover it, so only admins and system callers may act on it."""
-    if _should_bypass() or current_is_system_context.get():
+def assert_admin_or_system_context(entity: str, entity_id: Optional[int]) -> None:
+    """Allow only a system admin or a system context. For a row with nothing to scope it by (no expense, no
+    project): no UserProject grant can cover it, so only admins and system callers may act on it. Not the same
+    as `terminal_lock.is_system_caller()`, which excludes humans however privileged."""
+    if _is_unscoped_actor():
         return
     raise EntityNotAccessibleError(entity, entity_id)
 

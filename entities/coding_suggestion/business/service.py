@@ -28,7 +28,7 @@ from shared.access import (
     assert_can_access_bill,
     assert_can_access_expense,
     assert_can_access_project,
-    assert_system_caller,
+    assert_admin_or_system_context,
     can_access_project,
 )
 
@@ -632,7 +632,7 @@ class CodingSuggestionService:
         if project_id is not None:
             assert_can_access_project(project_id)
         else:
-            assert_system_caller("CodingSuggestion", getattr(item, "id", None))
+            assert_admin_or_system_context("CodingSuggestion", getattr(item, "id", None))
 
     def record_suggestion(
         self,

@@ -633,7 +633,7 @@ problem when scoping.
 - [x] 🟡 **Invoice packet enrichment drops an unlinked line's PDF** (`entities/invoice/business/enrichment.py:84-90`, per-line OUTER APPLY TOP 1) - fall back to a sibling line's attachment on the same bill.
 - [x] 🟢 **`BillLineItemAttachmentService.create` silently returns an existing link to a DIFFERENT attachment** (`entities/bill_line_item_attachment/business/service.py:73-78`). No current caller hits it (web only attaches to an empty line); an API/agent caller would be ignored silently. Either 409 or repoint (needs an Update sproc).
 - [x] 🟢 **Attachment reads are not access-gated** (`AttachmentService.read_by_public_id` / `read_by_id`) and `/create/bill-line-item-attachment` accepts any `attachment_public_id` (pre-existing; U-166 Pass 3). Bind the attachment to an entity the caller can read.
-- [ ] 🟢 **2 TB3 bills have PDFs on some lines and not others with more than one PDF** (bill 16967 line 23780, 2 PDFs; bill 17037 line 21706, 3 PDFs; both completed) - human call, not filled by the U-166 backfill.
+- [x] (2026-11-14: resolved — they were duplicate lines; see "TB3 multi-PDF bills" below.) 🟢 **2 TB3 bills have PDFs on some lines and not others with more than one PDF** (bill 16967 line 23780, 2 PDFs; bill 17037 line 21706, 3 PDFs; both completed) - human call, not filled by the U-166 backfill.
 - [ ] 🟢 **16,714 bills have no PDF link on any line** - U-535b's job, not U-166's.
 
 

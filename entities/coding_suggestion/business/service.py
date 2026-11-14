@@ -28,6 +28,7 @@ from shared.access import (
     assert_can_access_bill,
     assert_can_access_expense,
     assert_can_access_project,
+    assert_system_caller,
     can_access_project,
 )
 
@@ -620,12 +621,18 @@ class CodingSuggestionService:
     def assert_accessible(self, item: CodingSuggestion) -> None:
         """U-652d4: row-level access for a coding suggestion, the same scope as
         ReadCodingSuggestionStateByExpenseIds. Raises EntityNotAccessibleError; system / admin callers
-        bypass inside the shared access helpers."""
+        bypass inside the shared access helpers.
+
+        U-652d7 (Chris 2026-11-14): a suggestion with no expense AND no project is admin / system only."""
         expense_id = item.expense_id  # direct: a renamed attribute fails closed, never reads as "no expense"
         if expense_id is not None:
             assert_can_access_expense(expense_id)
+            return
+        project_id = _coding_suggestion_scope_project_id(item)
+        if project_id is not None:
+            assert_can_access_project(project_id)
         else:
-            assert_can_access_project(_coding_suggestion_scope_project_id(item))
+            assert_system_caller("CodingSuggestion", getattr(item, "id", None))
 
     def record_suggestion(
         self,

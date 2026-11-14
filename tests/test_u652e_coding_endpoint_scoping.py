@@ -116,29 +116,47 @@ def test_flag_inaccessible_project_returns_404_without_write(
     service.repo.record_flag.assert_not_called()  # the write point (U-652d4 round 5)
 
 
-def test_flag_unscoped_suggestion_without_project_is_allowed():
+def _run_flag_unscoped(as_system_admin: bool):
     service = _svc_mock()
-    item = _suggestion()
-    service.read_by_public_id.return_value = item
-    flagged = SimpleNamespace(public_id=PUBLIC_ID)
-    service.record_flag.return_value = flagged
+    service.read_by_public_id.return_value = _suggestion()
+    service.repo.record_flag.return_value = SimpleNamespace(public_id=PUBLIC_ID)
     service.to_api_dict.return_value = {"public_id": PUBLIC_ID, "status": "flagged"}
+    token = current_is_system_admin.set(as_system_admin)
+    try:
+        with patch("entities.coding_suggestion.api.router.CodingSuggestionService", return_value=service), patch(
+            "entities.coding_suggestion.api.router.current_user_id"
+        ) as uid, patch(
+            "entities.coding_suggestion.business.service.assert_can_access_expense"
+        ) as ace, patch(
+            "entities.coding_suggestion.api.router.assert_can_access_project"
+        ) as acp:
+            uid.get.return_value = USER_ID
+            from entities.coding_suggestion.api.router import flag_expense_coding_item_router
 
-    with patch("entities.coding_suggestion.api.router.CodingSuggestionService", return_value=service), patch(
-        "entities.coding_suggestion.api.router.current_user_id"
-    ) as uid, patch(
-        "entities.coding_suggestion.business.service.assert_can_access_expense"
-    ) as ace, patch(
-        "entities.coding_suggestion.api.router.assert_can_access_project"
-    ) as acp:
-        uid.get.return_value = USER_ID
-        from entities.coding_suggestion.api.router import flag_expense_coding_item_router
-
-        out = flag_expense_coding_item_router(PUBLIC_ID, _FLAG_BODY, _={"can_update": True})
-
+            call = lambda: flag_expense_coding_item_router(PUBLIC_ID, _FLAG_BODY, _={"can_update": True})
+            if as_system_admin:
+                out = call()
+            else:
+                _expect_coding_not_found(call)
+                out = None
+    finally:
+        current_is_system_admin.reset(token)
     ace.assert_not_called()
-    acp.assert_called_once_with(None)
-    service.record_flag.assert_called_once()
+    acp.assert_not_called()  # U-652d7: no project to check; the no-scope branch decides
+    return service, out
+
+
+def test_flag_unscoped_suggestion_without_project_is_refused_for_a_non_admin():
+    # U-652d7 (Chris 2026-11-14): no expense and no project = admin / system only. Was "allowed" (U-652e).
+    # kills: the no-scope branch falling through to assert_can_access_project(None), which allows
+    service, _ = _run_flag_unscoped(as_system_admin=False)
+    service.repo.record_flag.assert_not_called()
+
+
+def test_flag_unscoped_suggestion_without_project_is_allowed_for_a_system_admin():
+    # kills: a no-scope branch that refuses everyone (the sweeper / admins must still act on these rows)
+    service, out = _run_flag_unscoped(as_system_admin=True)
+    service.repo.record_flag.assert_called_once()
     assert out["data"]["status"] == "flagged"
 
 
@@ -247,35 +265,54 @@ def test_confirm_inaccessible_suggestion_project_returns_404_without_claim():
     service.confirm.assert_not_called()
 
 
-def test_confirm_unscoped_suggestion_without_project_is_allowed():
+def _run_confirm_unscoped(as_system_admin: bool):
     service = _svc_mock()
     existing = _suggestion(claimed_by_user_id=USER_ID)
     service.read_by_public_id.side_effect = [existing, existing]
     service.is_multi_line_purchase.return_value = False
     service.confirm.return_value = {"status": "enqueued", "enqueued": True}
     service.to_api_dict.return_value = {"public_id": PUBLIC_ID, "status": "confirmed"}
+    token = current_is_system_admin.set(as_system_admin)
+    try:
+        with patch("entities.coding_suggestion.api.router.CodingSuggestionService", return_value=service), patch(
+            "entities.coding_suggestion.api.router.current_user_id"
+        ) as uid, patch(
+            "entities.coding_suggestion.business.service.assert_can_access_expense"
+        ) as ace, patch(
+            "entities.coding_suggestion.api.router.assert_can_access_project"
+        ) as acp, patch(
+            "entities.project.business.service.ProjectService"
+        ) as ps, patch(
+            "entities.sub_cost_code.business.service.SubCostCodeService"
+        ) as scs:
+            uid.get.return_value = USER_ID
+            ps.return_value.read_by_public_id.return_value = SimpleNamespace(id=10)
+            scs.return_value.read_by_public_id.return_value = SimpleNamespace(id=20)
+            from entities.coding_suggestion.api.router import confirm_expense_coding_item_router
 
-    with patch("entities.coding_suggestion.api.router.CodingSuggestionService", return_value=service), patch(
-        "entities.coding_suggestion.api.router.current_user_id"
-    ) as uid, patch(
-        "entities.coding_suggestion.business.service.assert_can_access_expense"
-    ) as ace, patch(
-        "entities.coding_suggestion.api.router.assert_can_access_project"
-    ) as acp, patch(
-        "entities.project.business.service.ProjectService"
-    ) as ps, patch(
-        "entities.sub_cost_code.business.service.SubCostCodeService"
-    ) as scs:
-        uid.get.return_value = USER_ID
-        ps.return_value.read_by_public_id.return_value = SimpleNamespace(id=10)
-        scs.return_value.read_by_public_id.return_value = SimpleNamespace(id=20)
-        from entities.coding_suggestion.api.router import confirm_expense_coding_item_router
-
-        out = confirm_expense_coding_item_router(PUBLIC_ID, _CONFIRM_BODY, _={"can_update": True})
-
+            call = lambda: confirm_expense_coding_item_router(PUBLIC_ID, _CONFIRM_BODY, _={"can_update": True})
+            if as_system_admin:
+                out = call()
+            else:
+                _expect_coding_not_found(call)
+                out = None
+    finally:
+        current_is_system_admin.reset(token)
     ace.assert_not_called()
-    assert acp.call_args_list[0].args == (None,)
-    assert acp.call_args_list[1].args == (10,)
+    return service, acp, out
+
+
+def test_confirm_unscoped_suggestion_without_project_is_refused_for_a_non_admin():
+    # U-652d7: refused before any claim or confirm (no live QBO recode can be enqueued)
+    service, acp, _ = _run_confirm_unscoped(as_system_admin=False)
+    acp.assert_not_called()
+    service.claim.assert_not_called()
+    service.confirm.assert_not_called()
+
+
+def test_confirm_unscoped_suggestion_without_project_is_allowed_for_a_system_admin():
+    service, acp, out = _run_confirm_unscoped(as_system_admin=True)
+    assert [c.args for c in acp.call_args_list] == [(10,)]  # only the requested target project
     service.confirm.assert_called_once()
     assert out["data"]["enqueued"] is True
 

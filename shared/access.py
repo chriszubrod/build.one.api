@@ -263,6 +263,14 @@ def assert_can_access_project(project_id: Optional[int]) -> None:
         raise EntityNotAccessibleError("Project", project_id)
 
 
+def assert_system_caller(entity: str, entity_id) -> None:
+    """Allow only a system admin or a system context. For a row with nothing to scope it by (no project, no
+    parent record): no UserProject grant can cover it, so only admins and system callers may act on it."""
+    if _should_bypass() or current_is_system_context.get():
+        return
+    raise EntityNotAccessibleError(entity, entity_id)
+
+
 def assert_can_access_time_entry(time_entry_id: Optional[int]) -> None:
     """
     Gate direct-id reads/mutations of a TimeEntry.

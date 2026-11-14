@@ -446,6 +446,47 @@ class CodingSuggestionService:
         )
         return True
 
+    SEED_PURCHASES_PER_TICK = 200
+
+    def seed_unseeded_purchases(self, *, realm_id: Optional[str] = None, limit: Optional[int] = None) -> dict:
+        """U-652d10: create the suggestion row for every QBO purchase with an uncoded line and none yet.
+
+        Called at the end of each QBO purchase pull (`QboPurchaseService.sync_from_qbo`). Scans ALL such
+        purchases, not only the ones the pull fetched, so a seed that failed on one tick is retried on the
+        next; capped per call. Each upsert is the U-652a MERGE on (RealmId, QboPurchaseQboId): it never
+        duplicates a row or resets a status. DB-local (no QBO write), so the recode write gate does not
+        apply. A failed purchase is counted and skipped, never raised: the pull must not fail on a seed.
+        A purchase pulled before its Expense exists seeds with a NULL ExpenseId; the stranded sweep's
+        `heal_expense_ids` stamps it (U-652d5) and the row is admin-only until then (U-652d7).
+        """
+        from integrations.intuit.qbo.purchase.persistence.repo import QboPurchaseLineRepository
+
+        cap = limit if limit is not None else self.SEED_PURCHASES_PER_TICK
+        candidates = QboPurchaseLineRepository().read_unseeded_coding_purchases(realm_id=realm_id, limit=cap)
+        result = {"candidates": len(candidates), "seeded": 0, "failed": 0}
+        for candidate in candidates:
+            try:
+                self.upsert_from_queue(
+                    qbo_purchase_id=candidate["qbo_purchase_id"],
+                    qbo_purchase_qbo_id=candidate["qbo_purchase_qbo_id"],
+                    realm_id=candidate["realm_id"],
+                    vendor_qbo_id=candidate.get("vendor_qbo_id"),
+                )
+                result["seeded"] += 1
+            except Exception as error:
+                result["failed"] += 1
+                logger.warning(
+                    "coding_suggestion.seed_failed qbo_purchase_id=%s error=%s",
+                    candidate.get("qbo_purchase_id"),
+                    type(error).__name__,
+                )
+        if result["candidates"]:
+            logger.info(
+                "coding_suggestion.seed_unseeded candidates=%d seeded=%d failed=%d",
+                result["candidates"], result["seeded"], result["failed"],
+            )
+        return result
+
     def suggest_for_expense(
         self,
         *,

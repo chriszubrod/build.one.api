@@ -880,6 +880,36 @@ class QboPurchaseLineRepository:
             logger.error(f"Error during read expense coding queue: {error}")
             raise map_database_error(error)
 
+    def read_unseeded_coding_purchases(self, realm_id: Optional[str] = None, limit: int = 200) -> List[dict]:
+        """Purchases with an uncoded line and no CodingSuggestion row yet (U-652d10), oldest first, capped."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                try:
+                    call_procedure(
+                        cursor=cursor,
+                        name="ReadUnseededCodingPurchases",
+                        params={"RealmId": realm_id, "Limit": limit},
+                    )
+                    return [
+                        {
+                            "qbo_purchase_id": int(row.QboPurchaseId),
+                            "qbo_purchase_qbo_id": row.QboPurchaseQboId,
+                            "realm_id": row.RealmId,
+                            "vendor_qbo_id": row.VendorQboId,
+                        }
+                        for row in cursor.fetchall()
+                        if row
+                    ]
+                finally:
+                    try:
+                        cursor.close()
+                    except Exception:
+                        pass
+        except Exception as error:
+            logger.error(f"Error during read unseeded coding purchases: {error}")
+            raise map_database_error(error)
+
     def read_expense_coding_metrics(
         self,
         realm_id: Optional[str] = None,

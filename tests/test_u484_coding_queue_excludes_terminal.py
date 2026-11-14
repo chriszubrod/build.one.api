@@ -187,7 +187,7 @@ class _FakeLineRepoReseed:
 
 
 @patch("entities.coding_suggestion.business.service.CodingSuggestionService")
-def test_lazy_reseed_fires_when_coding_item_missing(mock_coding_svc_cls):
+def test_queue_read_never_seeds_an_unseeded_row(mock_coding_svc_cls):
     unseeded_row = {
         "qbo_purchase_id": 1,
         "qbo_purchase_line_id": 10,
@@ -206,9 +206,11 @@ def test_lazy_reseed_fires_when_coding_item_missing(mock_coding_svc_cls):
     svc = QboPurchaseService(line_repo=fake)
     result = svc.get_expense_coding_queue(realm_id="R1")
 
-    mock_coding_svc.upsert_from_queue.assert_called_once()
-    assert len(fake.queue_calls) == 2
-    assert result == [seeded_row]
+    # U-652d10: the queue read never writes; the pull seeds. An unseeded row comes back as read.
+    mock_coding_svc_cls.assert_not_called()
+    mock_coding_svc.upsert_from_queue.assert_not_called()
+    assert len(fake.queue_calls) == 1
+    assert result == [unseeded_row]
 
 
 @patch("entities.coding_suggestion.business.service.CodingSuggestionService")

@@ -78,6 +78,8 @@ class QboPurchaseService:
         outcome.fetched = len(qbo_purchases)
         if not qbo_purchases:
             logger.info(f"No Purchases found since {last_updated_time or 'beginning'}")
+            # U-652d10: seed on an empty tick too, so a purchase whose seed failed earlier is retried.
+            self._seed_coding_suggestions(realm_id)
             return outcome
         
         logger.info(f"Retrieved {len(qbo_purchases)} purchases from QBO")
@@ -118,7 +120,20 @@ class QboPurchaseService:
         if reconcile_deletes and last_updated_time is None and not start_date and not end_date:
             self._reconcile_deleted_purchases(realm_id)
 
+        # U-652d10: after the delete reconcile, so a purchase QBO deleted is never seeded.
+        self._seed_coding_suggestions(realm_id)
         return outcome
+
+    @staticmethod
+    def _seed_coding_suggestions(realm_id: str) -> None:
+        """U-652d10: give every uncoded purchase in this realm its CodingSuggestion row. Failure-isolated:
+        a seed error is logged (class name only) and never fails the pull; the next tick retries."""
+        try:
+            from entities.coding_suggestion.business.service import CodingSuggestionService
+
+            CodingSuggestionService().seed_unseeded_purchases(realm_id=realm_id)
+        except Exception as error:
+            logger.warning("qbo_purchase.coding_seed_failed realm_id=%s error=%s", realm_id, type(error).__name__)
 
     def upsert_from_external(
         self, qbo_purchase: QboPurchaseExternalSchema, realm_id: str,
@@ -516,45 +531,14 @@ class QboPurchaseService:
 
     def get_expense_coding_queue(self, realm_id: Optional[str] = None) -> List[dict]:
         """
-        Read the uncoded 58999 coding queue (IsUncodedPlaceholder, U-652d3) and idempotently seed missing
-        CodingSuggestion rows so every returned line carries coding state.
+        Read the uncoded 58999 coding queue (IsUncodedPlaceholder, U-652d3). Read-only: since U-652d10 the
+        QBO purchase pull seeds the CodingSuggestion rows (`_seed_coding_suggestions`), so a GET never
+        writes. A line pulled moments ago may still show no coding state until the seed runs.
         """
-        actor_user_id = current_user_id.get()
-        actor_is_system_admin = current_is_system_admin.get()
-        rows = self.line_repo.read_expense_coding_queue(
-            realm_id=realm_id,
-            actor_user_id=actor_user_id,
-            actor_is_system_admin=actor_is_system_admin,
-        )
-        needs_reseed = any(row.get("coding_item_public_id") is None for row in rows)
-        if not needs_reseed:
-            return rows
-
-        from entities.coding_suggestion.business.service import CodingSuggestionService
-
-        coding_service = CodingSuggestionService()
-        seeded_purchases: set[tuple[str, str]] = set()
-        for row in rows:
-            if row.get("coding_item_public_id") is not None:
-                continue
-            purchase_key = (
-                str(row.get("qbo_purchase_qbo_id") or ""),
-                str(row.get("realm_id") or ""),
-            )
-            if purchase_key in seeded_purchases:
-                continue
-            seeded_purchases.add(purchase_key)
-            coding_service.upsert_from_queue(
-                qbo_purchase_id=row["qbo_purchase_id"],
-                qbo_purchase_qbo_id=row.get("qbo_purchase_qbo_id"),
-                realm_id=row.get("realm_id"),
-                vendor_qbo_id=row.get("vendor_qbo_id"),
-            )
-
         return self.line_repo.read_expense_coding_queue(
             realm_id=realm_id,
-            actor_user_id=actor_user_id,
-            actor_is_system_admin=actor_is_system_admin,
+            actor_user_id=current_user_id.get(),
+            actor_is_system_admin=current_is_system_admin.get(),
         )
 
     def get_expense_coding_metrics(

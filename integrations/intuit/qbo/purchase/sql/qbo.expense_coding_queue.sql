@@ -8,6 +8,9 @@
 -- NULL; nothing to write to) is scoped by its purchase's dbo.Expense, by QBO identity. A seeded row never
 -- uses that fallback, so read and write agree exactly (the heal sweeper stamps ExpenseId within 15 min).
 --
+-- Seeding (U-652d10): ReadUnseededCodingPurchases (below) lists the purchases the QBO pull still has to
+-- seed; the queue read itself no longer writes.
+--
 -- Run: ./.venv/bin/python scripts/run_sql.py integrations/intuit/qbo/purchase/sql/qbo.expense_coding_queue.sql
 
 GO
@@ -188,5 +191,38 @@ BEGIN
                       @ActorUserId, @ActorIsSystemAdmin,
                       COALESCE(cs.[ConfirmedProjectId], cs.[SuggestedProjectId])) = 1)
       );
+END;
+GO
+
+-- U-652d10: purchases the pull must seed — at least one uncoded line (IsUncodedPlaceholder) and no
+-- CodingSuggestion row yet (MERGE key: RealmId + QboPurchaseQboId). Read-only; the caller upserts each one.
+-- Oldest staging row first, capped per call so one tick never runs long; the rest wait for the next tick.
+CREATE OR ALTER PROCEDURE ReadUnseededCodingPurchases
+(
+    @RealmId NVARCHAR(50) = NULL,
+    @Limit INT = 200
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @Limit IS NULL OR @Limit < 1 SET @Limit = 200;
+
+    SELECT TOP (@Limit)
+        p.[Id] AS [QboPurchaseId],
+        p.[QboId] AS [QboPurchaseQboId],
+        p.[RealmId],
+        p.[EntityRefValue] AS [VendorQboId]
+    FROM [qbo].[Purchase] p
+    WHERE (@RealmId IS NULL OR p.[RealmId] = @RealmId)
+      AND EXISTS (
+          SELECT 1 FROM [qbo].[PurchaseLine] pl
+          WHERE pl.[QboPurchaseId] = p.[Id] AND pl.[IsUncodedPlaceholder] = 1
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM [dbo].[CodingSuggestion] cs
+          WHERE cs.[RealmId] = p.[RealmId] AND cs.[QboPurchaseQboId] = p.[QboId]
+      )
+    ORDER BY p.[Id];
 END;
 GO

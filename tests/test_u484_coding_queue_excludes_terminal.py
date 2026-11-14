@@ -214,7 +214,7 @@ def test_queue_read_never_seeds_an_unseeded_row(mock_coding_svc_cls):
 
 
 @patch("entities.coding_suggestion.business.service.CodingSuggestionService")
-def test_lazy_reseed_skipped_when_all_rows_seeded(mock_coding_svc_cls):
+def test_queue_read_returns_seeded_rows_without_writing(mock_coding_svc_cls):
     seeded_row = {
         "qbo_purchase_id": 1,
         "qbo_purchase_line_id": 10,

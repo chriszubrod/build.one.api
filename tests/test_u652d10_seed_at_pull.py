@@ -105,16 +105,18 @@ def test_every_pull_seeds_its_realm(fetched):
     svc._seed_coding_suggestions.assert_called_once_with("R7")
 
 
-def test_seed_runs_after_the_delete_reconcile():
-    # kills: seeding before the reconcile (a purchase QBO deleted would get a fresh suggestion row)
+def test_seed_runs_after_the_projection_and_the_delete_reconcile():
+    # kills: seeding before the expense projection (a new purchase seeds with a NULL ExpenseId when it could
+    # have resolved one) or before the full-sync reconcile (a purchase QBO deleted gets a fresh row)
     svc, client = _pull_service([SimpleNamespace(id="q1")])
     order = []
+    svc._sync_to_expenses.side_effect = lambda purchases, outcome: order.append("project")
     svc._reconcile_deleted_purchases.side_effect = lambda realm: order.append("reconcile")
     svc._seed_coding_suggestions.side_effect = lambda realm: order.append("seed")
     with patch("integrations.intuit.qbo.purchase.business.service.QboPurchaseClient", return_value=client), \
          patch("integrations.intuit.qbo.purchase.business.service.pace_batch"):
-        svc.sync_from_qbo(realm_id="R1", reconcile_deletes=True)
-    assert order == ["reconcile", "seed"]
+        svc.sync_from_qbo(realm_id="R1", sync_to_modules=True, reconcile_deletes=True)
+    assert order == ["project", "reconcile", "seed"]
 
 
 def test_a_seed_error_never_fails_the_pull(caplog):
@@ -201,6 +203,8 @@ def _seedable(*, realm=None, lines=(1,), suggestion=None, purchase_realm="R1", p
          "a NOT EXISTS that ignores QboPurchaseQboId"),
         ("realm filter matches -> seed", dict(realm="R1"), True, "an inverted realm filter"),
         ("realm filter excludes -> skip", dict(realm="R2"), False, "dropping the realm filter"),
+        ("no QBO identity -> skip", dict(purchase_qbo=None), False,
+         "dropping the QboId IS NOT NULL guard (a permanent failure at the head of the scan)"),
     ],
     ids=lambda v: v if isinstance(v, str) else None,
 )

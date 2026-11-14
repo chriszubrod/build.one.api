@@ -215,6 +215,9 @@ BEGIN
         p.[EntityRefValue] AS [VendorQboId]
     FROM [qbo].[Purchase] p
     WHERE (@RealmId IS NULL OR p.[RealmId] = @RealmId)
+      -- No QBO identity = nothing the MERGE can key on (the insert fails its CHECK): skip it, or a run of
+      -- such rows at the head of the scan would fail every tick and starve the newer purchases.
+      AND p.[QboId] IS NOT NULL
       AND EXISTS (
           SELECT 1 FROM [qbo].[PurchaseLine] pl
           WHERE pl.[QboPurchaseId] = p.[Id] AND pl.[IsUncodedPlaceholder] = 1

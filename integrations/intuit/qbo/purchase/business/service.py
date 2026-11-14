@@ -120,7 +120,10 @@ class QboPurchaseService:
         if reconcile_deletes and last_updated_time is None and not start_date and not end_date:
             self._reconcile_deleted_purchases(realm_id)
 
-        # U-652d10: after the delete reconcile, so a purchase QBO deleted is never seeded.
+        # U-652d10: after the expense projection (ExpenseId resolves at write time) and after the delete
+        # reconcile, which runs on a FULL sync only: an incremental tick can still seed a purchase QBO has
+        # deleted, leaving an orphan row once the next full sync drops the staging row (pre-existing class,
+        # booked in TODO.md).
         self._seed_coding_suggestions(realm_id)
         return outcome
 

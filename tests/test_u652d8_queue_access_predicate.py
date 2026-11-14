@@ -1,6 +1,6 @@
 """U-652d8: the expense-coding queue / metrics reads use the same access rule as
-CodingSuggestionService.assert_accessible (U-652d7): admin; else the row's Expense (the suggestion's, else the
-purchase's by QBO identity); else its project; else admin only.
+CodingSuggestionService.assert_accessible (U-652d7): admin; else the suggestion's Expense; else its project; else
+admin only. Only a line with no suggestion row yet (nothing to write to) falls back to its purchase's Expense.
 
 The predicate is lifted VERBATIM from each of the three scans in qbo.expense_coding_queue.sql and evaluated in
 SQLite, with the two access UDFs as Python stand-ins. So a mutant in any one scan's predicate fails here, not only
@@ -110,7 +110,7 @@ def test_each_expense_join_keys_on_the_purchase_qbo_identity():
         "LEFT JOIN [dbo].[Expense] e\n                ON e.[QboId] = p.[QboId]\n               AND e.[RealmId] = p.[RealmId]",
         "LEFT JOIN [dbo].[Expense] e\n        ON e.[QboId] = cs.[QboPurchaseQboId]\n       AND e.[RealmId] = cs.[RealmId]",
     ):
-        assert sql.count(on.replace("\\n", "\n")) == 1, on
+        assert sql.count(on) == 1, on
 
 
 @pytest.mark.parametrize("scan", [0, 1, 2], ids=["queue", "metrics_total", "metrics_status"])

@@ -2,6 +2,7 @@
 
 Owns
   dbo.ContractLabor header plus ContractLaborLineItem rows (line_item_repo in same entity package).
+  dbo.ContractLaborCodingSuggestion shadow predictions (U-797a; coding_shadow_service / coding_suggestion_repo).
 Invariants
   RBAC: Modules.CONTRACT_LABOR require_module_api; list/detail assert_can_access_project on project_id.
   Money: labor_price_two_shot and Decimal(str(...)) on hours/rate/markup/total_amount.
@@ -11,8 +12,16 @@ External writes
 Sprocs
   CountContractLabors
   CreateContractLabor
+  ClaimNextContractLaborCodingSuggestion
+  CompleteContractLaborCodingSuggestion
+  CountContractLaborCodingCallsToday
   CreateContractLaborLineItem
   DeleteContractLaborById
+  EnqueueContractLaborCodingSuggestions
+  ReadContractLaborCodingIdfCorpus
+  ReadContractLaborCodingScorecardRows
+  ReadContractLaborCodingShadowInputs
+  ReleaseContractLaborCodingSuggestion
   DeleteContractLaborLineItemById
   DeleteContractLaborLineItemsByContractLaborId
   FindContractLaborForReviewerReply

@@ -593,6 +593,21 @@ async def bill_coding_scorecard(
     return {"data": build_coding_scorecard(rows, since=since)}
 
 
+@router.get("/intelligence/cl-coding-scorecard")
+async def cl_coding_scorecard(
+    since: Optional[date] = Query(None, description="Only suggestions for work dates on/after this date"),
+    current_user: dict = Depends(require_system_admin()),
+):
+    """U-797a: live Contract Labor coding-shadow scorecard (ids/counts/percentages only)."""
+    from entities.contract_labor.business.coding_scorecard import build_cl_coding_scorecard
+    from entities.contract_labor.persistence.coding_suggestion_repo import (
+        ContractLaborCodingSuggestionRepository,
+    )
+
+    rows = await asyncio.to_thread(ContractLaborCodingSuggestionRepository().read_scorecard_rows, since)
+    return {"data": build_cl_coding_scorecard(rows, since=since)}
+
+
 # Entities whose sync function accepts a `sync_attachments` kwarg. Others pull
 # no per-record attachments, so the `attachments` query param is a no-op there.
 _QBO_ENTITIES_WITH_ATTACHMENTS = {"bill", "vendorcredit"}
@@ -1155,6 +1170,20 @@ async def bill_coding_text_tick_router(limit: int = Query(1, ge=1, le=5)):
         return run_bill_text_coding_tick_sync(limit=limit)
 
     return await _timed("bill.coding.text.tick", _run, error_response=True)
+
+
+@router.post("/contract-labor/coding/tick", dependencies=[Depends(_require_drain_secret)])
+async def contract_labor_coding_tick_router(limit: int = Query(1, ge=1, le=5)):
+    """Claim and run up to `limit` Contract Labor coding shadow predictions (U-797a)."""
+
+    def _run() -> dict[str, Any]:
+        from entities.contract_labor.business.coding_shadow_service import (
+            run_cl_coding_tick_sync,
+        )
+
+        return run_cl_coding_tick_sync(limit=limit)
+
+    return await _timed("contract_labor.coding.tick", _run, error_response=True)
 
 
 # --- Time Tracking agent ---------------------------------------------------- #

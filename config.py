@@ -252,6 +252,11 @@ class Settings(BaseSettings):
     # failed) per UTC calendar day across all tick invocations.
     bill_coding_text_enabled: bool = False
     bill_coding_text_daily_call_cap: int = 200
+    # U-797a: Contract Labor coding shadow. Prediction only; nothing a person sees
+    # changes. Default off: enqueue and tick are no-ops until enabled. The cap bounds
+    # model calls per UTC day (strong-history answers make no call).
+    cl_coding_shadow_enabled: bool = False
+    cl_coding_shadow_daily_call_cap: int = 60
     # U-676r: live text-tier SCC candidate list — "narrowed" (vendor-wide history
     # families) or "full" (pre-U-676r catalog slice; rollback without deploy).
     bill_coding_candidate_sccs: str = "narrowed"

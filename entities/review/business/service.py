@@ -225,6 +225,21 @@ class ReviewService:
                     review.id,
                 )
 
+            # U-797a: shadow coding prediction. Outside the drafts try, so a drafts failure still
+            # enqueues the shadow. Failure-isolated so it can never delay or alter the review email.
+            try:
+                from entities.contract_labor.business.coding_shadow_service import (
+                    ContractLaborCodingShadowService,
+                )
+
+                ContractLaborCodingShadowService().enqueue_for_contract_labor(contract_labor_id)
+            except Exception as shadow_error:
+                logger.warning(
+                    "cl_coding_shadow.hook_failed contract_labor_id=%s error=%s",
+                    contract_labor_id,
+                    type(shadow_error).__name__,
+                )
+
         if bill_id is not None and is_initial_submit:
             try:
                 from entities.bill.business.service import BillService

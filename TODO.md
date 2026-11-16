@@ -232,6 +232,21 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
   while QBO says `Billable`, no `InvoiceLineItem` uses them, all set billed in one batch on 2026-08-14 (looks deliberate).
   U-778b does not touch them (staged `Billable`, not a reverse candidate).
 
+## U-797a follow-ups - Contract Labor coding shadow (booked 2026-11-16)
+
+Deferred out of U-797a's review (Pass 1 after the 2-round fix cap; Pass 2 out-of-scope items). None blocks the shadow.
+
+- [ ] [P2, U-797a] **Daily call cap counts a row once per day** (`CountContractLaborCodingCallsToday`), but a retried row can make up to 3 calls - real calls can reach 3x `CL_CODING_SHADOW_DAILY_CALL_CAP`. The 70 % spend gate still protects bill coding. Fix: count `Model IS NOT NULL` + `AttemptCount` over rows called today.
+- [ ] [P2, U-797a] **Policy-deferred rows queue behind every fresh row** (claim orders `ClaimedDatetime IS NULL` first). Under steady cap pressure older model rows can age into the 24 h stale skip. Fix: order by `AttemptCount > 0` instead.
+- [ ] [P2, U-797a] Third-strike failure before a model call leaves `AttemptCount = 2` (Complete does not bump it). Cosmetic, ops queries only.
+- [ ] [P2, U-797a] Two concurrent ticks (timer + manual POST) can both pass the cap check and overshoot by the calls in flight.
+- [ ] [Pass 2 altitude, U-797a] **Spend headroom is bespoke**: `spend_has_headroom` uses `claude_budget.daily_cap_usd()`, not `_effective_daily_cap_usd()` (isolated backtest ledger), treats cap <= 0 as no limit, and re-reads spend after `stopped()`. Fix: `claude_budget.has_spend_headroom(fraction)` built like `is_claude_day_stopped()`.
+- [ ] [Pass 2 altitude, U-797a -> U-797b] **Model call is hand-rolled** (`_live_model_call` + `_loads_object`): every TransportError collapses to None (error code lost), and the greedy JSON regex is less tolerant than `cascade.core._parse_json_object`. Route through `run_cascade` with a one-rung ladder when the call becomes user-facing (U-797b) - a deliberate behaviour change.
+- [ ] [Pass 2 altitude, U-797a] **Labelled CL status set lives in 5 places** (Python `LABELLED_CL_STATUSES` + 3 new sprocs + U-749 `ReadContractLaborSubCostCodeCounts`); a test now pins them equal. Make it one definition with the CL status-rename unit.
+- [ ] [Pass 2, U-797a] Cleanups: repo boilerplate (8 methods repeat connect/call/map - a `_call` helper); three name maps for the completion fields (`ShadowDecision` / `_complete_fields` / `_COMPLETE_PARAMS`, misspelt key writes NULL silently); `decide`'s `model is None` branch is unreachable from the service and `decide(total_hours=)` / `DayInputs.project_id` are unused; the scorecard's availability exclusion can no longer fire (failed rows never reach `done`); scorecard field names differ from U-744's; `wilson_interval` could move to `shared/` at a third user.
+- [ ] [Pass 2 efficiency, U-797a] A deferred row re-reads inputs/counts/IDF every 15 min while gated, and each row reads the whole SubCostCode catalog (~474 rows) though only candidate codes are used. Small at ~25 rows/day; revisit if the gates shut often.
+- [ ] [Pass 2 reuse, U-797a] `LLM_GEN_PARAMS` hand-copies the cascade default; hoist `DEFAULT_GEN_PARAMS` in `intelligence/cascade/core.py`.
+
 ## U-784a follow-ups - report-mode orphaned-applock watchdog (booked 2026-11-10)
 - [ ] **Kill mode (U-784b) is design-gated.** Its safety requirements (positive per-container heartbeat, decide per SESSION not per lock row, re-check identity in the same batch as the KILL, a NEW opt-in setting rather than reusing `APPLOCK_WATCHDOG_MODE=kill`, no `EXECUTE AS OWNER`, floors ≥ 10 min, a stuck running request masking a dead host) are recorded in `build.one.team/engineering/designs/u784-orphaned-applock-watchdog.md` § "As built (U-784a) and U-784b requirements".
 - [ ] 🟡 **House-wide: the `tests_sqlserver/` localhost guard can be bypassed** — `_server_host` reads only `SERVER=`, but msodbcsql lets `Address=`/`Addr=` (and a `DSN=`) override it, so `SERVER=localhost;Address=<remote>` passes and the module then runs DDL there. ~34 files carry a copy of the guard; U-784a hardened only its own file (rejects those keys and refuses `SERVERPROPERTY('EngineEdition')` 5/8 after connecting). Lift that into one shared helper and use it everywhere.

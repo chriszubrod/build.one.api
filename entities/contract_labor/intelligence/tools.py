@@ -168,7 +168,8 @@ class _FindByConversationIdArgs(BaseModel):
         description=(
             "MS Graph ConversationId from the inbound reply email. The "
             "tool finds the outbound consolidated crew notification "
-            "`Contract Labor - {ProjectAbbr} - {YYYY-MM-DD}` on the same "
+            "`[Review] Contract Labor - {ProjectAbbr} - {YYYY-MM-DD}` (or the "
+            "older `Contract Labor - {ProjectAbbr} - {YYYY-MM-DD}` form, U-798) on the same "
             "conversation and binds the reply back to its (Project, "
             "WorkDate) pair — the apply step re-derives the full crew."
         ),
@@ -218,8 +219,8 @@ find_contract_labor_by_conversation_id = Tool(
         "Bind a PM/Owner reply email back to the (Project, WorkDate) it's "
         "reviewing. Use this as the first step of the reviewer-reply "
         "branch when the inbound email looks like a reply on a tracked CL "
-        "notification thread (`Re: Contract Labor - {ProjectAbbr} - "
-        "{YYYY-MM-DD}`).\n\n"
+        "notification thread (`Re: [Review] Contract Labor - {ProjectAbbr} - "
+        "{YYYY-MM-DD}`; the pre-U-798 `Re: Contract Labor - ...` form still matches).\n\n"
         "CONSOLIDATION (U-210): the outbound notification is now ONE "
         "consolidated crew draft per (project, date) — no worker in the "
         "subject — so this resolves to a (Project, WorkDate) pair and the "

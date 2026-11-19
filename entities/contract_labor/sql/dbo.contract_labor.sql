@@ -1729,7 +1729,9 @@ BEGIN
         ON cln.[OutboundSubject] = em.[Subject]
     WHERE em.[ConversationId]   = @ConversationId
       AND em.[ProcessingStatus] = 'outbound'
-      AND em.[Subject] LIKE 'Contract Labor - %';
+      -- U-798: new subject is "[Review] Contract Labor - ..."; in T-SQL LIKE, "[Review]"
+      -- is a character class, so the leading bracket is escaped as "[[]". Legacy form kept.
+      AND (em.[Subject] LIKE 'Contract Labor - %' OR em.[Subject] LIKE '[[]Review] Contract Labor - %');
 
     IF (SELECT COUNT(*) FROM @PrimaryHits) = 1
     BEGIN

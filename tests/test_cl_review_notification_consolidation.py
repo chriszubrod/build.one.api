@@ -285,8 +285,8 @@ def test_one_draft_per_project_not_per_worker_two_projects_two_enqueues(
 
     assert len(enqueue_calls) == 2
     subjects = {c["subject"] for c in enqueue_calls}
-    assert "Contract Labor - P10 - 2026-07-15" in subjects
-    assert "Contract Labor - P20 - 2026-07-15" in subjects
+    assert "[Review] Contract Labor - P10 - 2026-07-15" in subjects
+    assert "[Review] Contract Labor - P20 - 2026-07-15" in subjects
 
 
 def test_outbound_subject_is_worker_agnostic_project_and_date_only(monkeypatch):
@@ -316,7 +316,7 @@ def test_outbound_subject_is_worker_agnostic_project_and_date_only(monkeypatch):
 
     svc.enqueue_drafts(contract_labor=_cl_trigger(work_date="2026-07-15"))
 
-    assert captured_subject == ["Contract Labor - TB3 - 2026-07-15"]
+    assert captured_subject == ["[Review] Contract Labor - TB3 - 2026-07-15"]
     subject = captured_subject[0]
     assert "Brayan" not in subject
     assert "Elmer" not in subject
@@ -503,7 +503,7 @@ def test_fetch_recipients_failure_on_first_project_isolates_second_still_enqueue
     svc.enqueue_drafts(contract_labor=_cl_trigger(work_date=work_d))
 
     assert len(enqueue_calls) == 1
-    assert enqueue_calls[0]["subject"] == "Contract Labor - P20 - 2026-07-15"
+    assert enqueue_calls[0]["subject"] == "[Review] Contract Labor - P20 - 2026-07-15"
     assert released == [(10, work_d)]
 
 

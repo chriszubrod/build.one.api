@@ -35,10 +35,25 @@ from typing import Optional
 from integrations.ms.outbox.business.service import MsOutboxService
 from shared.database import call_procedure, get_connection, map_database_error
 
-# The consolidated CL review email subject prefix. The reply binding
-# (ContractLaborService._expected_cl_reviewer_reply_conversation_id) and the
-# FindContractLaborForReviewerReply sproc (LIKE 'Contract Labor - %') match on it.
-CL_NOTIFICATION_SUBJECT_PREFIX = "Contract Labor - "
+# The consolidated CL review email subject. Two accepted forms (U-798):
+#   new (built):   "[Review] Contract Labor - {ProjectLabel} - {YYYY-MM-DD}"
+#   legacy (sent before U-798): "Contract Labor - {ProjectLabel} - {YYYY-MM-DD}"
+# The reply binding (ContractLaborService._expected_cl_reviewer_reply_conversation_id)
+# and the FindContractLaborForReviewerReply sproc match on both forms.
+CL_NOTIFICATION_SUBJECT_PREFIX = "[Review] Contract Labor - "
+CL_LEGACY_NOTIFICATION_SUBJECT_PREFIX = "Contract Labor - "
+
+
+def is_cl_notification_subject(subject: Optional[str]) -> bool:
+    """True iff an OUTBOUND subject is a CL review notification (new or legacy form).
+
+    Outbound subjects only: "Re:"/"RE:" prefixes are not stripped.
+    """
+    if not subject:
+        return False
+    return subject.startswith(CL_NOTIFICATION_SUBJECT_PREFIX) or subject.startswith(
+        CL_LEGACY_NOTIFICATION_SUBJECT_PREFIX
+    )
 
 
 logger = logging.getLogger(__name__)

@@ -235,7 +235,8 @@ def find_contract_labor_by_conversation_id_router(
     reply lands in the same MS Graph conversation as the outbound
     consolidated crew notification that cl_notification_service enqueued
     (one per project+date). CONSOLIDATION (U-210): the outbound subject
-    is now `Contract Labor - {ProjectAbbr} - {YYYY-MM-DD}` (no worker),
+    is now `[Review] Contract Labor - {ProjectAbbr} - {YYYY-MM-DD}` (no worker; U-798 added
+    the `[Review] ` prefix, and the older `Contract Labor - ...` form still binds),
     so this binds the reply to the (Project, WorkDate) pair — the apply
     step re-derives the full crew from those keys.
 

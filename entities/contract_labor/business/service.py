@@ -946,7 +946,7 @@ class ContractLaborService:
         from entities.email_message.business.service import EmailMessageService
         from entities.email_message.persistence.repo import EmailMessageRepository
         from entities.review.business.cl_notification_service import (
-            CL_NOTIFICATION_SUBJECT_PREFIX,
+            is_cl_notification_subject,
         )
 
         pub = (reviewer_email_message_public_id or "").strip()
@@ -972,7 +972,7 @@ class ContractLaborService:
             return None
         anchored = any(
             (msg.processing_status or "") == "outbound"
-            and (msg.subject or "").startswith(CL_NOTIFICATION_SUBJECT_PREFIX)
+            and is_cl_notification_subject(msg.subject)
             and msg.conversation_id == reply_conv
             for msg in EmailMessageRepository().read_by_conversation_id(conversation_id=reply_conv)
         )

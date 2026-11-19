@@ -232,6 +232,10 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
   while QBO says `Billable`, no `InvoiceLineItem` uses them, all set billed in one batch on 2026-08-14 (looks deliberate).
   U-778b does not touch them (staged `Billable`, not a reverse candidate).
 
+## U-798 follow-ups - [Review] prefix on the Contract Labor review email (2026-11-19)
+
+- [ ] [P3, U-798, DECISION] **Retire the legacy `Contract Labor - ` subject form once every pre-U-798 thread is closed.** U-798 makes the reply binding accept both `[Review] Contract Labor - ` and the legacy `Contract Labor - ` with no end date (`is_cl_notification_subject` in `entities/review/business/cl_notification_service.py`; the OR in `FindContractLaborForReviewerReply`). The legacy form is no riskier than before U-798, because the exact `ContractLaborNotification.OutboundSubject` join still bounds it. Dropping it shrinks the accepted set again (Pass 3 note). Decision for Chris: when, say about 30 days after deploy, once no `submitted`/`pending_review` CL has a legacy-subject notification. Check with `SELECT COUNT(*) FROM dbo.ContractLaborNotification WHERE OutboundSubject LIKE 'Contract Labor - %'` joined to not-ready CL lines on (project, date).
+
 ## U-797a follow-ups - Contract Labor coding shadow (booked 2026-11-16)
 
 Deferred out of U-797a's review (Pass 1 after the 2-round fix cap; Pass 2 out-of-scope items). None blocks the shadow.

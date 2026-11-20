@@ -542,8 +542,6 @@ class ContractLaborService:
                 f"already advanced past review; the human must edit directly)."
             )
 
-        from shared.authz.provenance import bind_reviewer_reply_to_thread
-
         # U-563: bind the reply to EVERY crew member before ANY member is written.
         # Each member's own write path re-checks (defence in depth), but a refusal
         # discovered there would arrive after earlier members had committed — a
@@ -551,16 +549,14 @@ class ContractLaborService:
         # refusal inside the loop can then only be a race after this check, and
         # is reported as an ordinary member failure.
         for member in crew:
-            bind_reviewer_reply_to_thread(
+            self._bind_cl_decision_reply(
                 reviewer_email=reviewer_email,
                 reviewer_email_message_public_id=reviewer_email_message_public_id,
-                expected_conversation_id=self._expected_cl_reviewer_reply_conversation_id(
-                    reviewer_email_message_public_id=reviewer_email_message_public_id,
-                    contract_labor_public_id=member.get("contract_labor_public_id"),
-                    project_public_id=project_public_id,
-                    project_id=int(project.id),
-                ),
-                what="a contract labor reviewer decision",
+                contract_labor_id=member.get("contract_labor_id"),
+                contract_labor_public_id=member.get("contract_labor_public_id"),
+                project_public_id=project_public_id,
+                project_id=int(project.id),
+                work_date=work_date,
             )
 
         applied: list[dict] = []
@@ -745,19 +741,14 @@ class ContractLaborService:
                 f"{project_public_id} (must be Project Manager or Owner)."
             )
 
-        from shared.authz.provenance import bind_reviewer_reply_to_thread
-
-        expected_conversation_id = self._expected_cl_reviewer_reply_conversation_id(
+        bound_reply = self._bind_cl_decision_reply(
+            reviewer_email=reviewer_email,
             reviewer_email_message_public_id=reviewer_email_message_public_id,
+            contract_labor_id=cl.id,
             contract_labor_public_id=contract_labor_public_id,
             project_public_id=project_public_id,
             project_id=int(project.id),
-        )
-        bound_reply = bind_reviewer_reply_to_thread(
-            reviewer_email=reviewer_email,
-            reviewer_email_message_public_id=reviewer_email_message_public_id,
-            expected_conversation_id=expected_conversation_id,
-            what="a contract labor reviewer decision",
+            work_date=getattr(cl, "work_date", None),  # None fails closed under the flag-ON rule
         )
 
         # U-459 — bind the asserted reviewer to the authenticated caller.
@@ -923,6 +914,55 @@ class ContractLaborService:
             'contract_labor_id': cl.id,
             'ready_flipped': ready_flipped,
         }
+
+    def _bind_cl_decision_reply(
+        self,
+        *,
+        reviewer_email: str,
+        reviewer_email_message_public_id: Optional[str],
+        contract_labor_id: int,
+        contract_labor_public_id: str,
+        project_public_id: str,
+        project_id: int,
+        work_date,
+    ):
+        """Bind the reply to ONE crew member (U-797c1).
+
+        Flag OFF: today's thread binding, unchanged (the legacy binder and its own checks).
+        Flag ON: bind through the ReviewNotification record. The reply's conversation must
+        resolve to exactly one notification with Kind contract_labor, the same project_id, and
+        the same work_date as this request. Crew membership is NOT taken from the notification
+        targets: a late-added crew member is still bound by project and date. The crew is
+        checked live by the caller. A notification for another project or date refuses, with no
+        legacy fallback. No notification at all falls back to the legacy binding.
+        """
+        from shared.authz.provenance import (
+            bind_reviewer_reply_to_thread,
+            bind_reviewer_reply_with_notification,
+        )
+
+        def legacy():
+            return bind_reviewer_reply_to_thread(
+                reviewer_email=reviewer_email,
+                reviewer_email_message_public_id=reviewer_email_message_public_id,
+                expected_conversation_id=self._expected_cl_reviewer_reply_conversation_id(
+                    reviewer_email_message_public_id=reviewer_email_message_public_id,
+                    contract_labor_public_id=contract_labor_public_id,
+                    project_public_id=project_public_id,
+                    project_id=project_id,
+                ),
+                what="a contract labor reviewer decision",
+            )
+
+        return bind_reviewer_reply_with_notification(
+            reviewer_email=reviewer_email,
+            reviewer_email_message_public_id=reviewer_email_message_public_id,
+            target=("contract_labor", contract_labor_id),
+            what="a contract labor reviewer decision",
+            legacy=legacy,
+            project_id=project_id,
+            work_date=work_date,
+        )
 
     def _expected_cl_reviewer_reply_conversation_id(
         self,

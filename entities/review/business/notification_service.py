@@ -9,6 +9,7 @@ from typing import Any, Callable, Optional
 # Third-party Imports
 
 # Local Imports
+from entities.review.business import review_notification_service as _rns
 from entities.review.business.recipient_service import ReviewRecipientService
 
 logger = logging.getLogger(__name__)
@@ -409,6 +410,12 @@ class ReviewNotificationService:
             (attachment_payload or {}).get("name") or "(none)",
         )
 
+        # 6b. Record the ReviewNotification (U-797c1). Runs only after the
+        # email is enqueued; a failure here never blocks or undoes it.
+        self._record_review_notification(
+            spec=spec, parent=parent, review=review, subject=subject, outbox_row=result,
+        )
+
         # 7. Advance the Review state once the notification has been enqueued
         # to at least one PM/Owner (TO or CC populated — BCC-only doesn't
         # count). Best-effort; on failure the parent stays at "Submitted" and
@@ -416,6 +423,26 @@ class ReviewNotificationService:
         if not (to_with_email or cc_with_email):
             return
         self._advance_to_in_review(spec=spec, parent=parent, review=review)
+
+    def _record_review_notification(self, *, spec: _NotificationSpec, parent, review,
+                                    subject: str, outbox_row) -> None:
+        """Write the dbo.ReviewNotification row for this per-record email and link
+        it to its outbox row (U-797c1). Never raises: the email is already queued."""
+        try:
+            service = _rns.ReviewNotificationRecordService()
+            record = service.record_for_review(
+                kind=spec.kind,
+                review_id=review.id,
+                targets=[(spec.kind, parent.id)],
+                subject=subject,
+            )
+            if record is not None and outbox_row is not None:
+                service.attach_outbox(record.Id, outbox_row.id)
+        except Exception as error:
+            logger.error(
+                "review_notification.record_failed %s=%s error=%s",
+                spec.log_key, getattr(parent, "public_id", None), type(error).__name__,
+            )
 
     def _advance_to_in_review(self, *, spec: _NotificationSpec, parent, review) -> None:
         """Write the system's own "moved into review" Review row.

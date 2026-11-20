@@ -26,8 +26,9 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
-from typing import Optional, Set
+import re
+from datetime import date, datetime
+from typing import Callable, Optional, Set
 
 from shared.api.errors import ApiError, ErrorCode
 
@@ -290,3 +291,153 @@ def bind_reviewer_reply_to_review_thread(
             f"Cannot apply {what}: the reply is not on this document's review email thread."
         )
     return em
+
+
+# ---------------------------------------------------------------------------
+# U-797c1 stage 2: bind through the ReviewNotification record first.
+# ---------------------------------------------------------------------------
+# The record (dbo.ReviewNotification) is written from c1 on, so every notification
+# created after c1 binds here. Notifications created before c1 have no row and
+# keep using the legacy bindings above, for this window only. c1 records the
+# date; it does not enforce it yet (D4: 60 days after 2026-11-20).
+LEGACY_BINDING_RETIRE_AFTER = date(2027, 1, 19)
+
+
+def _binder_v2_enabled() -> bool:
+    from config import Settings
+
+    return bool(Settings().review_reply_binder_v2_enabled)
+
+
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _norm_work_date(value) -> Optional[date]:
+    """A work date as a `date`, or None when it cannot be parsed (the caller then refuses).
+
+    Accepts date, datetime (its date part) and an ISO 'YYYY-MM-DD' string, optionally followed
+    by a time part. Anything else, including '2026-11-5' and '11/20/2026', returns None."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        text = value.strip().replace("T", " ").split(" ")[0]
+        if not _ISO_DATE.match(text):
+            return None
+        try:
+            return date.fromisoformat(text)
+        except ValueError:
+            return None
+    return None
+
+
+def select_notification(matches, expected_target, *, project_id=None, work_date=None):
+    """Pure decision shared by the live binder and the re-bind proof.
+
+    matches: [(notification, {(kind, id), ...}), ...] for the reply's ConversationId.
+    Returns (status, reason, notification):
+      ("NO_ROW", "no_row", None)            no notification on this conversation
+      ("REFUSED", "ambiguous", None)        two or more notifications
+      ("REFUSED", "wrong_kind", None)       a Contract Labor target on a non-CL notification
+      ("REFUSED", "wrong_project_or_date", None)  CL: project or work date does not match
+      ("REFUSED", "wrong_document", None)   Bill / Expense: the document is not a target
+      ("BOUND", "bound", notification)
+
+    Contract Labor is NOT decided by target membership: a late-added crew member is
+    not a target, but the notification for the same project and date still covers
+    them. Crew membership is checked live by the caller.
+    """
+    if not matches:
+        return ("NO_ROW", "no_row", None)
+    if len(matches) > 1:
+        return ("REFUSED", "ambiguous", None)
+    notification, targets = matches[0]
+    kind = expected_target[0]
+    if kind == "contract_labor":
+        if getattr(notification, "Kind", None) != "contract_labor":
+            return ("REFUSED", "wrong_kind", None)
+        notification_date = _norm_work_date(getattr(notification, "WorkDate", None))
+        request_date = _norm_work_date(work_date)
+        same_scope = (
+            project_id is not None
+            and notification_date is not None
+            and request_date is not None
+            and getattr(notification, "ProjectId", None) == project_id
+            and notification_date == request_date
+        )
+        if not same_scope:
+            return ("REFUSED", "wrong_project_or_date", None)
+        return ("BOUND", "bound", notification)
+    if expected_target not in targets:
+        return ("REFUSED", "wrong_document", None)
+    return ("BOUND", "bound", notification)
+
+
+_REFUSAL_TEXT = {
+    "ambiguous": "the reply's email thread matches more than one review notification.",
+    "wrong_kind": "the reply's review notification is not a contract labor notification.",
+    "wrong_project_or_date": "the reply's review notification is for a different project or work date.",
+    "wrong_document": "the reply is not on this document's review email thread.",
+}
+
+
+def bind_reply_via_notification(reply_conversation_id: Optional[str], expected_target,
+                                *, project_id=None, work_date=None):
+    """Look the reply up in the ReviewNotification record and decide with select_notification.
+
+    Returns the notification when bound. Returns None when no notification carries this
+    ConversationId (the caller then uses the legacy binding). Raises ReviewerProvenanceRefused
+    on any refusal: ambiguous, a notification that does not cover this document, or a
+    Contract Labor notification for another project or date. A refusal never falls back.
+    """
+    from entities.review.business.review_notification_service import (
+        ReviewNotificationRecordService,
+    )
+
+    if not isinstance(reply_conversation_id, str) or not reply_conversation_id.strip():
+        return None
+    matches = ReviewNotificationRecordService().lookup_for_reply(reply_conversation_id)
+    status, reason, notification = select_notification(
+        matches, expected_target, project_id=project_id, work_date=work_date)
+    if status == "NO_ROW":
+        return None
+    if status == "REFUSED":
+        raise ReviewerProvenanceRefused(
+            "Cannot apply the reviewer decision: " + _REFUSAL_TEXT[reason])
+    return notification
+
+
+def bind_reviewer_reply_with_notification(
+    *,
+    reviewer_email: str,
+    reviewer_email_message_public_id: Optional[str],
+    target: tuple,
+    what: str,
+    legacy: Callable[[], object],
+    project_id=None,
+    work_date=None,
+):
+    """Flag-gated reply binding shared by Bill, Expense and Contract Labor.
+
+    Flag OFF: returns `legacy()` unchanged (today's binding, byte-for-byte).
+    Flag ON: the generic checks (required id, resolves, inbox, From == reviewer)
+    run first, then the record binds. A bound record returns the reply. No row
+    falls back to `legacy()`. A refusal (ambiguous, or the record excludes this
+    document) propagates with no fallback.
+    """
+    if not _binder_v2_enabled():
+        return legacy()
+    em = bind_reviewer_reply(
+        reviewer_email=reviewer_email,
+        reviewer_email_message_public_id=reviewer_email_message_public_id,
+        what=what,
+    )
+    notification = bind_reply_via_notification(
+        em.conversation_id, target, project_id=project_id, work_date=work_date)
+    if notification is not None:
+        return em
+    return legacy()
+

@@ -109,6 +109,12 @@ class Settings(BaseSettings):
     # Switch via env var REVIEW_NOTIFICATION_MODE — no code redeploy needed.
     review_notification_mode: str = "draft"
 
+    # U-797c1 stage 2: bind a reviewer's emailed reply through the
+    # ReviewNotification record (dbo.ReviewNotification) before the legacy
+    # subject/outbound-payload binding. Off = today's binding, byte-for-byte.
+    # Env var REVIEW_REPLY_BINDER_V2_ENABLED.
+    review_reply_binder_v2_enabled: bool = False
+
     # Time-Entry Daily Digest
     # Morning email to each worker summarizing a recent day's time entries +
     # logs (confirmation + correctness — which day is set by

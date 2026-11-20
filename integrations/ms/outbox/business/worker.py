@@ -1494,6 +1494,24 @@ class MsOutboxWorker:
                         "graph_message_id": message_id,
                     },
                 )
+            # U-797c1: the same identity onto dbo.ReviewNotification, keyed by this
+            # outbox row. Must never fail or retry the send_mail row.
+            try:
+                from entities.review.business.review_notification_service import (
+                    ReviewNotificationRecordService,
+                )
+
+                ReviewNotificationRecordService().stamp_from_outbox(
+                    outbox_id=row.id,
+                    conversation_id=payload.get("conversation_id"),
+                    internet_message_id=payload.get("internet_message_id"),
+                    draft_graph_message_id=message_id,
+                )
+            except Exception as error:
+                logger.warning(
+                    "ms.outbox.send_mail.review_notification_stamp_failed outbox_public_id=%s error=%s",
+                    getattr(row, "public_id", None), type(error).__name__,
+                )
 
     def _handle_update_draft(
         self,

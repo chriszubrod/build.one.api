@@ -153,6 +153,10 @@ def _plain(value):
     return value
 
 
+OUTBOX_ID = 90
+RECORD_SERVICE = {}  # last ReviewNotificationRecordService instance built by _harness
+
+
 def _harness(
     *,
     recipients,
@@ -162,7 +166,7 @@ def _harness(
     mode_setting="send",
     vendor=SimpleNamespace(name="Acme <Supply> & Co"),
     submitter=SimpleNamespace(firstname="Sam", lastname="Sub"),
-    outbox_result=SimpleNamespace(public_id="ob-1"),
+    outbox_result=SimpleNamespace(public_id="ob-1", id=OUTBOX_ID),
     next_status=STATUSES[1],
     read_all=None,
     vendor_error=None,
@@ -244,6 +248,16 @@ def _harness(
         "integrations.ms.outbox.business.service.MsOutboxService",
         enqueue_send_mail=rec("outbox.enqueue_send_mail", outbox_result),
     )
+    # U-797c1: the record write is stubbed WITHOUT going through rec(), so it does not
+    # appear in the golden call list. Success path logs nothing, so the goldens hold.
+    record_cls = patch_cls(
+        "entities.review.business.review_notification_service.ReviewNotificationRecordService",
+        record_for_review=MagicMock(return_value=SimpleNamespace(Id=77)),
+        claim_for_crew=MagicMock(return_value=None),
+        attach_outbox=MagicMock(),
+        release=MagicMock(),
+    )
+    RECORD_SERVICE["instance"] = record_cls.return_value
     patch_cls(
         "entities.review_status.business.service.ReviewStatusService",
         read_all=rec("status.read_all", list(STATUSES), raises=read_all),
@@ -2115,3 +2129,19 @@ GOLDEN = {'bill': {'advance_raises': {'result': None,
                                                   False]]}}}
 # fmt: on
 
+
+
+# U-797c1: the record path is stubbed in _harness (RECORD_SERVICE) and must run exactly
+# once per enqueued email, with the right kind, review and target, then attach the outbox id.
+@pytest.mark.parametrize("kind", ["bill", "expense"])
+def test_record_path_is_invoked_once_per_enqueued_email(caplog, kind):
+    entity = _bill() if kind == "bill" else _expense()
+    _capture(caplog, entity, recipients=ALL_RECIPIENTS, line_items=MULTI_LINES, links=LINKS_WITH_PDF)
+    svc = RECORD_SERVICE["instance"]
+    svc.record_for_review.assert_called_once()
+    kwargs = svc.record_for_review.call_args.kwargs
+    assert kwargs["kind"] == kind
+    assert kwargs["review_id"] == _review().id
+    assert kwargs["targets"] == [(kind, entity.id)]
+    svc.attach_outbox.assert_called_once()
+    assert svc.attach_outbox.call_args.args[1] == OUTBOX_ID

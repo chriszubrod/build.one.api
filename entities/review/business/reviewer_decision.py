@@ -286,14 +286,28 @@ def apply_emailed(
         )
     reviewer_user_id = match.user_id
 
-    from shared.authz.provenance import bind_reviewer_reply_to_review_thread
+    from shared.authz.provenance import (
+        bind_reviewer_reply_to_review_thread,
+        bind_reviewer_reply_with_notification,
+    )
 
-    bound_reply = bind_reviewer_reply_to_review_thread(
-        entity_type=spec.entity_type,
-        entity_public_id=public_id,
+    # U-797c1: flag OFF runs the legacy thread binding unchanged; flag ON binds
+    # through the ReviewNotification record first, legacy only when no row exists.
+    # NOTE: spec.parent ("bill" / "expense") doubles as the ReviewNotification.Kind
+    # key here. A spec whose error-text noun differs from its Kind (c4 BillCredit:
+    # "bill credit" vs "bill_credit") must pass the Kind explicitly instead.
+    bound_reply = bind_reviewer_reply_with_notification(
         reviewer_email=reviewer_email,
         reviewer_email_message_public_id=reviewer_email_message_public_id,
+        target=(spec.parent, parent.id),
         what=spec.provenance_what,
+        legacy=lambda: bind_reviewer_reply_to_review_thread(
+            entity_type=spec.entity_type,
+            entity_public_id=public_id,
+            reviewer_email=reviewer_email,
+            reviewer_email_message_public_id=reviewer_email_message_public_id,
+            what=spec.provenance_what,
+        ),
     )
 
     # U-459 — bind the asserted reviewer to the authenticated caller. Everything

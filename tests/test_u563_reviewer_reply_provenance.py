@@ -364,9 +364,12 @@ def test_the_service_calls_bind_reviewer_reply(module, cls, method):
     svc_cls = getattr(importlib.import_module(module), cls)
     src = inspect.getsource(getattr(svc_cls, method))
     executable = "\n".join(l.split("#")[0] for l in src.splitlines())
-    assert re.search(r"bind_reviewer_reply(_to_thread|_to_review_thread)?\(", executable), (
-        f"{cls}.{method} does not bind reviewer reply provenance (U-563)"
-    )
+    # U-797c1: the CL apply paths bind through ContractLaborService._bind_cl_decision_reply,
+    # which runs the legacy binder on the flag-OFF path (see the helper guard below).
+    assert re.search(
+        r"bind_reviewer_reply(_to_thread|_to_review_thread)?\(|_bind_cl_decision_reply\(",
+        executable,
+    ), f"{cls}.{method} does not bind reviewer reply provenance (U-563)"
 
 
 # ---------------------------------------------------------------------------
@@ -1082,3 +1085,41 @@ def test_the_entity_call_site_reaches_the_provenance_binding_engine(module, cls,
     src = inspect.getsource(getattr(svc_cls, method))
     executable = "\n".join(l.split("#")[0] for l in src.splitlines())
     assert "return apply_emailed(" in executable, f"{cls}.{method} bypasses the provenance-binding engine"
+
+
+# ---------------------------------------------------------------------------
+# U-797c1: the CL binding helper must still run the legacy binder when the flag is OFF
+# ---------------------------------------------------------------------------
+
+
+def test_cl_bind_helper_source_still_calls_the_legacy_binder():
+    from entities.contract_labor.business.service import ContractLaborService
+
+    src = inspect.getsource(ContractLaborService._bind_cl_decision_reply)
+    assert "bind_reviewer_reply_to_thread(" in src
+
+
+def test_cl_bind_helper_flag_off_runs_the_legacy_binder(monkeypatch):
+    from entities.contract_labor.business.service import ContractLaborService
+    import shared.authz.provenance as prov
+
+    monkeypatch.setattr(prov, "_binder_v2_enabled", lambda: False)
+    seen = []
+    monkeypatch.setattr(prov, "bind_reviewer_reply_to_thread",
+                        lambda **kw: seen.append(kw) or "LEGACY_EM")
+    svc = ContractLaborService.__new__(ContractLaborService)
+    monkeypatch.setattr(svc, "_expected_cl_reviewer_reply_conversation_id",
+                        lambda **kw: "CONV-X")
+    got = svc._bind_cl_decision_reply(
+        reviewer_email=REVIEWER_EMAIL,
+        reviewer_email_message_public_id=REPLY_PUB,
+        contract_labor_id=7,
+        contract_labor_public_id="cp",
+        project_public_id="pp",
+        project_id=1,
+        work_date="2026-11-19",
+    )
+    assert got == "LEGACY_EM"
+    assert len(seen) == 1
+    assert seen[0]["expected_conversation_id"] == "CONV-X"
+

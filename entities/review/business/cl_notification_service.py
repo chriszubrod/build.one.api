@@ -32,6 +32,7 @@ import html
 import logging
 from typing import Optional
 
+from entities.review.business import review_notification_service as _rns
 from integrations.ms.outbox.business.service import MsOutboxService
 from shared.database import call_procedure, get_connection, map_database_error
 
@@ -162,6 +163,15 @@ class ContractLaborReviewNotificationService:
                 )
                 continue
 
+            # U-797c1: the same claim, recorded on dbo.ReviewNotification with one target per
+            # crew member. Self-guarded; None when it could not be written (legacy claim still holds).
+            review_notification = self._claim_review_notification(
+                project_id=project_id,
+                work_date=work_date,
+                subject=subject,
+                contract_labor_ids=sorted({r.ContractLaborId for r in lines}),
+            )
+
             # Claim is held from here down. Any exit without an outbox row releases it so a later
             # trigger can retry. One project's failure must never abort the remaining projects.
             # NOTE: _claim_notification is self-guarded and cannot raise; if that ever changes, move
@@ -193,6 +203,7 @@ class ContractLaborReviewNotificationService:
                     mode="draft",
                 )
                 if outbox_row:
+                    self._attach_review_notification(review_notification, outbox_row)
                     enqueued += 1
                     continue
                 logger.error(
@@ -206,6 +217,8 @@ class ContractLaborReviewNotificationService:
                     "project_id=%s work_date=%s: %s",
                     project_id, work_date_str, error,
                 )
+            # Record first, then the legacy claim: a later re-claim never meets a stuck record row.
+            self._release_review_notification(review_notification)
             self._release_notification_claim(
                 project_id=project_id, work_date=work_date,
             )
@@ -294,6 +307,49 @@ class ContractLaborReviewNotificationService:
                 project_id, work_date, error,
             )
             return False
+
+    def _claim_review_notification(self, *, project_id: int, work_date, subject: str,
+                                   contract_labor_ids: list):
+        """U-797c1: record the crew claim on dbo.ReviewNotification. Never raises.
+        Returns None when not written (already claimed, or a failure)."""
+        try:
+            return _rns.ReviewNotificationRecordService().claim_for_crew(
+                project_id=project_id,
+                work_date=work_date,
+                subject=subject,
+                contract_labor_ids=contract_labor_ids,
+            )
+        except Exception as error:
+            logger.warning(
+                "cl_review_notification.record_claim_failed project_id=%s work_date=%s error=%s",
+                project_id, work_date, type(error).__name__,
+            )
+            return None
+
+    def _attach_review_notification(self, record, outbox_row) -> None:
+        if record is None or outbox_row is None:
+            return
+        try:
+            _rns.ReviewNotificationRecordService().attach_outbox(record.Id, outbox_row.id)
+        except Exception as error:
+            logger.error(
+                "cl_review_notification.record_attach_failed error=%s", type(error).__name__,
+            )
+
+    def _release_review_notification(self, record) -> None:
+        if record is None:
+            return
+        try:
+            _rns.ReviewNotificationRecordService().release(record.Id)
+        except Exception as error:
+            # The email is not blocked by this. A leftover record row only means the record
+            # for this (project, date) is missing or stale, so the reply binds through the
+            # legacy path. It does not stop a future draft from being sent.
+            logger.error(
+                "cl_review_notification.record_release_failed error=%s — the record row for "
+                "this (project, date) may remain; replies bind through the legacy path until it is removed",
+                type(error).__name__,
+            )
 
     def _release_notification_claim(self, *, project_id: int, work_date) -> None:
         """Drop the (project, date) claim so a failed draft can retry.

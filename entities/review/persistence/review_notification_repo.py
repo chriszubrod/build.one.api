@@ -145,3 +145,19 @@ class ReviewNotificationRepository:
         except Exception as error:
             logger.error("Error during FindReviewNotificationForReply: %s", type(error).__name__)
             raise map_database_error(error)
+
+    def read_open_reply_conversations(self, *, since_days: int = 45) -> list[str]:
+        """U-797c3: Graph ConversationIds whose review thread still has an open
+        document (see dbo.ReadOpenReviewReplyConversations for the rules)."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadOpenReviewReplyConversations",
+                    params={"SinceDays": since_days},
+                )
+                return [row[0] for row in cursor.fetchall() if row[0]]
+        except Exception as error:
+            logger.error("Error during ReadOpenReviewReplyConversations: %s", type(error).__name__)
+            raise map_database_error(error)

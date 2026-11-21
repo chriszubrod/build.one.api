@@ -572,8 +572,10 @@ def test_rule_names_are_pinned_exactly():
 
 
 def test_allowlist_prefixes_are_pinned_exactly():
+    # U-797c3 adds the reviewer-reply ingest lock (ms_app_lock("review_reply_ingest")).
     assert wd.ALLOWLIST_PREFIXES == ("qbo_sync:", "qbo_outbox_drain", "ms_outbox_drain",
-                                     "box_outbox_drain", "box_file_write:", "ms_excel_write:")
+                                     "box_outbox_drain", "box_file_write:", "ms_excel_write:",
+                                     "review_reply_ingest")
 
 
 # ---------------------------------------------------------------- routes

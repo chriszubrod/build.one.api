@@ -1059,6 +1059,12 @@ async def email_poll_router():
 
     Returns a combined summary. Each stage is idempotent.
 
+    Watermark warning (U-797c3): reviewer replies copied by /review-replies/ingest
+    are stored with ProcessingStatus='reviewer_reply' and advance MAX(ReceivedDatetime),
+    the watermark this forward poll reads. Before reviving this poll, make
+    ReadMaxReceivedDatetimeByMailbox exclude ProcessingStatus='reviewer_reply', or
+    earlier inbox mail is skipped.
+
     Failure mode is load-bearing: when the inbox or sent stage returns
     a non-2xx `status_code`, this handler raises HTTPException(502) so
     the caller (Function App, App Insights, ad-hoc curl) sees a
@@ -1184,6 +1190,37 @@ async def contract_labor_coding_tick_router(limit: int = Query(1, ge=1, le=5)):
         return run_cl_coding_tick_sync(limit=limit)
 
     return await _timed("contract_labor.coding.tick", _run, error_response=True)
+
+
+# --- Reviewer-reply ingest (U-797c3): no-op until REVIEW_REPLY_INGEST_ENABLED is on ---- #
+
+
+@router.post("/review-replies/ingest", dependencies=[Depends(_require_drain_secret)])
+async def review_replies_ingest_router(lookback_hours: int = Query(3, ge=1, le=24)):
+    """Copy recent inbox replies on open review threads (U-797c3). Never applies them."""
+
+    def _run() -> dict[str, Any]:
+        from entities.email_message.business.review_reply_ingest_service import (
+            ReviewReplyIngestService,
+        )
+
+        return ReviewReplyIngestService().ingest_recent(lookback_hours=lookback_hours)
+
+    return await _timed("review_replies.ingest", _run, error_response=True)
+
+
+@router.post("/review-replies/catch-up", dependencies=[Depends(_require_drain_secret)])
+async def review_replies_catch_up_router():
+    """Copy all replies on every open review thread (U-797c3). Daily backstop."""
+
+    def _run() -> dict[str, Any]:
+        from entities.email_message.business.review_reply_ingest_service import (
+            ReviewReplyIngestService,
+        )
+
+        return ReviewReplyIngestService().catch_up()
+
+    return await _timed("review_replies.catch_up", _run, error_response=True)
 
 
 # --- Time Tracking agent ---------------------------------------------------- #

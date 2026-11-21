@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 ALLOWLIST_PREFIXES = (
     "qbo_sync:", "qbo_outbox_drain", "ms_outbox_drain", "box_outbox_drain",
-    "box_file_write:", "ms_excel_write:",
+    "box_file_write:", "ms_excel_write:", "review_reply_ingest",
 )
 CONTAINER_HOST_RE = re.compile(r"^[0-9a-f]{12}$")
 RULE_NAMES = ("known_resource", "holder_is_container", "host_silent", "holder_sleeping",

@@ -236,6 +236,20 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
 
 - [ ] [P3, U-798, DECISION] **Retire the legacy `Contract Labor - ` subject form once every pre-U-798 thread is closed.** U-798 makes the reply binding accept both `[Review] Contract Labor - ` and the legacy `Contract Labor - ` with no end date (`is_cl_notification_subject` in `entities/review/business/cl_notification_service.py`; the OR in `FindContractLaborForReviewerReply`). The legacy form is no riskier than before U-798, because the exact `ContractLaborNotification.OutboundSubject` join still bounds it. Dropping it shrinks the accepted set again (Pass 3 note). Decision for Chris: when, say about 30 days after deploy, once no `submitted`/`pending_review` CL has a legacy-subject notification. Check with `SELECT COUNT(*) FROM dbo.ContractLaborNotification WHERE OutboundSubject LIKE 'Contract Labor - %'` joined to not-ready CL lines on (project, date).
 
+## U-797c1 follow-ups - review notification record + reply binder (booked 2026-11-21)
+
+Deferred out of U-797c1's Pass 2; most belong to U-797c2 (the composer), which owns the record write.
+Full list with reasons: docs/design/u797c-review-reply-binding.md, "c1 as reviewed".
+
+- [ ] [c2, U-797c1] Write the ReviewNotification row BEFORE the enqueue and key the worker stamp by a payload `review_notification_id`; removes `SetReviewNotificationOutbox` and the attach/stamp race (today it degrades to the legacy binder, never a wrong bind).
+- [ ] [c2, U-797c1] One never-raise wrapper in `ReviewNotificationRecordService` instead of four try/log blocks across the two notification services; drop the dead outbox None checks there.
+- [ ] [c2, U-797c1] Contract Labor: bind once per decision (project, date) instead of once per crew member (2N record lookups + EmailMessage reads; the result does not depend on the member when the flag is ON).
+- [ ] [c2, U-797c1] Skip `StampReviewNotificationFromOutbox` for non-review mail; trim unused columns/trailing SELECTs from Create/Find/Set/Stamp.
+- [ ] [c2, U-797c1] Replace the Contract Labor branch in `select_notification` with a per-kind coverage rule (the composer's `grouping`).
+- [ ] [D4, U-797c1] Retirement on or after 2027-01-19: legacy binding closures + `_expected_cl_reviewer_reply_conversation_id`; the three `Find*ForReviewerReply` sprocs; stop writing `ContractLaborNotification` (c2) then drop it; remove `REVIEW_REPLY_BINDER_V2_ENABLED`.
+- [ ] [P0 follow-up, U-797c1] NO_ROW is not date-gated: with the flag ON a post-cutover reply with no record still falls back to legacy. Refusing NO_ROW after the retirement date is a P0 behaviour change; design + gate it separately.
+- [ ] [c4, U-797c1] `spec.parent` doubles as the ReviewNotification Kind in reviewer_decision.py; BillCredit must pass `bill_credit` explicitly (comment pinned there).
+
 ## U-797a follow-ups - Contract Labor coding shadow (booked 2026-11-16)
 
 Deferred out of U-797a's review (Pass 1 after the 2-round fix cap; Pass 2 out-of-scope items). None blocks the shadow.

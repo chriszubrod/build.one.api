@@ -57,7 +57,8 @@ from shared.authz.provenance import (  # noqa: E402
 )
 
 SINCE = "2026-10-01"
-LABELS = ("AGREE", "NO_ROW", "AMBIGUOUS", "DISAGREE", "NEW_BIND", "LISTED", "UNRESOLVED", "SKIPPED")
+LABELS = ("AGREE", "NO_ROW", "AMBIGUOUS", "DISAGREE", "NEW_BIND", "LISTED", "UNRESOLVED", "SKIPPED",
+          "LEGACY_BIND")
 _CUTOFF = _LEGACY_CUTOFF_DT  # the live binder's own parsed cutoff
 
 SWEEP_SQL = """
@@ -70,10 +71,20 @@ SELECT r.[Id]              AS ReviewId,
        CONVERT(VARCHAR(10), cl.[WorkDate], 120) AS ClWorkDate,
        (SELECT STRING_AGG(CAST(x.[ProjectId] AS VARCHAR(20)), ',')
           FROM (SELECT DISTINCT li.[ProjectId] FROM dbo.[ContractLaborLineItem] li
-                 WHERE li.[ContractLaborId] = cl.[Id] AND li.[ProjectId] IS NOT NULL) x) AS ClProjectIds
+                 WHERE li.[ContractLaborId] = cl.[Id] AND li.[ProjectId] IS NOT NULL) x) AS ClProjectIds,
+       (SELECT TOP 1 o.[CreatedDatetime] FROM [ms].[Outbox] o
+         WHERE o.[Kind] = N'send_mail' AND o.[Status] = N'done'
+           AND o.[CreatedDatetime] <= r.[CreatedDatetime]
+           AND o.[EntityType] = CASE WHEN r.[BillId] IS NOT NULL THEN N'Bill'
+                                     WHEN r.[ExpenseId] IS NOT NULL THEN N'Expense'
+                                     ELSE N'ContractLabor' END
+           AND o.[EntityPublicId] = COALESCE(b.[PublicId], e.[PublicId], cl.[PublicId])
+         ORDER BY o.[CreatedDatetime] DESC) AS EmailSentDatetime
 FROM dbo.[Review] r
 JOIN dbo.[EmailMessage] m ON m.[Id] = r.[EmailMessageId]
 LEFT JOIN dbo.[ContractLabor] cl ON cl.[Id] = r.[ContractLaborId]
+LEFT JOIN dbo.[Bill] b ON b.[Id] = r.[BillId]
+LEFT JOIN dbo.[Expense] e ON e.[Id] = r.[ExpenseId]
 WHERE r.[EmailMessageId] IS NOT NULL
   AND r.[CreatedDatetime] >= ?
 ORDER BY r.[Id];
@@ -161,6 +172,15 @@ def cl_scope_from_legacy(resolver_result):
     return (project_id, work_date)
 
 
+def email_predates_u579(email_sent_at) -> bool:
+    """True when the review's email went out before the U-579 stamp cutoff.
+
+    pre_u579 is decided by the SEND time (the outbox row), not the Review's CreatedDatetime: a
+    review can be created after the cutoff for an email that went out before it. No send row
+    (None) is not pre-U-579, so it fails closed."""
+    return email_sent_at is not None and email_sent_at < _CUTOFF
+
+
 def classify_cl_reply(*, reply_conversation_id, resolver_result, matches, expected, pre_u579,
                       cl_work_date, cl_project_ids):
     """Label and reason for a Contract Labor reply, tied to the record it was applied to.
@@ -195,18 +215,41 @@ def classify_cl_reply(*, reply_conversation_id, resolver_result, matches, expect
     project_id, work_date = scope
     cl_date = _norm_work_date(cl_work_date)
     if cl_date is None or cl_date != _norm_work_date(work_date) or int(project_id) not in project_ids:
+        # The applied record is no longer inside the scope (its lines were later moved, or it was
+        # mis-applied). Nothing records project history, so the test is what matters for the flag:
+        # does the new binder land on the same (project, date) as today's resolver? Same scope
+        # (BOUND, or NO_ROW which falls back to legacy) -> listed with the evidence; else it fails.
+        status, reason, _n = select_notification(
+            matches, expected, project_id=project_id, work_date=work_date)
+        if status in ("BOUND", "NO_ROW"):
+            return ("LISTED", "scope_agrees_record_changed")
+        if reason == "ambiguous":
+            return ("AMBIGUOUS", "ambiguous")
         return ("DISAGREE", "applied_cl_outside_scope")
-    return classify_row(
+    label, reason = classify_row(
         reply_conversation_id=reply_conversation_id, matches=matches, expected=expected,
         project_id=project_id, work_date=work_date, pre_u579=pre_u579,
     )
+    if label == "NO_ROW":
+        # The applied record is inside the legacy scope and no notification row exists: with the
+        # flag on, NO_ROW falls back to legacy, which binds it.
+        return ("LEGACY_BIND", "legacy_binds")
+    return (label, reason)
 
 
 def passes(label, reason) -> bool:
-    """The D5 pass rule for one row: AGREE, SKIPPED, LISTED, or a pre-U-579 NO_ROW."""
-    if label in ("AGREE", "SKIPPED", "LISTED"):
+    """The D5 pass rule for one row: AGREE, LEGACY_BIND, SKIPPED, LISTED, or a pre-U-579 NO_ROW."""
+    if label in ("AGREE", "LEGACY_BIND", "SKIPPED", "LISTED"):
         return True
     return label == "NO_ROW" and reason == "pre_u579_thread"
+
+
+_LISTED_WHY = {
+    ("NO_ROW", "pre_u579_thread"): "pre-U-579 thread (legacy binds it)",
+    ("LEGACY_BIND", "legacy_binds"): "no notification row; the legacy resolver binds it to the applied record",
+    ("LISTED", "legacy_unresolved"): "no notification row and the legacy resolver cannot scope it",
+    ("LISTED", "scope_agrees_record_changed"): "the new binder and today's resolver agree on the scope; the applied record's lines are no longer on it",
+}
 
 
 def exit_code(results) -> int:
@@ -231,7 +274,7 @@ def ambiguous_cl_claims(rows):
 def _plan() -> None:
     print("U-797c1 re-bind proof (dry run; pass --run to classify, or --report for the backfill report).")
     print(f"Scope: dbo.Review rows with an EmailMessageId, CreatedDatetime >= {SINCE}.")
-    print("Pass bar: every row AGREE, except LISTED and NO_ROW pre_u579_thread (both printed for Chris).")
+    print("Pass bar: every row AGREE or LEGACY_BIND, except LISTED and NO_ROW pre_u579_thread (printed for Chris).")
 
 
 def _fetch(cursor, sql, params=()):
@@ -263,7 +306,7 @@ def _run() -> int:
         if row.ConversationId not in lookups:
             lookups[row.ConversationId] = service.lookup_for_reply(row.ConversationId)
         matches = lookups[row.ConversationId]
-        pre = row.CreatedDatetime is not None and row.CreatedDatetime < _CUTOFF
+        pre = email_predates_u579(row.EmailSentDatetime)
         if expected[0] == "contract_labor":
             if row.ConversationId not in resolved:
                 resolved[row.ConversationId] = cl_service.find_for_reviewer_reply(
@@ -273,7 +316,8 @@ def _run() -> int:
                 reply_conversation_id=row.ConversationId, resolver_result=resolver,
                 matches=matches, expected=expected, pre_u579=pre,
                 cl_work_date=row.ClWorkDate,
-                cl_project_ids={p for p in (row.ClProjectIds or "").split(",") if p})
+                cl_project_ids={p for p in (row.ClProjectIds or "").split(",") if p},
+                )
         else:
             label, reason = classify_row(
                 reply_conversation_id=row.ConversationId, matches=matches, expected=expected,
@@ -281,10 +325,8 @@ def _run() -> int:
         results.append((label, reason))
         if not passes(label, reason):
             failing.append((row.ReviewId, expected, label, reason))
-        elif label == "NO_ROW":
-            listed.append((row.ReviewId, expected, "pre-U-579 thread"))
-        elif label == "LISTED":
-            listed.append((row.ReviewId, expected, "no notification row and the legacy resolver cannot scope it"))
+        elif (label, reason) in _LISTED_WHY:
+            listed.append((row.ReviewId, expected, _LISTED_WHY[(label, reason)]))
 
     counts = summarize(results)
     print(f"Replies checked: {len(rows)}")

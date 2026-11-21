@@ -197,3 +197,25 @@ payload `review_notification_id`, which removes `SetReviewNotificationOutbox` an
 never-raise wrapper in `ReviewNotificationRecordService` instead of four; bind once per CL decision instead
 of once per crew member; skip the stamp call for non-review mail; replace the CL branch in
 `select_notification` with a per-kind coverage rule (the composer's `grouping`).
+
+### c1a (U-797c1a): the three causes of the 11 proof failures
+
+The live proof (424 AGREE, 11 failing) had three causes, each now handled in `scripts/u797c1_rebind_proof.py`:
+
+- **(a) pre_u579 by send time.** `pre_u579` was decided from the Review's `CreatedDatetime` (when the reply was applied). It is now decided from the send time: the latest `done` `send_mail` outbox row for the document (`EntityPublicId`) at or before the Review's `CreatedDatetime` (`EmailSentDatetime`). A send before `LEGACY_THREAD_FALLBACK_CUTOFF` is pre-U-579. No send row fails closed.
+- **(b) applied record outside the legacy scope.** Line `ModifiedDatetime` is NOT evidence: on prod every one of the 185 CL approvals has later line writes, and nothing records project history. So the proof asks what matters for the flag: does the new binder land on the same (project, date) as today's resolver? If yes (BOUND, or NO_ROW which falls back to legacy) the row is `LISTED scope_agrees_record_changed`, printed with the scope and the record's current projects, for Chris to judge (a later re-projection vs a historical mis-apply cannot be told apart from the data). If the binder lands elsewhere it fails (`DISAGREE applied_cl_outside_scope` / `AMBIGUOUS`).
+- **(c) repurposed draft.** One row is corrected by `scripts/migrations/2026_11_21_u797c1a_clear_repurposed_draft_conversation.sql`. The MR2-MAIN 10/7 draft (ReviewNotification 1089) was retitled and sent as HP2 10/7. Its `ConversationId`, `InternetMessageId` and `DraftGraphMessageId` are cleared, guarded to that one row. The HP2 replies then bind through the legacy resolver.
+
+New labels:
+
+- `LEGACY_BIND` (`legacy_binds`) passes. It is a CL NO_ROW where today's legacy resolver scopes the reply and the applied record sits inside that scope. With the flag on, NO_ROW falls back to legacy, which binds it. Listed and counted.
+- `LISTED` (`scope_agrees_record_changed`) passes and is listed for Chris. See (b).
+
+Known hazard, fails closed and booked for c2/c3: a draft stamped with a conversation and later retitled into another email carries the wrong stamp. The stamp should be verified against the sent copy's subject before it is trusted. Until then, a mismatch refuses (DISAGREE or NO_ROW) rather than binding.
+
+**Precondition for D4 retirement (U-797c1a review S1).** For Contract Labor the stop-2 proof passes any
+NO_ROW inside today's resolver scope (LEGACY_BIND): with the flag on, NO_ROW falls back to legacy, so the
+decision is identical. That proves equivalence, NOT coverage. A CL claim the backfill skipped (NULL
+WorkDate, duplicate project/date) also passes. Before the legacy fallback is removed, CL record coverage
+must be re-proved: every post-cutover CL reply must AGREE on a record, with no LEGACY_BIND left.
+

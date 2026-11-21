@@ -26,13 +26,20 @@ def _cl(reply="Conv-A", resolver=None, matches=None, cl_work_date="2026-11-19", 
         cl_work_date=cl_work_date, cl_project_ids=set(cl_project_ids))
 
 
-def test_n1_applied_record_on_another_date_is_disagree():
+# U-797c1a: an applied record outside the legacy scope is LISTED (with evidence, for Chris) when the
+# new binder agrees with legacy on the scope, and fails only when the binder lands elsewhere.
+def test_n1_applied_record_on_another_date_is_listed_when_binder_agrees():
     got = _cl(resolver=_resolver(), matches=_matches(), cl_work_date="2026-11-18")
-    assert got == ("DISAGREE", "applied_cl_outside_scope")
+    assert got == ("LISTED", "scope_agrees_record_changed")
 
 
-def test_n1_applied_record_without_a_line_on_the_scope_project_is_disagree():
+def test_n1_applied_record_without_a_line_on_the_scope_project_is_listed_when_binder_agrees():
     got = _cl(resolver=_resolver(project_id=1), matches=_matches(project_id=1), cl_project_ids=(2,))
+    assert got == ("LISTED", "scope_agrees_record_changed")
+
+
+def test_n1_applied_record_outside_scope_fails_when_binder_lands_elsewhere():
+    got = _cl(resolver=_resolver(project_id=1), matches=_matches(project_id=3), cl_project_ids=(2,))
     assert got == ("DISAGREE", "applied_cl_outside_scope")
 
 

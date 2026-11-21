@@ -236,6 +236,14 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
 
 - [ ] [P3, U-798, DECISION] **Retire the legacy `Contract Labor - ` subject form once every pre-U-798 thread is closed.** U-798 makes the reply binding accept both `[Review] Contract Labor - ` and the legacy `Contract Labor - ` with no end date (`is_cl_notification_subject` in `entities/review/business/cl_notification_service.py`; the OR in `FindContractLaborForReviewerReply`). The legacy form is no riskier than before U-798, because the exact `ContractLaborNotification.OutboundSubject` join still bounds it. Dropping it shrinks the accepted set again (Pass 3 note). Decision for Chris: when, say about 30 days after deploy, once no `submitted`/`pending_review` CL has a legacy-subject notification. Check with `SELECT COUNT(*) FROM dbo.ContractLaborNotification WHERE OutboundSubject LIKE 'Contract Labor - %'` joined to not-ready CL lines on (project, date).
 
+## U-797c3 follow-ups - scheduled reviewer-reply ingestion (booked 2026-11-21)
+
+- [ ] [P2, U-797c3] **Forward-poll watermark:** copied replies (ProcessingStatus reviewer_reply) advance `ReadMaxReceivedDatetimeByMailbox`, so reviving `/admin/email/poll` would skip earlier inbox mail. Fix before reviving it: make the sproc exclude `reviewer_reply` (live-vs-base drift check first; it is an existing sproc in dbo.email_message.sql).
+- [ ] [P2, U-797c3] **45-day window cliff ~2027-01-05:** the window is on `ReviewNotification.CreatedDatetime`, and every backfilled row carries 2026-11-21, so all still-open backfilled threads drop out together then. Consider windowing on `StampedDatetime` / the send time instead (a behaviour change; own gate).
+- [ ] [Pass 2, U-797c3] One shared `conversation_filter()` helper for the per-thread Graph filter + quote escaping (today in copy_review_thread_replies and the ingest catch-up).
+- [ ] [Pass 2, U-797c3] Lock name `review_reply_ingest` does not follow the `ms_<scope>:<key>` convention (renaming changes the resource and the watchdog allow-list).
+- [ ] [U-784b note] When the applock watchdog gains kill mode, `review_reply_ingest` is on its allow-list - decide whether it should be killable.
+
 ## U-797c1 follow-ups - review notification record + reply binder (booked 2026-11-21)
 
 Deferred out of U-797c1's Pass 2; most belong to U-797c2 (the composer), which owns the record write.

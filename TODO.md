@@ -251,7 +251,7 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
 
 ## U-797c4b follow-ups - BillCredit reviewer decision apply (booked 2026-11-22)
 
-- [ ] **Product decision (Chris): a completed credit's re-pull lets QBO's coding win.** Credits are never pushed to
+- [ ] **DECIDED 2026-11-22 (Chris): push on completion -> booked as U-797c5 (BillCredit push on completion).** Was: a completed credit's re-pull lets QBO's coding win. Credits are never pushed to
   QBO, so after completion any QBO-side edit of the VendorCredit rewrites the reviewer's approved coding locally
   (Bill avoids this by pushing on completion). Options: push the coding to QBO on completion, keep local coding on
   completed credits that had an approved emailed review (recorded divergence), or accept "QBO wins after completion".

@@ -249,6 +249,31 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
 
 - [ ] [P3, U-798, DECISION] **Retire the legacy `Contract Labor - ` subject form once every pre-U-798 thread is closed.** U-798 makes the reply binding accept both `[Review] Contract Labor - ` and the legacy `Contract Labor - ` with no end date (`is_cl_notification_subject` in `entities/review/business/cl_notification_service.py`; the OR in `FindContractLaborForReviewerReply`). The legacy form is no riskier than before U-798, because the exact `ContractLaborNotification.OutboundSubject` join still bounds it. Dropping it shrinks the accepted set again (Pass 3 note). Decision for Chris: when, say about 30 days after deploy, once no `submitted`/`pending_review` CL has a legacy-subject notification. Check with `SELECT COUNT(*) FROM dbo.ContractLaborNotification WHERE OutboundSubject LIKE 'Contract Labor - %'` joined to not-ready CL lines on (project, date).
 
+## U-797c4b follow-ups - BillCredit reviewer decision apply (booked 2026-11-22)
+
+- [ ] **Product decision (Chris): a completed credit's re-pull lets QBO's coding win.** Credits are never pushed to
+  QBO, so after completion any QBO-side edit of the VendorCredit rewrites the reviewer's approved coding locally
+  (Bill avoids this by pushing on completion). Options: push the coding to QBO on completion, keep local coding on
+  completed credits that had an approved emailed review (recorded divergence), or accept "QBO wins after completion".
+- [ ] **Repoint Expense onto `qbo/base/field_ownership.under_review_line_coding`.** Behaviour-identical, including the
+  `preserved` log condition and the approved+holding recorder; prove with the U-551b-f1-f1 tests plus a table test
+  running both callers over (status x local-present x resolved_holding).
+- [ ] **One lifecycle read per pulled line.** `_parent_lifecycle` does a credit read + access assert + Review read per
+  HIT line (2-3 round trips). Inject `bill_credit_service` / `review_repo` into the connector (drops the conftest pin)
+  and optionally one `ReadBillCreditLifecycleById` sproc (IsDraft, QboId, latest ReviewKind); keep the read after
+  `direct`.
+- [ ] **Shared lifecycle derivation.** The pull calls `resolve_document_status` directly; `attach_lifecycle` falls back
+  to `review_kind_from_flags` when ReviewKind is NULL. Extract `lifecycle_status(is_draft, review)` for both (only a
+  NULL-ReviewKind edge differs; U-455 says none exist in prod).
+- [ ] **Reviewer-decision spec factory.** Collapse the per-entity `_reviewer_decision_spec` builders (Bill, Expense,
+  BillCredit) into `reviewer_decision.emailed_spec(...)` behind a `ReviewerDecisionLineService` protocol; derive
+  `provenance_what` / `apply_error` from `noun`; keep per-call construction for patch points.
+- [ ] **Shared single-target notification finder.** After the legacy binding retires (2027-01-19), add
+  `ReviewNotificationRecordService.single_target_for_reply(conversation_id, kind)`; move BillCredit, then Bill and
+  Expense onto it. The BillCredit finder has no legacy fallback, so a pre-c4 credit thread resolves to null.
+- [ ] **Holding record before the guarded write.** `_record_holding_on_approved` runs before the line update; a
+  ROWVERSION conflict leaves a (deduped) issue recorded while the credit retries. Mirrors Expense; accept or reorder.
+
 ## U-797c4a follow-ups - BillCredit review email (booked 2026-11-22)
 
 - [ ] **D1 Shared review-recipient resolver.** `ResolveReviewRecipientsBy{Bill,Expense,BillCredit}Id` are three copies

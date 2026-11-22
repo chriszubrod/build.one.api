@@ -1,130 +1,103 @@
-# U-797c5 — BillCredit coding reaches QuickBooks on completion
+# U-797c5 — Reviewed coding reaches QuickBooks on completion (BillCredit, and pulled Bills)
 
-Status: **DRAFT for Gate 1 (Chris), 2026-11-22.** Parent U-797c4. P0-surface: a new QuickBooks write.
-Decision already made (Chris, 2026-11-22): **push on completion**, rather than keep-local or QBO-wins.
+Status: **DRAFT v2 for Gate 1 (Chris), 2026-11-22.** Parent U-797c4. P0-surface: new QuickBooks writes.
 
-## Problem
+## Chris's decisions (2026-11-22)
 
-BillCredits are never pushed to QuickBooks. A credit that was reviewed (U-797c4) carries the reviewer's sub cost
-code, project and description locally; QBO still carries what it had (usually the holding code). While the credit
-is under review the QBO pull keeps the local coding (U-797c4b), but once it is completed QBO wins again, so any
-later edit of that VendorCredit in QBO re-pulls QBO's coding over the reviewer's. Bills avoid this by pushing.
+1. App-created credits are submitted for review, then run through the Complete pipeline, **in parallel with the Bill
+   complete pipeline, sharing code where possible**.
+2. What is pushed: **the same as a Bill**.
+3. When QBO changed in the meantime: **the system updates as needed, the same as Bills**.
+4. Kill switch: asked whether Bills have one. **They do not**: Bills are gated only by the global `ALLOW_QBO_WRITES`
+   (plus the per-entity completion gate, which ships off). Same here.
+5. Pull behaviour: **the same as the Bill entity**.
+6. Slice order: as needed.
+7. Pulled records (follow-up question): **close the gap for both Bills and BillCredits** — a pulled document whose
+   coding changed in review gets a safe update in QBO on completion, one shared code path.
 
-Prod, 2026-11-22: 486 credits, 476 completed straight from the pull (they already equal QBO and never pass through
-completion), 5 drafts, 0 reviewed so far. Volume is small; correctness matters more than throughput.
+## How Bills work today (research 2026-11-22)
 
-## What exists (research 2026-11-22)
-
-- **Bill push is create-only.** A bill with a `qbo_id` short-circuits. Its one update path,
-  `update_has_been_billed_in_qbo`, rebuilds every line without Line Ids on a full replace — the duplicate-lines
-  hazard CLAUDE.md warns about. Not a model to copy (booked separately, see "Out of scope").
-- **Expense recode is the right mechanism** (`PurchaseExpenseConnector.recode_purchase_lines`): raw GET, change only
-  the target line dicts in place by `Id`, strip `MetaData`/`domain`/`sparse`, POST the whole raw document back so
-  every sibling line keeps its Id and unmodelled fields survive; SyncToken fail-closed; "live token = snapshot + 1
-  and lines already carry the target" proves a crash-replay was ours. Its gates, lock, drain-time re-check and
-  dead-letter path are reusable; its placeholder-account test and CodingSuggestion revisions are not.
-- **The VendorCredit client** has a typed `update_vendor_credit` with no callers. The typed schema drops line
-  `LinkedTxn` (ReimburseCharge links) and unmodelled header fields, so a typed update would destroy data. We need
-  raw `get_vendor_credit_raw` / `update_vendor_credit_raw`, mirroring the Purchase client.
-- **Line identity is already there:** `BillCreditLineItem.QboId == raw Line.Id` (U-361, unique per credit).
-- **Reverse mapping exists:** `resolve_qbo_item_ref` (realm-verified, refuses the holding code) for SCC -> ItemRef;
-  the Bill connector's `_get_qbo_customer_ref` pattern for Project -> CustomerRef.
+- **App-created bill, completion:** `_enqueue_qbo_sync` -> QBO outbox kind `sync_bill_to_qbo` -> `push_to_qbo` ->
+  `sync_to_qbo_bill` creates the QBO Bill and stamps each `BillLineItem.QboId` from the response `LineNum` (U-363).
+  Retries reuse the RequestId; on a SyncToken mismatch the worker refreshes from QBO and retries once; 5 failures
+  dead-letter with a ReconciliationIssue.
+- **Pulled bill, completion:** nothing is pushed (`sync_to_qbo_bill` short-circuits on an existing `qbo_id`).
+- **Pull:** QBO owns line coding (`field_ownership.BILL`: sub_cost_code_id, project_id, description). The one exception:
+  an *approved* bill whose QBO line resolves to the holding code keeps the local code and records it — and loses it
+  once the bill is completed.
+- **The gap (both entities):** a pulled document on the holding code, recoded in review and completed, never tells QBO
+  the reviewer's code; the next pull puts QBO's coding back.
+- **Dead code:** `update_has_been_billed_in_qbo` rebuilds every Bill line without its Line Id on a full replace (it
+  would re-id every line). Its only caller, `_sync_billed_status_to_qbo`, has zero call sites. It ran once by hand in
+  July (14 OVH bills). It is the wrong shape for any update and is removed in c5b.
 
 ## Design
 
-### 1. Enqueue at completion
+### c5a — BillCredit create on completion (Bill parity)
 
-`BillCreditCompleteService.complete_bill_credit`, after line finalize and the Box fan-outs, calls a new
-failure-isolated `_enqueue_qbo_coding_push` (a copy of Bill's `_enqueue_qbo_sync` shape):
+- `complete_bill_credit` gains the Bill completion's QBO step: for a credit with no `qbo_id`, enqueue QBO outbox kind
+  **`sync_bill_credit_to_qbo`** (entity_type `BillCredit`). Failure-isolated like Bill's (completion reports it, never
+  fails on it).
+- Drain: build the VendorCredit from local lines exactly as `sync_to_qbo_bill` builds a Bill — vendor, date, credit
+  number, `ItemBasedExpenseLineDetail` with ItemRef (from the SCC; holding refused), CustomerRef (project),
+  BillableStatus, description, amounts — create it, stamp `BillCredit.QboId` and each `BillCreditLineItem.QboId` from
+  the response `LineNum`, verify the stamps landed, store the staging rows.
+- **Shared code:** lift the line-build and line-id-stamp steps out of the Bill connector into `qbo/base/` helpers both
+  connectors call (the Bill path's behaviour stays byte-identical, pinned by its existing tests); one enqueue helper
+  for both completion services; the worker's dispatch table + `KNOWN_KINDS` gain the new kind;
+  `_refresh_from_qbo` gains BillCredit so the SyncToken refresh-and-retry works as it does for Bills.
+- Gate: `ALLOW_QBO_WRITES` only, checked at enqueue and at drain (parks when off), as for Bills.
 
-- Skip, reported in the completion result, when the credit has no `qbo_id` (created locally: `no_qbo_identity`),
-  or the gate is off (`writes_disabled`). Completion itself never fails on the push.
-- Otherwise enqueue one QBO outbox row: kind **`push_vendorcredit_coding`**, entity_type `BillCredit`. The outbox
-  row has no payload; the drain reads state at drain time (see 4 for why that is safe).
+### c5b — reviewed coding update for pulled Bills and BillCredits (one shared path)
 
-### 2. Gates (default-deny, checked twice)
+- **Trigger:** completion of a document that already has a `qbo_id` (pulled) **and** whose local line coding differs
+  from the staged QBO lines (ItemRef / CustomerRef / Description, compared through the push mapping). Equal -> nothing
+  enqueued. Kinds `update_bill_coding_in_qbo` and `update_bill_credit_coding_in_qbo`, one handler implementation.
+- **The write is surgical** (the Expense recode mechanism, generalised in `qbo/base/`): raw GET; find each local line's
+  raw line by `Id` (`QboId`); change only ItemRef, CustomerRef and Description on lines that differ (switch an
+  AccountBased line to ItemBased, as the recode does); carry every other field — amounts, qty, price, BillableStatus,
+  ClassRef, TaxCodeRef, MarkupInfo, LinkedTxn — and every sibling line unchanged; strip MetaData/domain/sparse; POST
+  the whole raw document; store the response in staging. **Never add or remove lines; never touch the header**
+  (DocNumber stays under `preserve_human_edited_ref`). Needs raw get/update on the Bill and VendorCredit clients (the
+  typed schemas drop LinkedTxn and unmodelled fields).
+- **QBO changed meanwhile (decision 3):** on a SyncToken mismatch, re-GET and re-apply the same surgical change to the
+  fresh document (our change is only the coding of our lines, so re-applying it is "update as needed"). A local line
+  whose `QboId` is no longer in QBO, or a holding/unmapped code, is recorded (ReconciliationIssue, ids only) and
+  nothing is written for that document.
+- **Protecting the window before the drain:** between completion and the drain the pull would see a completed document
+  and write QBO's coding back, leaving nothing to push. While a coding-update row for the document is pending, failed
+  or in progress, the Bill and VendorCredit line pulls keep the local SCC / project / description (amounts still from
+  QBO). Once the update lands, QBO and local agree and the pull is QBO-owned again (decision 5: same as Bill).
+- **Dead code removed:** `update_has_been_billed_in_qbo` and `_sync_billed_status_to_qbo`. The billable-status write
+  path (parked U-778d2) will build on the surgical helper instead.
+- **First rollout:** the update path is new for Bills, which complete daily. Proposed: a `QBO_CODING_UPDATE_MODE`
+  setting, `log` (default: compute and record the intended change, write nothing) then `write`, so the first days show
+  exactly which documents and lines would change before anything is sent.
 
-`ALLOW_QBO_WRITES` **and** a new kill switch `ALLOW_BILL_CREDIT_PUSH_WRITES` (off by default). Checked at enqueue
-(no row when off) and again at drain before any read (off parks the row; never dead-letters). Same shape as the
-Expense recode's two flags.
+### Field ownership and runbooks
 
-### 3. Drain handler `_handle_push_vendorcredit_coding`
-
-1. Re-check the gates. Take applock `qbo_bill_credit_push:<public_id>`.
-2. Read the credit; require completed (`IsDraft = 0`) and `verify_identity_dbo_only` on its `qbo_id`.
-3. Raw GET the VendorCredit.
-4. **SyncToken fail-closed:** the live token must equal `qbo.VendorCredit.SyncToken` (the last pulled revision).
-   Different means someone changed it in QBO since our last read: record `vendorcredit_changed_in_qbo`
-   (ReconciliationIssue, ids only), write nothing, finish the row. Exception: live = staged + 1 and every target line
-   already carries our values means the write was ours (crash replay) -> mark done. The worker's generic
-   refresh-and-retry is bypassed for this kind (it does not support BillCredit and would retry blindly).
-5. For each local line with a `QboId`, find the raw line by `Id`. A local line with no `QboId`, or a `QboId` missing
-   from QBO: record `vendorcredit_line_not_found`, write nothing. **Never append or remove lines.**
-6. Resolve each line's ItemRef (holding code -> refused, recorded, nothing written) and CustomerRef.
-7. Change only lines whose ItemRef, CustomerRef or Description differ from local. Set `ItemBasedExpenseLineDetail`
-   (an AccountBased line is converted, as the Expense recode does); carry ClassRef, TaxCodeRef, MarkupInfo, Qty,
-   UnitPrice, BillableStatus and LinkedTxn unchanged. **Never touch Amount, DocNumber or any header field**
-   (`preserve_human_edited_ref` stays intact).
-8. Nothing differs -> done (idempotent no-op). Otherwise POST the full raw document, then upsert the response into
-   `qbo.VendorCredit` / `qbo.VendorCreditLine` so the staged SyncToken is current.
-9. Retries reuse the RequestId (worker idempotency context); 5 failures -> dead-letter + ReconciliationIssue
-   `push_vendorcredit_coding_dead_letter`; recovery via the existing dead-letter replay runbook.
-
-### 4. The pull must not undo the reviewer before (or after) the push lands
-
-The research's top risk: between completion and the drain (60 s, longer under backoff or a parked gate) the pull
-sees a completed credit, QBO wins, it overwrites the local coding, and the drain then finds nothing to push. The
-coding is lost silently.
-
-Fix in the pull rule, not with a payload snapshot: a completed credit **whose last review before completion was an
-approval** keeps its local SCC, project and description on every pull (extend `under_review_line_coding`'s caller
-with a `reviewed_completed` state). Amounts still come from QBO. When QBO's coding differs from the kept local
-coding on such a credit, the pull records `vendorcredit_coding_drift` (deduped, ids only) so a QBO-side edit is
-visible instead of silently ignored. Once the push lands, QBO and local agree and the rule is a no-op.
-
-Credits completed straight from the pull never went through review, so they are unaffected (QBO stays the source).
-
-### 5. Field ownership
-
-`field_ownership.VENDOR_CREDIT` lists `line_items` as qbo_owned. This unit changes that for reviewed credits:
-update the registry entry and `docs/qbo-field-ownership.md` (SCC / project / description become app-owned on a
-credit with an approved review; amounts, qty, price, billable stay QBO-owned).
-
-### 6. Runbook
-
-New `docs/runbooks/qbo-vendorcredit-coding-push.md` (Symptom / Severity / Diagnosis / Recovery / Verification /
-Prevention) covering: changed_in_qbo, line_not_found, holding refused, dead-letter, gate parked, coding drift.
-
-## Slices
-
-- **c5a — the pull guard (section 4) + field ownership (5).** No QBO write; protects reviewed credits from the moment
-  it deploys. Ships first.
-- **c5b — the push (1-3) + raw client + runbook (6).** Ships with `ALLOW_BILL_CREDIT_PUSH_WRITES` off; Chris turns it
-  on after one supervised push.
-
-Each slice runs the full pipeline (Pass 1 x2, Pass 3, mutation, suite) and its own Gate 2.
+`field_ownership.BILL` / `VENDOR_CREDIT` note the exception: line coding is app-owned while a coding update is in
+flight, and a reviewed pulled document's coding is pushed on completion. New runbook
+`docs/runbooks/qbo-reviewed-coding-push.md` (Symptom / Severity / Diagnosis / Recovery / Verification / Prevention):
+create failures, update conflicts, line_not_found, holding refused, dead-letter, gate parked.
 
 ## Verification
 
-Pure tests with fakes for every branch above, including: sibling lines and LinkedTxn round-trip byte-identical;
-Amount/DocNumber untouched; changed-in-QBO writes nothing; replay proof; gate off parks; no line added or removed;
-the pull keeps reviewed-completed coding and records drift. Live: the first push is supervised — read the
-VendorCredit in QBO before and after, compare every line and header field.
+Pure tests with fakes: the Bill create path byte-identical after the shared-helper lift; credit create stamps every
+line id; the update changes only target coding fields, round-trips sibling lines and LinkedTxn byte-identical, never
+adds/removes lines or touches the header; SyncToken mismatch re-applies on the fresh document; the window guard
+keeps coding only while a row is in flight; gate off parks. Mutation testing on every rule. Live: the first credit
+create and the first `write`-mode update are supervised (read the document in QBO before and after).
 
-## Out of scope (booked separately)
+## Slices and order
 
-- Creating QBO VendorCredits for credits made locally (`no_qbo_identity` is reported, not pushed).
-- Backfill of already-completed credits (none have been reviewed yet, so nothing to recover).
-- `update_has_been_billed_in_qbo` (Bill) sends Id-less lines on a full replace — possible duplicate Bill lines on
-  the next pull. Needs its own investigation unit.
+1. **c5a** — BillCredit create on completion (independent; Bill parity).
+2. **c5b** — shared coding update for pulled Bills and BillCredits, in `log` mode first, then `write`.
 
-## Decisions for Chris (Gate 1)
+Each runs the full pipeline (Pass 1 x2, Pass 3, mutation, suite) and its own Gate 2.
 
-1. **Credits created locally (no QBO id):** skip and report (proposed), or create them in QBO on completion?
-2. **What is pushed:** SCC (ItemRef), project (CustomerRef) and description (proposed), or only SCC + project?
-3. **Changed in QBO since the last pull:** fail closed and record an issue, keeping the local coding (proposed),
-   or overwrite QBO?
-4. **Kill switch:** a separate `ALLOW_BILL_CREDIT_PUSH_WRITES`, off until a supervised first push (proposed)?
-5. **Pull guard:** keep the reviewer's coding on reviewed-completed credits permanently, recording drift
-   (proposed), or only while a push is pending?
-6. **Slices:** c5a (pull guard) first, then c5b (push) (proposed)?
+## Open for Gate 1
+
+1. **c5b first rollout in `log` mode** (proposed) before `write`, or straight to `write`?
+2. **Remove the dead `update_has_been_billed_in_qbo` in c5b** (proposed)?
+3. Anything in "the same as a Bill" you read differently from the table above?

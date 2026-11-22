@@ -236,6 +236,26 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
 
 - [ ] [P3, U-798, DECISION] **Retire the legacy `Contract Labor - ` subject form once every pre-U-798 thread is closed.** U-798 makes the reply binding accept both `[Review] Contract Labor - ` and the legacy `Contract Labor - ` with no end date (`is_cl_notification_subject` in `entities/review/business/cl_notification_service.py`; the OR in `FindContractLaborForReviewerReply`). The legacy form is no riskier than before U-798, because the exact `ContractLaborNotification.OutboundSubject` join still bounds it. Dropping it shrinks the accepted set again (Pass 3 note). Decision for Chris: when, say about 30 days after deploy, once no `submitted`/`pending_review` CL has a legacy-subject notification. Check with `SELECT COUNT(*) FROM dbo.ContractLaborNotification WHERE OutboundSubject LIKE 'Contract Labor - %'` joined to not-ready CL lines on (project, date).
 
+## U-797c4a follow-ups - BillCredit review email (booked 2026-11-22)
+
+- [ ] **D1 Shared review-recipient resolver.** `ResolveReviewRecipientsBy{Bill,Expense,BillCredit}Id` are three copies
+  of one PM/Owner body (CL is a fourth shape). Extract an inline TVF over a project-id set (PM/Owner roles, PM-wins
+  ROW_NUMBER, IsHumanReviewUser, first Contact.Email); each per-parent sproc keeps its name/signature and shrinks to
+  "project set + SELECT from the TVF". Result set identical (same columns, ORDER BY RoleName, Lastname, Firstname);
+  prove with a prod-data diff old vs new before applying. Retarget tests/test_u797c4a_sql.py to "delegates to the TVF".
+- [ ] **D2 Spec-registry dispatch for the initial-submit email.** Add `read_parent` to `_NotificationSpec` and a
+  `SPECS_BY_REVIEW_KWARG` map; ReviewService.create's gate + per-kind branches become one loop (Expense's
+  coding-recode stays a post-step; CL unchanged); derive the worker's `_REVIEW_STAMP_ENTITY_TYPES` from the registry +
+  "ContractLabor". Done = a new kind adds one spec and no `create` edit.
+- [ ] **D3 Batch reads in `_do_enqueue`.** Use the existing `read_by_*_line_item_ids` batch readers for links (first PDF
+  in line order) and batch project/SCC label reads; removes the per-line re-read + access check. All three specs.
+- [ ] **Deactivated reviewers.** `IsHumanReviewUser` does not exclude disabled/inactive users, so a deactivated PM/Owner
+  still on `UserProject` lands on the draft (Bill/Expense/BillCredit alike). Fix once in the shared function.
+- [ ] **Double-submit race (pre-existing, all kinds).** `build_submit_payload` checks then acts; two concurrent submits
+  give two Submitted rows, two emails, two records (separate conversations, so not ambiguous - just redundant).
+- [ ] **For c4b:** the ingest "open" rule is per credit, so after decline + re-submit the OLD thread is open again and a
+  late reply there binds to the same credit.
+
 ## U-797c2b follow-ups - reply binder (booked 2026-11-22)
 
 - [ ] **Verify the stamp against the SENT copy, at the source (altitude F1).** The guard compares the reply's

@@ -1,11 +1,14 @@
 # Python Standard Library Imports
 import base64
 import logging
+import re
+from datetime import datetime
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 # Local Imports
-from integrations.ms.base.client import DEFAULT_BASE_URL, MsGraphClient
-from integrations.ms.base.errors import MsGraphError, build_error_envelope
+from integrations.ms.base.client import DEFAULT_BASE_URL, MsGraphClient, writes_allowed
+from integrations.ms.base.errors import MsGraphError, MsWriteRefusedError, build_error_envelope
 
 logger = logging.getLogger(__name__)
 
@@ -28,9 +31,13 @@ def _mailbox_path(mailbox: Optional[str] = None) -> str:
     user's own mailbox via ``/me``. When a mailbox email address is supplied,
     requests target that account via ``/users/{mailbox}`` (provided the
     authenticated user has delegated access).
+
+    U-799: the address is URL-encoded as ONE path segment (`@` kept), so a character such as
+    `/`, `?`, `#` or `'` can never split or redirect the request path. A plain address is
+    unchanged (`invoice@rogersbuild.com` -> `users/invoice@rogersbuild.com`).
     """
     if mailbox:
-        return f"users/{mailbox}"
+        return f"users/{quote(mailbox, safe='@')}"
     return "me"
 
 
@@ -187,6 +194,71 @@ _MESSAGE_SELECT_FIELDS = (
     "ccRecipients,receivedDateTime,sentDateTime,isRead,isDraft,"
     "hasAttachments,importance,bodyPreview,webLink,flag,categories"
 )
+_ATTACHMENTS_EXPAND = "attachments($select=id,name,contentType,size,isInline)"
+
+# U-799: with `$orderby`, Graph requires the ordered property to lead `$filter` (else 400
+# "restriction or sort order is too complex"). An always-true `receivedDateTime ge <floor>`
+# clause satisfies that without changing the result set; it matches the floor the
+# email_message callers already hand-code.
+_RECEIVED_FLOOR = "2000-01-01T00:00:00Z"
+_LEADS_WITH_RECEIVED = re.compile(r"(\s*\()*\s*receivedDateTime\b", re.IGNORECASE)
+
+
+def _received_order(order_by: Optional[str]) -> Optional[bool]:
+    """None when the FIRST `$orderby` clause is not on receivedDateTime; else True if descending
+    (`"receivedDateTime desc, subject asc"` -> True)."""
+    parts = (order_by or "").split(",")[0].split()
+    if not parts or parts[0].lower() != "receiveddatetime":
+        return None
+    return len(parts) > 1 and parts[1].lower() == "desc"
+
+
+def _filter_compatible_with_order(filter_query: str, order_by: Optional[str]) -> str:
+    """Prepend the always-true received clause when sorting on receivedDateTime and the
+    filter does not already lead with it. Other sorts are not shape-corrected."""
+    if (not filter_query.strip() or _received_order(order_by) is None
+            or _LEADS_WITH_RECEIVED.match(filter_query)):
+        return filter_query
+    return f"receivedDateTime ge {_RECEIVED_FLOOR} and ({filter_query.strip()})"
+
+
+def _normalize_search_term(search: str) -> str:
+    """Wrap a `$search` term in exactly one pair of double quotes (a pre-quoted term used to
+    become `""term""`, which Graph rejects); inner double quotes are dropped."""
+    term = search.strip()
+    while len(term) >= 2 and term[0] == '"' and term[-1] == '"':
+        term = term[1:-1].strip()
+    return '"' + term.replace('"', "") + '"'
+
+
+def _sort_by_received(messages: List[dict], order_by: Optional[str]) -> List[dict]:
+    """Client-side stand-in for `$orderby` on the `$search` path, where Graph cannot sort."""
+    descending = _received_order(order_by)
+    if descending is None:
+        return messages
+    return sorted(messages, key=lambda m: m.get("receivedDateTime") or "", reverse=descending)
+
+
+def _bad_request(message: str, **extra: Any) -> Dict[str, Any]:
+    """A locally-refused call, shaped like `_error_response` so callers check one field."""
+    return {"message": message, "status_code": 400, **extra}
+
+
+# A Graph message/attachment id is base64-ish (`AAMkAG…-_=`). Anything carrying a path, query
+# or fragment character is refused before it can be interpolated into a request path.
+_GRAPH_ID_RE = re.compile(r"[A-Za-z0-9_\-=+]+")
+# One `@`, no whitespace/control characters and none of `/ \ ? #` — anything RFC-legal beyond that
+# (apostrophes, `!`, `&` …) is accepted; `_mailbox_path` URL-encodes it as a single segment.
+_MAILBOX_RE = re.compile(r"[^\s@/\\?#\x00-\x1f]+@[^\s@/\\?#\x00-\x1f]+")
+
+
+def _is_graph_id(value: Any) -> bool:
+    return isinstance(value, str) and _GRAPH_ID_RE.fullmatch(value) is not None
+
+
+def _is_mailbox(value: Optional[str]) -> bool:
+    """None (= `/me`) or a single address; never a path fragment like `x@y/../`."""
+    return value is None or (isinstance(value, str) and _MAILBOX_RE.fullmatch(value) is not None)
 
 
 def list_messages(
@@ -201,22 +273,41 @@ def list_messages(
     """
     List messages from a mail folder with automatic pagination.
     MS Graph caps at 50 per request; we page through to fulfill `top`.
+
+    ⚠️ On a Graph error this returns the error envelope (`status_code` != 200) with
+    `messages: []` — check `status_code`; an empty list alone does not mean "no mail".
+
+    U-799 query-shape rules (each used to be a Graph 400 that read as "no mail"):
+    `search` sends no `$orderby`/`$skip`; it returns Graph's top-`top` by RELEVANCE, re-sorted
+    by `receivedDateTime` — use a `receivedDateTime` window for "newest". `search` with
+    `filter_query` or a nonzero `skip` is refused locally (Graph rejects the first; it cannot
+    offset a search). A filter not leading with `receivedDateTime` gets an always-true
+    `receivedDateTime ge 2000-01-01` clause prepended (mail older than 2000 is not matched).
     """
+    if search and filter_query:
+        return _bad_request(
+            "search and filter_query cannot be combined (Graph rejects $filter with $search)",
+            messages=[], total_count=0,
+        )
+    if search and skip:
+        return _bad_request(
+            "skip is not supported with search (Graph cannot offset a $search)",
+            messages=[], total_count=0,
+        )
     try:
         page_size = 50
         params: Dict[str, Any] = {
             "$top": page_size,
             "$select": _MESSAGE_SELECT_FIELDS,
-            "$orderby": order_by,
             "$count": "true",
         }
         if search:
-            # $skip is not supported with $search
-            params["$search"] = f'"{search}"'
+            params["$search"] = _normalize_search_term(search)
         else:
+            params["$orderby"] = order_by
             params["$skip"] = skip
-        if filter_query:
-            params["$filter"] = filter_query
+            if filter_query:
+                params["$filter"] = _filter_compatible_with_order(filter_query, order_by)
 
         endpoint_path = f"{_mailbox_path(mailbox)}/mailFolders/{folder}/messages"
         max_pages = (top // page_size) + 2
@@ -254,17 +345,26 @@ def list_messages(
                 if not next_link:
                     break
 
+        more_than_top = next_link is not None or len(all_messages) > top
         all_messages = all_messages[:top]
+        if search:  # re-sort Graph's top-`top` relevance hits; never pull in lower-ranked ones
+            all_messages = _sort_by_received(all_messages, order_by)
         formatted = [_format_message(m) for m in all_messages]
         return {
             "message": f"Retrieved {len(formatted)} messages",
             "status_code": 200,
             "messages": formatted,
             "total_count": total_count,
-            "has_more": next_link is not None or len(all_messages) >= top,
+            # A search cannot be offset (skip is refused), so never advertise a next page for it;
+            # `search_truncated` says more matches existed beyond Graph's top-`top`.
+            "has_more": False if search else (next_link is not None or len(all_messages) >= top),
+            **({"search_truncated": more_than_top} if search else {}),
         }
     except MsGraphError as e:
-        logger.error(f"Error listing messages in folder {folder}: {e}")
+        logger.error(
+            f"Error listing messages in folder {folder} "
+            f"(filter={params.get('$filter')!r} search={params.get('$search')!r}): {e}"
+        )
         return _error_response(e, extra={"messages": [], "total_count": 0})
 
 
@@ -293,7 +393,7 @@ def search_all_messages(
                     "$top": top,
                     "$filter": f"conversationId eq '{conversation_id}'",
                     "$select": select_fields,
-                    "$expand": "attachments($select=id,name,contentType,size,isInline)",
+                    "$expand": _ATTACHMENTS_EXPAND,
                 },
                 operation_name="mail.search_by_conversation.filter",
             )
@@ -321,7 +421,7 @@ def search_all_messages(
             "$top": 250,
             "$orderby": "receivedDateTime desc",
             "$select": select_fields,
-            "$expand": "attachments($select=id,name,contentType,size,isInline)",
+            "$expand": _ATTACHMENTS_EXPAND,
         }
 
         with MsGraphClient() as client:
@@ -389,7 +489,7 @@ def get_message(
                 f"{_mailbox_path(mailbox)}/messages/{message_id}",
                 params={
                     "$select": select_fields,
-                    "$expand": "attachments($select=id,name,contentType,size,isInline)",
+                    "$expand": _ATTACHMENTS_EXPAND,
                 },
                 operation_name="mail.get_message",
             )
@@ -803,6 +903,168 @@ def add_attachment_to_message(
     except MsGraphError as e:
         logger.error(f"Error adding attachment '{name}' to {message_id}: {e}")
         return _error_response(e, extra={"attachment": None})
+
+
+def delete_attachment_from_message(
+    message_id: str,
+    attachment_id: str,
+    mailbox: Optional[str] = None,
+) -> dict:
+    """
+    Remove one attachment from a DRAFT message (U-799), e.g. to swap a wrong PDF on a
+    `[Review]` draft without recreating it.
+
+    ⛔ Refuses (409, nothing deleted) unless Graph reports `isDraft`: on a RECEIVED message
+    this would destroy the vendor's original PDF. Write-gated (ALLOW_MS_WRITES), checked
+    before any network call.
+
+    ⛔ Both ids must be plain Graph ids (400 otherwise). The draft check reads
+    `messages/{message_id}` but the DELETE targets `.../attachments/{attachment_id}`; an id
+    carrying `../`, `/`, `?` or `#` would be normalised by the HTTP layer onto a DIFFERENT
+    message (e.g. a received one) after the draft check passed.
+    """
+    if not (_is_graph_id(message_id) and _is_graph_id(attachment_id)) or not _is_mailbox(mailbox):
+        return _bad_request("message_id, attachment_id and mailbox must be plain identifiers")
+    base = _mailbox_path(mailbox)
+    path = f"{base}/messages/{message_id}/attachments/{attachment_id}"
+    try:
+        if not writes_allowed():  # same refusal the client's DELETE would raise, minus the draft read
+            logger.warning(
+                "ms.http.request.blocked operation_name=mail.delete_attachment method=DELETE path=%s "
+                "outcome=write_refused reason=ALLOW_MS_WRITES_not_true", path,
+            )
+            raise MsWriteRefusedError(
+                f"MS write refused: ALLOW_MS_WRITES is not 'true' for DELETE {path}",
+                request_method="DELETE", request_path=path,
+            )
+        with MsGraphClient() as client:
+            msg = client.get(
+                f"{base}/messages/{message_id}",
+                params={"$select": "id,isDraft"},
+                operation_name="mail.delete_attachment.check_draft",
+            )
+            if msg.get("isDraft") is not True:
+                logger.warning(
+                    "mail.delete_attachment.refused_not_draft message_id=%s attachment_id=%s",
+                    message_id, attachment_id,
+                )
+                return {
+                    "message": "Refused: attachments can only be removed from a draft message",
+                    "status_code": 409,
+                }
+            client.delete(path, operation_name="mail.delete_attachment")
+        return {"message": "Attachment deleted successfully", "status_code": 204}
+    except MsGraphError as e:
+        logger.error(f"Error deleting attachment {attachment_id} from {message_id}: {e}")
+        return _error_response(e)
+
+
+# Only what matching and identifying a hit need; Graph honours 250/page with $expand (verified).
+_ATTACHMENT_SCAN_SELECT = (
+    "id,conversationId,subject,from,receivedDateTime,isRead,isDraft,hasAttachments,webLink,parentFolderId"
+)
+_ATTACHMENT_SCAN_PAGE_SIZE = 250
+_ATTACHMENT_SCAN_MAX_PAGES = 12  # 12 x 250 = 3,000 messages per call; beyond that `truncated` is True
+# ISO-8601 UTC instant (`2026-10-12T05:00:00Z`, optional fraction); anything else is refused.
+_UTC_INSTANT_RE = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d{1,7})?Z")
+
+
+def _is_utc_instant(value: Any) -> bool:
+    """Exact shape (fullmatch — no trailing newline) AND a real calendar instant (no Feb 30)."""
+    m = _UTC_INSTANT_RE.fullmatch(value) if isinstance(value, str) else None
+    if not m:
+        return False
+    try:
+        datetime.strptime(m.group(1), "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return False
+    return True
+
+
+def _scan_haystack(m: dict) -> str:
+    sender = (m.get("from") or {}).get("emailAddress") or {}
+    names = [a.get("name") or "" for a in m.get("attachments") or []]
+    return " ".join([m.get("subject") or "", sender.get("address") or "", sender.get("name") or ""] + names).lower()
+
+
+def _folder_names(client: MsGraphClient, base: str) -> Dict[str, str]:
+    """Top-level folder id -> display name; best-effort ({} on failure)."""
+    try:
+        data = client.get(f"{base}/mailFolders", params={"$select": "id,displayName", "$top": 100},
+                          operation_name="mail.find_by_attachment_name.folders")
+        return {f.get("id"): f.get("displayName") for f in data.get("value", [])}
+    except MsGraphError as e:
+        logger.warning(f"Folder-name lookup failed; returning matches without folder_name: {e}")
+        return {}
+
+
+def find_messages_by_attachment_name(
+    term: str,
+    received_from: str,
+    received_to: str,
+    mailbox: Optional[str] = None,
+    max_pages: int = _ATTACHMENT_SCAN_MAX_PAGES,
+) -> dict:
+    """
+    Find messages in EVERY folder whose attachment names, subject or sender contain `term`
+    (case-insensitive), received in `[received_from, received_to)` — ISO-8601 UTC instants (U-799).
+    Outlook's search matches attachment filenames; `$search` and subject checks did not.
+
+    Returns the envelope plus `scanned` and `truncated` (page cap hit: the window was NOT
+    fully searched — narrow it). Each hit carries `folder_name` (None = a subfolder), since
+    drafts and deleted copies are scanned too. Check `status_code` before trusting `messages`.
+    """
+    empty = {"messages": [], "scanned": 0, "truncated": False}
+    needle = (term or "").strip().lower()
+    if not needle:
+        return _bad_request("term is required", **empty)
+    for label, value in (("received_from", received_from), ("received_to", received_to)):
+        if not _is_utc_instant(value):
+            return _bad_request(f"{label} must be an ISO-8601 UTC instant like 2026-10-12T05:00:00Z", **empty)
+    if not isinstance(max_pages, int) or max_pages < 1:
+        return _bad_request("max_pages must be a positive integer", **empty)
+    if not _is_mailbox(mailbox):
+        return _bad_request("mailbox must be a plain address", **empty)
+    base = _mailbox_path(mailbox)
+    params: Dict[str, Any] = {
+        "$top": _ATTACHMENT_SCAN_PAGE_SIZE,
+        "$select": _ATTACHMENT_SCAN_SELECT,
+        "$orderby": "receivedDateTime desc",
+        "$filter": f"receivedDateTime ge {received_from} and receivedDateTime lt {received_to}",
+        "$expand": _ATTACHMENTS_EXPAND,
+    }
+    matched: List[dict] = []
+    scanned = 0
+    next_link: Optional[str] = None
+    try:
+        with MsGraphClient() as client:
+            for _ in range(max_pages):
+                if next_link:
+                    data = client.get(_strip_base(next_link), operation_name="mail.find_by_attachment_name.next")
+                else:
+                    data = client.get(f"{base}/messages", params=params, operation_name="mail.find_by_attachment_name")
+                page = data.get("value", [])
+                scanned += len(page)
+                matched.extend(m for m in page if needle in _scan_haystack(m))
+                next_link = data.get("@odata.nextLink")
+                if not next_link:
+                    break
+            folder_names = _folder_names(client, base) if matched else {}
+        formatted = [
+            {**_format_message(m), "parent_folder_id": m.get("parentFolderId"),
+             "folder_name": folder_names.get(m.get("parentFolderId"))}
+            for m in matched
+        ]
+        return {
+            "message": f"Found {len(formatted)} matching messages (scanned {scanned})",
+            "status_code": 200,
+            "messages": formatted,
+            "scanned": scanned,
+            "truncated": next_link is not None,
+        }
+    except MsGraphError as e:
+        logger.error(f"Error scanning attachment names for {term!r}: {e}")
+        return _error_response(e, extra={"messages": [], "scanned": scanned, "truncated": True})
 
 
 # ---------------------------------------------------------------------------

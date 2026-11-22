@@ -296,6 +296,7 @@ class RampChaserDigestService:
                     list_messages,
                     folder="deleteditems",
                     conversation_id=conversation_id,
+                    require_draft=True,
                 )
                 if deleted_hit is True:
                     discarded_unsent += 1
@@ -727,13 +728,24 @@ class RampChaserDigestService:
         *,
         folder: str,
         conversation_id: str,
+        require_draft: bool = False,
     ) -> Optional[bool]:
-        """True if a message exists in the folder; False if clean miss; None if inconclusive."""
+        """True if a message exists in the folder; False if clean miss; None if inconclusive.
+
+        `require_draft` (U-799): only a still-draft match counts. A Deleted Items hit means
+        "discarded unsent" ONLY if it is the unsent draft — a digest that was SENT and whose
+        sent copy was then deleted also lands there (is_draft False), and must not be stamped
+        discarded. A non-draft match is inconclusive (None), never True.
+        """
         safe_id = conversation_id.replace("'", "''")
+        filter_query = f"conversationId eq '{safe_id}'"
+        if require_draft:
+            # Filter server-side so a draft behind 5+ newer non-drafts is not truncated away.
+            filter_query += " and isDraft eq true"
         result = list_messages_fn(
             folder=folder,
             top=5,
-            filter_query=f"conversationId eq '{safe_id}'",
+            filter_query=filter_query,
         )
         status = result.get("status_code")
         if status != 200:
@@ -746,7 +758,16 @@ class RampChaserDigestService:
             )
             return None
         messages = result.get("messages") or []
-        return len(messages) > 0
+        if not messages:
+            return False
+        if require_draft and not any(m.get("is_draft") is True for m in messages):
+            logger.info(
+                "ramp_chaser_digest.folder_hit_not_draft folder=%s conversation_id=%s",
+                folder,
+                conversation_id,
+            )
+            return None
+        return True
 
     @staticmethod
     def _is_transient_graph_result(result: dict) -> bool:

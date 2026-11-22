@@ -475,7 +475,7 @@ def test_vanished_draft_found_in_deleted_items_is_not_a_send(mocks, draft_mode):
     def _list_side_effect(*, folder, top, filter_query):
         if folder == "sentitems":
             return {"status_code": 200, "messages": []}
-        return {"status_code": 200, "messages": [{"id": "deleted-copy"}]}
+        return {"status_code": 200, "messages": [{"id": "deleted-copy", "is_draft": True}]}  # U-799: a deleted DRAFT
 
     with patch(
         _GET_MESSAGE, return_value={"status_code": 404, "email": None}

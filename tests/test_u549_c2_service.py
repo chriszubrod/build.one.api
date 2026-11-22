@@ -346,7 +346,7 @@ def test_vanished_id_in_deleteditems_does_not_stamp_notified(mocks, draft_mode):
 
     def list_side_effect(folder, **kwargs):
         if folder == "deleteditems":
-            return {"status_code": 200, "messages": [{"message_id": "del-1"}]}
+            return {"status_code": 200, "messages": [{"message_id": "del-1", "is_draft": True}]}
         return {"status_code": 200, "messages": []}
 
     with patch(
@@ -364,6 +364,34 @@ def test_vanished_id_in_deleteditems_does_not_stamp_notified(mocks, draft_mode):
         week_of="2026-09-22",
         outcome="discarded_unsent",
     )
+
+
+def test_sent_then_deleted_copy_is_not_stamped_discarded_unsent(mocks, draft_mode):
+    """U-799 (Codex consumer slice): a digest that was SENT and whose sent copy was then
+    deleted lands in Deleted Items as a non-draft. It must not be recorded discarded_unsent."""
+    outstanding = _digest_row(
+        week_of="2026-09-22",
+        draft_message_id="gone",
+        conversation_id="conv-sent-del",
+    )
+    mocks.digest_repo.read_outstanding.return_value = [outstanding]
+
+    def list_side_effect(folder, **kwargs):
+        if folder == "deleteditems":
+            return {"status_code": 200, "messages": [{"message_id": "del-1", "is_draft": False}]}
+        return {"status_code": 200, "messages": []}
+
+    with patch(
+        "integrations.ms.mail.external.client.get_message",
+        return_value={"status_code": 404, "email": None},
+    ), patch(
+        "integrations.ms.mail.external.client.list_messages",
+        side_effect=list_side_effect,
+    ):
+        result = RampChaserDigestService().run_for_week("2026-09-29")
+    assert result["discarded_unsent"] == 0
+    mocks.digest_repo.stamp_outcome.assert_not_called()
+    mocks.digest_repo.stamp_notified.assert_not_called()
 
 
 def test_vanished_id_neither_folder_stamps_nothing(mocks, draft_mode):

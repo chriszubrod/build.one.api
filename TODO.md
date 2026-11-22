@@ -232,6 +232,19 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
   while QBO says `Billable`, no `InvoiceLineItem` uses them, all set billed in one batch on 2026-08-14 (looks deliberate).
   U-778b does not touch them (staged `Billable`, not a reverse candidate).
 
+## U-799 follow-ups - MS Graph mail client query shapes (booked 2026-11-22, shipped 459be983, NOT deployed)
+
+- [ ] ⚠️ **DEPLOY DECISION (Chris):** the Ramp chaser digest's conversation lookup (`_conversation_in_folder`) had 400'd on every call since it was written (non-date `$filter` + default `$orderby`), so every vanished digest stayed "inconclusive". After deploy it works: the first run will stamp the backlog of outstanding digests `sent` (Sent Items hit) or `discarded_unsent` (a still-DRAFT Deleted Items hit). Confirm that backlog stamping is wanted before deploying.
+- [ ] Remove the now-redundant hand-coded floors: `entities/email_message/business/service.py` (~L745, "Graph requires the $orderby property…") and `review_reply_ingest_service.py` `ORDERBY_FLOOR` (+ exact-string asserts in `test_u669b_review_reply_copy.py`, `test_u797c3_review_reply_ingest.py`). `list_messages` owns the rule now.
+- [ ] Structured `conversation_id=` parameter on `list_messages` that owns OData escaping (callers hand-escape `'`; `search_all_messages` phase 1 does not escape at all).
+- [ ] One shared Graph page iterator in `integrations/ms/base/` for the 3 hand-written `@odata.nextLink` loops in the mail client (+ the repeated-nextLink guard the SharePoint helper has).
+- [ ] Separate unit: make Graph errors RAISE a typed error instead of returning an envelope with `messages: []` — the true root cause of "error reads as empty" (every in-repo caller checks `status_code` today; ad-hoc callers do not).
+- [ ] Mail API router (`integrations/ms/mail/message/api/router.py`): document `search` ⟂ `filter`/`skip` in the OpenAPI Query descriptions; consider restricting `order_by` to `receivedDateTime asc|desc` (other sorts are not shape-corrected).
+- [ ] ⛔ The FIRST caller of `delete_attachment_from_message` must enqueue an MS outbox row (CLAUDE.md: every external write via the outbox) — it is a client primitive with no caller yet.
+- [ ] `find_messages_by_attachment_name` names top-level folders only (subfolders → `folder_name=None`).
+- [ ] P3 pre-existing: non-search `has_more` is True when exactly `top` messages exhaust the folder; `total_count` falls back to the first page size when Graph omits `@odata.count`.
+- [ ] P2 optional: the new ERROR log line includes `$filter`/`$search` values (addresses, subject terms) — truncate or DEBUG if logs reach a broad sink.
+
 ## U-798 follow-ups - [Review] prefix on the Contract Labor review email (2026-11-19)
 
 - [ ] [P3, U-798, DECISION] **Retire the legacy `Contract Labor - ` subject form once every pre-U-798 thread is closed.** U-798 makes the reply binding accept both `[Review] Contract Labor - ` and the legacy `Contract Labor - ` with no end date (`is_cl_notification_subject` in `entities/review/business/cl_notification_service.py`; the OR in `FindContractLaborForReviewerReply`). The legacy form is no riskier than before U-798, because the exact `ContractLaborNotification.OutboundSubject` join still bounds it. Dropping it shrinks the accepted set again (Pass 3 note). Decision for Chris: when, say about 30 days after deploy, once no `submitted`/`pending_review` CL has a legacy-subject notification. Check with `SELECT COUNT(*) FROM dbo.ContractLaborNotification WHERE OutboundSubject LIKE 'Contract Labor - %'` joined to not-ready CL lines on (project, date).

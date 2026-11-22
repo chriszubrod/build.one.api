@@ -236,6 +236,13 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
 
 - [ ] [P3, U-798, DECISION] **Retire the legacy `Contract Labor - ` subject form once every pre-U-798 thread is closed.** U-798 makes the reply binding accept both `[Review] Contract Labor - ` and the legacy `Contract Labor - ` with no end date (`is_cl_notification_subject` in `entities/review/business/cl_notification_service.py`; the OR in `FindContractLaborForReviewerReply`). The legacy form is no riskier than before U-798, because the exact `ContractLaborNotification.OutboundSubject` join still bounds it. Dropping it shrinks the accepted set again (Pass 3 note). Decision for Chris: when, say about 30 days after deploy, once no `submitted`/`pending_review` CL has a legacy-subject notification. Check with `SELECT COUNT(*) FROM dbo.ContractLaborNotification WHERE OutboundSubject LIKE 'Contract Labor - %'` joined to not-ready CL lines on (project, date).
 
+## U-797c2a follow-ups - review-email composer (booked 2026-11-22)
+
+- [ ] [P2, U-797c2a] Contract Labor still claims a ReviewNotification and then releases it when MS writes are off (Bill/Expense skip the record). Gate `_claim_review_notification` on `writes_allowed()` too - matters for local runs whose .env points at prod.
+- [ ] [Pass 2, U-797c2a] Pass the record service as an instance (not a factory lambda) through the composer; the CL path builds it up to three times per draft (test churn in test_u797c2a_fixround1 / test_u797c1_writers).
+- [ ] [Pass 2, U-797c2a] Share `PM_ROLE` / `OWNER_ROLE` constants between ReviewRecipientService._bucket and the CL per-project bucket (different shapes; do not merge the functions).
+- [ ] [Pass 2, U-797c2a] Project-label fallbacks differ (CL strips + `#<id>`; Bill/Expense no strip + `(no project)`); align only with goldens for the whitespace/empty cases.
+
 ## U-797c3 follow-ups - scheduled reviewer-reply ingestion (booked 2026-11-21)
 
 - [ ] [P2, U-797c3] **Forward-poll watermark:** copied replies (ProcessingStatus reviewer_reply) advance `ReadMaxReceivedDatetimeByMailbox`, so reviving `/admin/email/poll` would skip earlier inbox mail. Fix before reviving it: make the sproc exclude `reviewer_reply` (live-vs-base drift check first; it is an existing sproc in dbo.email_message.sql).

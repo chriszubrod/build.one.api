@@ -236,6 +236,30 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
 
 - [ ] [P3, U-798, DECISION] **Retire the legacy `Contract Labor - ` subject form once every pre-U-798 thread is closed.** U-798 makes the reply binding accept both `[Review] Contract Labor - ` and the legacy `Contract Labor - ` with no end date (`is_cl_notification_subject` in `entities/review/business/cl_notification_service.py`; the OR in `FindContractLaborForReviewerReply`). The legacy form is no riskier than before U-798, because the exact `ContractLaborNotification.OutboundSubject` join still bounds it. Dropping it shrinks the accepted set again (Pass 3 note). Decision for Chris: when, say about 30 days after deploy, once no `submitted`/`pending_review` CL has a legacy-subject notification. Check with `SELECT COUNT(*) FROM dbo.ContractLaborNotification WHERE OutboundSubject LIKE 'Contract Labor - %'` joined to not-ready CL lines on (project, date).
 
+## U-797c2b follow-ups - reply binder (booked 2026-11-22)
+
+- [ ] **Verify the stamp against the SENT copy, at the source (altitude F1).** The guard compares the reply's
+  (reviewer-editable) subject with the composed subject, so it catches a retitled draft only after a reply, and a
+  reviewer-edited reply subject or a localized prefix (`AW:`, `SV:`, `RE[2]:`, `[EXTERNAL]`) falls back spuriously.
+  Spec: when a sent-items EmailMessage is ingested, match it to its ReviewNotification by InternetMessageId; write a
+  new `SentSubject` (fill-only-NULL like the other stamps); on a normalized mismatch with `Subject` clear the three
+  id stamps (the c1a 1089 migration, automated), logging ids only. The binder then reads that instead of the reply
+  subject. Needs an unattended sent-items ingest (couples to the scheduler). Keep the reply-time guard as backstop
+  until the proof shows SentSubject coverage.
+- [ ] **Unknown kind gets its own never-rescuable reason (altitude F4).** Today an unmapped kind refuses as
+  `wrong_document`, which the subject guard may rescue to legacy. Give it `unknown_kind`, never rescued (behaviour
+  change; no live caller hits it). When c4/c5 land the per-type `_NotificationSpec`, derive the coverage rule from its
+  `grouping` and delete `COVERAGE_BY_KIND`; the spec carries an explicit `kind` (reviewer_decision.py notes
+  `spec.parent` diverges for BillCredit).
+- [ ] **Decision-scoped bound-reply token (altitude F5).** CL now does 1 + N record lookups per crew decision (the
+  write path re-checks each member). `resolve_reply_once` could return a frozen `BoundReply(em, notification_id,
+  project_id, work_date)` that `_apply_decision_to_single_cl` accepts when its scope equals the member's row.
+- [ ] **Legacy CL per-member reads (efficiency 1, pre-existing).** On the no-row path each member's legacy binding
+  repeats ~5 member-independent reads (EM, find_for_reviewer_reply, crew, conversation, EM). Compute once per decision;
+  touches the U-563 helper, needs its own Pass 1.
+- [ ] **Proof prefetch scope (efficiency 2).** `--run` now looks up every row's conversation, including rows later
+  SKIPPED. Restrict to in-scope rows if the sweep grows; the missing-Subject abort then covers in-scope only.
+
 ## U-797c2a follow-ups - review-email composer (booked 2026-11-22)
 
 - [ ] [P2, U-797c2a] Contract Labor still claims a ReviewNotification and then releases it when MS writes are off (Bill/Expense skip the record). Gate `_claim_review_notification` on `writes_allowed()` too - matters for local runs whose .env points at prod.

@@ -15,6 +15,7 @@ EXPECTED_SPROCS = {
     "AddReviewNotificationTarget",
     "SetReviewNotificationOutbox",
     "StampReviewNotificationFromOutbox",
+    "StampReviewNotificationById",  # U-797c2a
     "DeleteReviewNotification",
     "FindReviewNotificationForReply",
 }

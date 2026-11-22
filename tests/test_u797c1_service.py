@@ -231,8 +231,9 @@ def test_claim_for_crew_releases_the_claim_if_a_target_write_fails():
 def test_stamp_from_outbox_never_raises():
     repo = FakeRepo(raise_on={"stamp": RuntimeError("db down")})
     svc = rns.ReviewNotificationRecordService(repo=repo)
+    # U-797c2a: stamps report success as a bool; a failure is False and never raises.
     assert svc.stamp_from_outbox(outbox_id=44, conversation_id="C", internet_message_id=None,
-                                 draft_graph_message_id="G") is None
+                                 draft_graph_message_id="G") is False
 
 
 def test_stamp_from_outbox_passes_values_through():

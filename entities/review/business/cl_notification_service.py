@@ -33,6 +33,10 @@ import logging
 from typing import Optional
 
 from entities.review.business import review_notification_service as _rns
+from entities.review.business.review_email_composer import (
+    SUBJECT_PREFIX,
+    ReviewEmailComposer,
+)
 from integrations.ms.outbox.business.service import MsOutboxService
 from shared.database import call_procedure, get_connection, map_database_error
 
@@ -41,7 +45,7 @@ from shared.database import call_procedure, get_connection, map_database_error
 #   legacy (sent before U-798): "Contract Labor - {ProjectLabel} - {YYYY-MM-DD}"
 # The reply binding (ContractLaborService._expected_cl_reviewer_reply_conversation_id)
 # and the FindContractLaborForReviewerReply sproc match on both forms.
-CL_NOTIFICATION_SUBJECT_PREFIX = "[Review] Contract Labor - "
+CL_NOTIFICATION_SUBJECT_PREFIX = f"{SUBJECT_PREFIX}Contract Labor - "
 CL_LEGACY_NOTIFICATION_SUBJECT_PREFIX = "Contract Labor - "
 
 
@@ -58,6 +62,17 @@ def is_cl_notification_subject(subject: Optional[str]) -> bool:
 
 
 logger = logging.getLogger(__name__)
+
+
+def contract_labor_ask(project_label: str, work_date: str) -> str:
+    """The reviewer ask for a consolidated crew draft (one project, one date)."""
+    return (
+        f"<p>The following Contract Labor for {html.escape(project_label)} "
+        f"on {html.escape(work_date)} has been submitted for review. When "
+        "you have a moment, please review and reply with an approval with "
+        "sub cost code and description or not approved. The sub cost code "
+        "you provide will be applied to the full crew listed below.</p>"
+    )
 
 
 class ContractLaborReviewNotificationService:
@@ -165,6 +180,7 @@ class ContractLaborReviewNotificationService:
 
             # U-797c1: the same claim, recorded on dbo.ReviewNotification with one target per
             # crew member. Self-guarded; None when it could not be written (legacy claim still holds).
+            # U-797c2a: the record id rides in the enqueue payload (send_with_record).
             review_notification = self._claim_review_notification(
                 project_id=project_id,
                 work_date=work_date,
@@ -191,19 +207,24 @@ class ContractLaborReviewNotificationService:
                     pms=pms,
                 )
 
-                outbox_row = outbox.enqueue_send_mail(
-                    entity_type="ContractLabor",
-                    entity_public_id=str(cl_public_id or ""),
-                    to_addresses=to_addresses,
-                    cc_addresses=cc_addresses,
-                    bcc_addresses=bcc_addresses,
-                    subject=subject,
-                    body=body,
-                    body_type="HTML",
-                    mode="draft",
+                outbox_row = ReviewEmailComposer.send_with_record(
+                    outbox=outbox,
+                    records_factory=lambda: _rns.ReviewNotificationRecordService(),
+                    record=review_notification,
+                    context=f"project_id={project_id} work_date={work_date_str}",
+                    mail=dict(
+                        entity_type="ContractLabor",
+                        entity_public_id=str(cl_public_id or ""),
+                        to_addresses=to_addresses,
+                        cc_addresses=cc_addresses,
+                        bcc_addresses=bcc_addresses,
+                        subject=subject,
+                        body=body,
+                        body_type="HTML",
+                        mode="draft",
+                    ),
                 )
                 if outbox_row:
-                    self._attach_review_notification(review_notification, outbox_row)
                     enqueued += 1
                     continue
                 logger.error(
@@ -312,44 +333,31 @@ class ContractLaborReviewNotificationService:
                                    contract_labor_ids: list):
         """U-797c1: record the crew claim on dbo.ReviewNotification. Never raises.
         Returns None when not written (already claimed, or a failure)."""
-        try:
-            return _rns.ReviewNotificationRecordService().claim_for_crew(
-                project_id=project_id,
-                work_date=work_date,
-                subject=subject,
-                contract_labor_ids=contract_labor_ids,
-            )
-        except Exception as error:
-            logger.warning(
-                "cl_review_notification.record_claim_failed project_id=%s work_date=%s error=%s",
-                project_id, work_date, type(error).__name__,
-            )
+        context = f"project_id={project_id} work_date={work_date}"
+        records = ReviewEmailComposer.records_or_none(
+            lambda: _rns.ReviewNotificationRecordService(), context,
+        )
+        if records is None:
             return None
-
-    def _attach_review_notification(self, record, outbox_row) -> None:
-        if record is None or outbox_row is None:
-            return
-        try:
-            _rns.ReviewNotificationRecordService().attach_outbox(record.Id, outbox_row.id)
-        except Exception as error:
-            logger.error(
-                "cl_review_notification.record_attach_failed error=%s", type(error).__name__,
-            )
+        return records.try_claim_for_crew(
+            project_id=project_id,
+            work_date=work_date,
+            subject=subject,
+            contract_labor_ids=contract_labor_ids,
+            context=context,
+        )
 
     def _release_review_notification(self, record) -> None:
-        if record is None:
-            return
-        try:
-            _rns.ReviewNotificationRecordService().release(record.Id)
-        except Exception as error:
-            # The email is not blocked by this. A leftover record row only means the record
-            # for this (project, date) is missing or stale, so the reply binds through the
-            # legacy path. It does not stop a future draft from being sent.
-            logger.error(
-                "cl_review_notification.record_release_failed error=%s — the record row for "
-                "this (project, date) may remain; replies bind through the legacy path until it is removed",
-                type(error).__name__,
+        # A leftover record row only means the record for this (project, date) is missing
+        # or stale, so the reply binds through the legacy path. It does not stop a future
+        # draft from being sent.
+        if record is not None:
+            context = f"review_notification_id={record.Id}"
+            records = ReviewEmailComposer.records_or_none(
+                lambda: _rns.ReviewNotificationRecordService(), context,
             )
+            if records is not None:
+                records.try_release(record.Id, context=context)
 
     def _release_notification_claim(self, *, project_id: int, work_date) -> None:
         """Drop the (project, date) claim so a failed draft can retry.
@@ -444,7 +452,7 @@ class ContractLaborReviewNotificationService:
             if not email:
                 continue
             name = f"{r.get('firstname', '')} {r.get('lastname', '')}".strip() or None
-            addrs.append({"email": email, "name": name})
+            addrs.append(ReviewEmailComposer.address(email, name))
         return addrs
 
     def _build_bcc_addresses(self) -> list[dict]:
@@ -457,7 +465,7 @@ class ContractLaborReviewNotificationService:
             settings = Settings()
             inbox = (getattr(settings, "invoice_inbox_email", "") or "").strip()
             if inbox:
-                return [{"email": inbox, "name": None}]
+                return ReviewEmailComposer.archive_bcc(inbox, None)
         except Exception:
             logger.warning(
                 "cl_review_notification.bcc_lookup_failed — falling back to no BCC",
@@ -478,15 +486,15 @@ class ContractLaborReviewNotificationService:
             return name
         return f"#{project_id}"
 
-    def _greeting_names(self, pms: list[dict]) -> str:
-        """Slash-join first names: ['Cassidy', 'Zach'] → 'Cassidy/Zach'.
-        Returns empty string when no recipients — caller renders 'Hi,'."""
-        firsts: list[str] = []
+    def _greeting_names(self, pms: list[dict]) -> list[str]:
+        """Stripped, non-empty first names of the PMs, in order. The composer dedupes
+        and slash-joins them ('Cassidy/Zach')."""
+        names: list[str] = []
         for r in pms:
-            fn = (r.get("firstname") or "").strip()
-            if fn and fn not in firsts:
-                firsts.append(fn)
-        return "/".join(firsts)
+            first = (r.get("firstname") or "").strip()
+            if first:
+                names.append(first)
+        return names
 
     def _build_body(
         self,
@@ -523,16 +531,8 @@ class ContractLaborReviewNotificationService:
         # at the body, no salutation. (Owners and BCC still receive the
         # email; they just don't get a personalized greeting since they're
         # not the addressees in TO.)
-        names = self._greeting_names(pms)
-        greeting = f"<p>{html.escape(names)},</p>" if names else ""
-
-        ask = (
-            f"<p>The following Contract Labor for {html.escape(project_label)} "
-            f"on {html.escape(work_date)} has been submitted for review. When "
-            "you have a moment, please review and reply with an approval with "
-            "sub cost code and description or not approved. The sub cost code "
-            "you provide will be applied to the full crew listed below.</p>"
-        )
+        greeting = ReviewEmailComposer.greeting(self._greeting_names(pms), dedupe=True)
+        ask = contract_labor_ask(project_label, work_date)
 
         # Group the flat line rows by worker (ContractLaborId), preserving
         # first-seen order so the render matches the sproc's ORDER BY.

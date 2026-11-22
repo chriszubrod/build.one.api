@@ -182,6 +182,10 @@ def _harness(
         return MagicMock(side_effect=_fn)
 
     stack = ExitStack()
+    # U-797c2a fixture change: the record is written only when MS writes are on (the gate
+    # enqueue_send_mail uses). The goldens run with writes on, as production does when it writes.
+    stack.enter_context(patch(
+        "integrations.ms.outbox.business.service.writes_allowed", return_value=True))
 
     def patch_cls(target, **methods):
         cls = stack.enter_context(patch(target))
@@ -244,18 +248,34 @@ def _harness(
         "entities.user.business.service.UserService",
         read_by_id=rec("user.read_by_id", submitter),
     )
+    enqueue = rec("outbox.enqueue_send_mail", outbox_result)
+
+    def _enqueue_as_pinned(**kwargs):
+        # U-797c2a fixture change: `review_notification_id` is the one new payload
+        # key (written only when the record exists). The goldens pin the call as it
+        # was before U-797c2a, so it is dropped before recording. Asserted separately
+        # in tests/test_u797c2a_*.py.
+        kwargs.pop("review_notification_id", None)
+        return enqueue(**kwargs)
+
     patch_cls(
         "integrations.ms.outbox.business.service.MsOutboxService",
-        enqueue_send_mail=rec("outbox.enqueue_send_mail", outbox_result),
+        enqueue_send_mail=MagicMock(side_effect=_enqueue_as_pinned),
     )
     # U-797c1: the record write is stubbed WITHOUT going through rec(), so it does not
     # appear in the golden call list. Success path logs nothing, so the goldens hold.
+    # U-797c2a: the try_* wrappers are stubbed alongside the raw methods (old and new
+    # call shapes both resolve to the same record).
     record_cls = patch_cls(
         "entities.review.business.review_notification_service.ReviewNotificationRecordService",
         record_for_review=MagicMock(return_value=SimpleNamespace(Id=77)),
         claim_for_crew=MagicMock(return_value=None),
         attach_outbox=MagicMock(),
         release=MagicMock(),
+        try_record_for_review=MagicMock(return_value=SimpleNamespace(Id=77)),
+        try_claim_for_crew=MagicMock(return_value=None),
+        try_attach_outbox=MagicMock(return_value=True),
+        try_release=MagicMock(return_value=True),
     )
     RECORD_SERVICE["instance"] = record_cls.return_value
     patch_cls(
@@ -2138,10 +2158,11 @@ def test_record_path_is_invoked_once_per_enqueued_email(caplog, kind):
     entity = _bill() if kind == "bill" else _expense()
     _capture(caplog, entity, recipients=ALL_RECIPIENTS, line_items=MULTI_LINES, links=LINKS_WITH_PDF)
     svc = RECORD_SERVICE["instance"]
-    svc.record_for_review.assert_called_once()
-    kwargs = svc.record_for_review.call_args.kwargs
+    # U-797c2a: the record is written through the never-raise try_* wrapper, BEFORE the enqueue.
+    svc.try_record_for_review.assert_called_once()
+    kwargs = svc.try_record_for_review.call_args.kwargs
     assert kwargs["kind"] == kind
     assert kwargs["review_id"] == _review().id
     assert kwargs["targets"] == [(kind, entity.id)]
-    svc.attach_outbox.assert_called_once()
-    assert svc.attach_outbox.call_args.args[1] == OUTBOX_ID
+    svc.try_attach_outbox.assert_called_once()
+    assert svc.try_attach_outbox.call_args.args[1] == OUTBOX_ID

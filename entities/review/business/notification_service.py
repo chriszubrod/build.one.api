@@ -11,6 +11,16 @@ from typing import Any, Callable, Optional
 # Local Imports
 from entities.review.business import review_notification_service as _rns
 from entities.review.business.recipient_service import ReviewRecipientService
+from entities.review.business.review_email_composer import ReviewEmailComposer
+
+# Bill and Expense BCC the office archive under this display name.
+BILL_EXPENSE_ARCHIVE_NAME = "Invoice Inbox (archive)"
+
+# The reviewer ask for a bill or expense (sits under the header block).
+BILL_EXPENSE_ASK = (
+    "<p>When you have a moment, will you please reply for approval "
+    "with Sub Cost Code and Description, or non-approval?</p>"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -266,11 +276,8 @@ class ReviewNotificationService:
         settings = Settings()
         bcc_with_email = []
         if settings.invoice_inbox_email:
-            bcc_with_email.append(
-                {
-                    "email": settings.invoice_inbox_email,
-                    "name": "Invoice Inbox (archive)",
-                }
+            bcc_with_email = ReviewEmailComposer.archive_bcc(
+                settings.invoice_inbox_email, BILL_EXPENSE_ARCHIVE_NAME,
             )
         else:
             logger.warning(
@@ -371,24 +378,38 @@ class ReviewNotificationService:
         parent_link = (
             {spec.outbox_parent_kwarg: parent.id} if spec.outbox_parent_kwarg else {}
         )
-        result = MsOutboxService().enqueue_send_mail(
-            entity_type=spec.entity_type,
-            entity_public_id=parent.public_id,
-            to_addresses=[
-                {"email": r.email, "name": r.display_name} for r in to_with_email
-            ],
-            cc_addresses=[
-                {"email": r.email, "name": r.display_name} for r in cc_with_email
-            ],
-            bcc_addresses=bcc_with_email,
-            subject=subject,
-            body=body_html,
-            body_type="HTML",
-            attachment=attachment_payload,
-            mode=mode,
-            review_id=review.id,
-            **parent_link,
-            # forward_message_id deliberately omitted — v2 is new-email.
+        # 6a. Record first, then enqueue (U-797c2a). The ReviewNotification row is
+        # written before the email; its id rides in the payload. A record failure
+        # enqueues the identical email without the key (see ReviewEmailComposer).
+        # forward_message_id deliberately omitted — v2 is new-email.
+        result = ReviewEmailComposer.record_then_send(
+            outbox=MsOutboxService(),
+            records_factory=lambda: _rns.ReviewNotificationRecordService(),
+            context=f"kind={spec.kind} {key}={parent.public_id}",
+            record_kwargs=dict(
+                kind=spec.kind,
+                review_id=review.id,
+                targets=[(spec.kind, parent.id)],
+                subject=subject,
+            ),
+            mail=dict(
+                entity_type=spec.entity_type,
+                entity_public_id=parent.public_id,
+                to_addresses=[
+                    ReviewEmailComposer.address(r.email, r.display_name) for r in to_with_email
+                ],
+                cc_addresses=[
+                    ReviewEmailComposer.address(r.email, r.display_name) for r in cc_with_email
+                ],
+                bcc_addresses=bcc_with_email,
+                subject=subject,
+                body=body_html,
+                body_type="HTML",
+                attachment=attachment_payload,
+                mode=mode,
+                review_id=review.id,
+                **parent_link,
+            ),
         )
 
         if result is None:
@@ -410,12 +431,6 @@ class ReviewNotificationService:
             (attachment_payload or {}).get("name") or "(none)",
         )
 
-        # 6b. Record the ReviewNotification (U-797c1). Runs only after the
-        # email is enqueued; a failure here never blocks or undoes it.
-        self._record_review_notification(
-            spec=spec, parent=parent, review=review, subject=subject, outbox_row=result,
-        )
-
         # 7. Advance the Review state once the notification has been enqueued
         # to at least one PM/Owner (TO or CC populated — BCC-only doesn't
         # count). Best-effort; on failure the parent stays at "Submitted" and
@@ -423,26 +438,6 @@ class ReviewNotificationService:
         if not (to_with_email or cc_with_email):
             return
         self._advance_to_in_review(spec=spec, parent=parent, review=review)
-
-    def _record_review_notification(self, *, spec: _NotificationSpec, parent, review,
-                                    subject: str, outbox_row) -> None:
-        """Write the dbo.ReviewNotification row for this per-record email and link
-        it to its outbox row (U-797c1). Never raises: the email is already queued."""
-        try:
-            service = _rns.ReviewNotificationRecordService()
-            record = service.record_for_review(
-                kind=spec.kind,
-                review_id=review.id,
-                targets=[(spec.kind, parent.id)],
-                subject=subject,
-            )
-            if record is not None and outbox_row is not None:
-                service.attach_outbox(record.Id, outbox_row.id)
-        except Exception as error:
-            logger.error(
-                "review_notification.record_failed %s=%s error=%s",
-                spec.log_key, getattr(parent, "public_id", None), type(error).__name__,
-            )
 
     def _advance_to_in_review(self, *, spec: _NotificationSpec, parent, review) -> None:
         """Write the system's own "moved into review" Review row.
@@ -636,8 +631,8 @@ class ReviewNotificationService:
         `[Review] <Vendor> — Expense <ref> — <Project> — $<amt>` (expense)."""
         number_display = number or spec.number_placeholder
         amount_str = ReviewNotificationService._format_amount(total_amount)
-        return (
-            f"[Review] {vendor_name} — {spec.subject_number_prefix}{number_display} "
+        return ReviewEmailComposer.subject(
+            f"{vendor_name} — {spec.subject_number_prefix}{number_display} "
             f"— {project_label} — {amount_str}"
         )
 
@@ -676,12 +671,11 @@ class ReviewNotificationService:
         greeting = ""
         if to_recipients:
             firstnames = [
-                html.escape(r.firstname.strip())
+                r.firstname.strip()
                 for r in to_recipients
                 if getattr(r, "firstname", None) and r.firstname.strip()
             ]
-            if firstnames:
-                greeting = f"<p>{'/'.join(firstnames)},</p>"
+            greeting = ReviewEmailComposer.greeting(firstnames, dedupe=False)
 
         # Line-items table — only rendered when ≥1 line item exists.
         # Keeps each row to: description, project (if multi-project parent),
@@ -755,8 +749,7 @@ class ReviewNotificationService:
             "</p>"
             f"{line_rows_html}"
             f"{attachment_html}"
-            "<p>When you have a moment, will you please reply for approval "
-            "with Sub Cost Code and Description, or non-approval?</p>"
+            f"{BILL_EXPENSE_ASK}"
         )
 
     @staticmethod

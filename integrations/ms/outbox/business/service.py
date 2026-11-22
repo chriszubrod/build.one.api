@@ -158,6 +158,11 @@ _UPLOAD_TARGET_KEYS = ("drive_id", "parent_item_id", "filename", "blob_path")
 _UPLOAD_SESSION_KEYS = ("upload_session_url", "completed_bytes", "total_bytes")
 
 
+def writes_allowed() -> bool:
+    """Public read of the outbox write gate. Returns exactly what `_writes_allowed()` returns."""
+    return _writes_allowed()
+
+
 def _writes_allowed() -> bool:
     """
     Match the MsGraphClient write gate: enqueueing an outbox row for a write
@@ -541,9 +546,13 @@ class MsOutboxService:
         forward_message_id: Optional[str] = None,
         comment_text: Optional[str] = None,
         html_preamble: Optional[str] = None,
+        review_notification_id: Optional[int] = None,
     ) -> Optional[MsOutbox]:
         """
         Queue an outbound mail send (or draft create) for background dispatch.
+
+        `review_notification_id` (U-797c2a) names the dbo.ReviewNotification row the
+        worker stamps on draft create. It is written into the payload only when not None.
 
         `to_addresses` / `cc_addresses` / `bcc_addresses` are lists of dicts
         shaped `{"email": str, "name": Optional[str]}` matching the existing
@@ -593,26 +602,29 @@ class MsOutboxService:
         if not tenant_id:
             logger.error("ms.outbox.enqueue_send_mail.no_tenant_id")
             return None
+        payload = {
+            "to_addresses": to_addresses,
+            "cc_addresses": cc_addresses or [],
+            "bcc_addresses": bcc_addresses or [],
+            "subject": subject,
+            "body": body,
+            "body_type": body_type,
+            "attachment": attachment,
+            "mode": mode,
+            "review_id": review_id,
+            "bill_id": bill_id,
+            "forward_message_id": forward_message_id,
+            "comment_text": comment_text,
+            "html_preamble": html_preamble,
+        }
+        if review_notification_id is not None:
+            payload["review_notification_id"] = review_notification_id
         return self.enqueue(
             kind=KIND_SEND_MAIL,
             entity_type=entity_type,
             entity_public_id=entity_public_id,
             tenant_id=tenant_id,
-            payload={
-                "to_addresses": to_addresses,
-                "cc_addresses": cc_addresses or [],
-                "bcc_addresses": bcc_addresses or [],
-                "subject": subject,
-                "body": body,
-                "body_type": body_type,
-                "attachment": attachment,
-                "mode": mode,
-                "review_id": review_id,
-                "bill_id": bill_id,
-                "forward_message_id": forward_message_id,
-                "comment_text": comment_text,
-                "html_preamble": html_preamble,
-            },
+            payload=payload,
         )
 
     def enqueue_update_draft(

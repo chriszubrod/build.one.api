@@ -1494,24 +1494,39 @@ class MsOutboxWorker:
                         "graph_message_id": message_id,
                     },
                 )
-            # U-797c1: the same identity onto dbo.ReviewNotification, keyed by this
-            # outbox row. Must never fail or retry the send_mail row.
-            try:
-                from entities.review.business.review_notification_service import (
-                    ReviewNotificationRecordService,
-                )
+            self._stamp_review_notification(row, payload, message_id)
 
-                ReviewNotificationRecordService().stamp_from_outbox(
-                    outbox_id=row.id,
-                    conversation_id=payload.get("conversation_id"),
-                    internet_message_id=payload.get("internet_message_id"),
-                    draft_graph_message_id=message_id,
-                )
-            except Exception as error:
-                logger.warning(
-                    "ms.outbox.send_mail.review_notification_stamp_failed outbox_public_id=%s error=%s",
-                    getattr(row, "public_id", None), type(error).__name__,
-                )
+    # Entity types whose send_mail rows are review notifications. Rows enqueued before
+    # U-797c2a carry no review_notification_id and are stamped by outbox id.
+    _REVIEW_STAMP_ENTITY_TYPES = ("Bill", "Expense", "ContractLabor")
+
+    def _stamp_review_notification(self, row, payload: Dict[str, Any], draft_graph_message_id) -> None:
+        """U-797c1 / U-797c2a: the draft's identity onto dbo.ReviewNotification.
+
+        By id when the payload names the record; by outbox id for review rows enqueued
+        before this deploy; NO database call for any other mail. Never fails or retries
+        the send_mail row."""
+        try:
+            review_notification_id = payload.get("review_notification_id")
+            if review_notification_id is None and getattr(row, "entity_type", None) not in self._REVIEW_STAMP_ENTITY_TYPES:
+                return
+            from entities.review.business.review_notification_service import (
+                stamp_review_notification,
+            )
+
+            stamp_review_notification(
+                outbox_id=row.id,
+                review_notification_id=review_notification_id,
+                conversation_id=payload.get("conversation_id"),
+                internet_message_id=payload.get("internet_message_id"),
+                draft_graph_message_id=draft_graph_message_id,
+            )
+        except Exception as error:
+            # The stamp is an audit sidecar: a failure here never fails or retries the row.
+            logger.warning(
+                "ms.outbox.send_mail.review_notification_stamp_failed outbox_public_id=%s error=%s",
+                getattr(row, "public_id", None), type(error).__name__,
+            )
 
     def _handle_update_draft(
         self,

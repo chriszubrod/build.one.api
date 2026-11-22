@@ -5,9 +5,12 @@ import inspect
 from datetime import date
 from types import SimpleNamespace
 
+import pytest
+
 from entities.review.business import cl_notification_service as cl_mod
 from entities.review.business import notification_service as ns_mod
 from entities.review.business import review_notification_service as rns
+from entities.review.business.review_email_composer import ReviewEmailComposer
 from entities.contract_labor.business import service as cl_service_mod
 from integrations.ms.outbox.business import worker as worker_mod
 
@@ -44,8 +47,36 @@ class FakeRecordService:
     def stamp_from_outbox(self, **kw):
         self._rec("stamp_from_outbox", **kw)
 
+    # U-797c2a: the writers call the never-raise try_* wrappers; these mirror the real ones.
+    def try_record_for_review(self, context="", **kw):
+        try:
+            return self.record_for_review(**kw)
+        except Exception:
+            return None
+
+    def try_claim_for_crew(self, context="", **kw):
+        try:
+            return self.claim_for_crew(**kw)
+        except Exception:
+            return None
+
+    def try_attach_outbox(self, id, outbox_id, context=""):
+        try:
+            self.attach_outbox(id, outbox_id)
+            return True
+        except Exception:
+            return False
+
+    def try_release(self, id, context=""):
+        try:
+            self.release(id)
+            return True
+        except Exception:
+            return False
+
 
 def _reset(monkeypatch, fail_on=(), claim_result=SimpleNamespace(Id=9)):
+    monkeypatch.setenv("ALLOW_MS_WRITES", "true")  # the record is written only when writes are on
     FakeRecordService.log = []
     FakeRecordService.fail_on = set(fail_on)
     FakeRecordService.claim_result = claim_result
@@ -60,45 +91,90 @@ def _names(log):
 # ---------------------------------------------------------------------------
 # Bill / Expense writer
 # ---------------------------------------------------------------------------
-def test_bill_expense_record_writes_kind_target_and_attaches_outbox(monkeypatch):
-    log = _reset(monkeypatch)
-    svc = ns_mod.ReviewNotificationService()
-    spec = ns_mod.BILL_SPEC
-    parent = SimpleNamespace(id=31, public_id="bp")
-    review = SimpleNamespace(id=5)
-    outbox = SimpleNamespace(id=90)
-    svc._record_review_notification(spec=spec, parent=parent, review=review,
-                                    subject="[Review] V — Bill #1", outbox_row=outbox)
-    assert _names(FakeRecordService.log) == ["record_for_review", "attach_outbox"]
-    rec = FakeRecordService.log[0][2]
-    assert rec == {"kind": "bill", "review_id": 5, "targets": [("bill", 31)],
-                   "subject": "[Review] V — Bill #1"}
-    assert FakeRecordService.log[1][1] == (12, 90)
+class _Outbox:
+    """Records enqueues into the shared FakeRecordService.log so order is observable.
+    `result` is the row returned (None = refused). `raises` makes the enqueue raise."""
+
+    def __init__(self, result=SimpleNamespace(id=90), raises=None):
+        self.calls = []
+        self.result = result
+        self.raises = raises
+
+    def enqueue_send_mail(self, **kw):
+        self.calls.append(kw)
+        FakeRecordService.log.append(("enqueue", (), kw))
+        if self.raises is not None:
+            raise self.raises
+        return self.result
+
+
+def _bill_mail(**over):
+    mail = dict(entity_type="Bill", entity_public_id="bp", to_addresses=[], cc_addresses=[],
+                bcc_addresses=[], subject="[Review] V — Bill #1", body="<p>b</p>",
+                body_type="HTML", attachment=None, mode="draft", review_id=5, bill_id=31)
+    mail.update(over)
+    return mail
+
+
+_BILL_RECORD = dict(kind="bill", review_id=5, targets=[("bill", 31)], subject="[Review] V — Bill #1")
+
+
+def test_bill_expense_record_is_written_before_the_enqueue_and_attached_after(monkeypatch):
+    _reset(monkeypatch)
+    outbox = _Outbox()
+    row = ReviewEmailComposer.record_then_send(
+        outbox=outbox, records_factory=FakeRecordService, record_kwargs=_BILL_RECORD, mail=_bill_mail())
+    assert row is outbox.result
+    assert _names(FakeRecordService.log) == ["record_for_review", "enqueue", "attach_outbox"]
+    assert FakeRecordService.log[0][2] == _BILL_RECORD
+    assert outbox.calls[0]["review_notification_id"] == 12
+    assert FakeRecordService.log[2][1] == (12, 90)
 
 
 def test_expense_record_uses_expense_kind(monkeypatch):
     _reset(monkeypatch)
-    svc = ns_mod.ReviewNotificationService()
-    parent = SimpleNamespace(id=32, public_id="ep")
-    svc._record_review_notification(spec=ns_mod.EXPENSE_SPEC, parent=parent,
-                                    review=SimpleNamespace(id=6), subject="S",
-                                    outbox_row=SimpleNamespace(id=91))
+    record = dict(kind="expense", review_id=6, targets=[("expense", 32)], subject="S")
+    ReviewEmailComposer.record_then_send(
+        outbox=_Outbox(), records_factory=FakeRecordService, record_kwargs=record,
+        mail=_bill_mail(entity_type="Expense", bill_id=None))
     assert FakeRecordService.log[0][2]["kind"] == "expense"
     assert FakeRecordService.log[0][2]["targets"] == [("expense", 32)]
 
 
-def test_bill_expense_record_failure_never_raises(monkeypatch):
+def test_bill_expense_record_failure_never_raises_and_enqueues_without_the_key(monkeypatch):
     _reset(monkeypatch, fail_on={"record_for_review"})
-    svc = ns_mod.ReviewNotificationService()
-    # Must not raise: the email is already enqueued and cannot be un-sent.
-    svc._record_review_notification(spec=ns_mod.BILL_SPEC, parent=SimpleNamespace(id=1, public_id="p"),
-                                    review=SimpleNamespace(id=2), subject="S",
-                                    outbox_row=SimpleNamespace(id=3))
+    outbox = _Outbox()
+    # Must not raise, and the email enqueues exactly as before U-797c2a: no key, no attach.
+    row = ReviewEmailComposer.record_then_send(
+        outbox=outbox, records_factory=FakeRecordService, record_kwargs=_BILL_RECORD, mail=_bill_mail())
+    assert row is outbox.result
+    assert "review_notification_id" not in outbox.calls[0]
+    assert outbox.calls[0] == _bill_mail()
+    assert "attach_outbox" not in _names(FakeRecordService.log)
+    assert "release" not in _names(FakeRecordService.log)
 
 
-def test_bill_expense_record_runs_after_the_enqueue_call_in_do_enqueue():
-    src = inspect.getsource(ns_mod.ReviewNotificationService._do_enqueue)
-    assert src.index("enqueue_send_mail(") < src.index("_record_review_notification(")
+def test_refused_enqueue_releases_the_record(monkeypatch):
+    _reset(monkeypatch)
+    row = ReviewEmailComposer.record_then_send(
+        outbox=_Outbox(result=None), records_factory=FakeRecordService,
+        record_kwargs=_BILL_RECORD, mail=_bill_mail())
+    assert row is None
+    assert ("release", (12,), {}) in FakeRecordService.log
+
+
+def test_raised_enqueue_releases_the_record_and_reraises(monkeypatch):
+    _reset(monkeypatch)
+    with pytest.raises(RuntimeError):
+        ReviewEmailComposer.record_then_send(
+            outbox=_Outbox(raises=RuntimeError("enqueue boom")), records_factory=FakeRecordService,
+            record_kwargs=_BILL_RECORD, mail=_bill_mail())
+    assert ("release", (12,), {}) in FakeRecordService.log
+
+
+def test_bill_expense_record_is_written_before_the_enqueue_in_the_composer_source():
+    src = inspect.getsource(ReviewEmailComposer.record_then_send)
+    assert src.index("try_record_for_review(") < src.index("send_with_record(")
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +284,7 @@ def test_worker_stamps_review_notification_with_outbox_id(monkeypatch):
     _reset(monkeypatch)
     draft = {"draft": {"message_id": "G1", "conversation_id": "C1", "internet_message_id": "<I1>"}}
     w = _worker(monkeypatch, draft)
-    w._handle_send_mail(SimpleNamespace(id=7, public_id="P"), dict(_PAYLOAD))
+    w._handle_send_mail(SimpleNamespace(id=7, public_id="P", entity_type="Bill"), dict(_PAYLOAD))
     stamp = [e for e in FakeRecordService.log if e[0] == "stamp_from_outbox"]
     assert len(stamp) == 1
     assert stamp[0][2] == {"outbox_id": 7, "conversation_id": "C1",
@@ -220,7 +296,7 @@ def test_worker_stamp_failure_is_swallowed(monkeypatch):
     draft = {"draft": {"message_id": "G1", "conversation_id": "C1", "internet_message_id": "<I1>"}}
     w = _worker(monkeypatch, draft)
     # The send_mail row must still complete: no exception escapes the handler.
-    w._handle_send_mail(SimpleNamespace(id=7, public_id="P"), dict(_PAYLOAD))
+    w._handle_send_mail(SimpleNamespace(id=7, public_id="P", entity_type="Bill"), dict(_PAYLOAD))
 
 
 def test_worker_stamp_constructor_failure_is_swallowed(monkeypatch):
@@ -231,13 +307,13 @@ def test_worker_stamp_constructor_failure_is_swallowed(monkeypatch):
     monkeypatch.setattr(rns, "ReviewNotificationRecordService", Boom)
     draft = {"draft": {"message_id": "G1", "conversation_id": "C1", "internet_message_id": "<I1>"}}
     w = _worker(monkeypatch, draft)
-    w._handle_send_mail(SimpleNamespace(id=7, public_id="P"), dict(_PAYLOAD))
+    w._handle_send_mail(SimpleNamespace(id=7, public_id="P", entity_type="Bill"), dict(_PAYLOAD))
 
 
 def test_worker_has_no_stamp_when_graph_returns_no_message_id(monkeypatch):
     _reset(monkeypatch)
     w = _worker(monkeypatch, {"draft": {}})
-    w._handle_send_mail(SimpleNamespace(id=7, public_id="P"), dict(_PAYLOAD))
+    w._handle_send_mail(SimpleNamespace(id=7, public_id="P", entity_type="Bill"), dict(_PAYLOAD))
     assert "stamp_from_outbox" not in _names(FakeRecordService.log)
 
 

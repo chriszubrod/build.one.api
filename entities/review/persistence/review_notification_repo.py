@@ -115,6 +115,34 @@ class ReviewNotificationRepository:
             logger.error("Error during StampReviewNotificationFromOutbox: %s", type(error).__name__)
             raise map_database_error(error)
 
+    def stamp_by_id(
+        self,
+        *,
+        id: int,
+        outbox_id: int,
+        conversation_id: Optional[str],
+        internet_message_id: Optional[str],
+        draft_graph_message_id: Optional[str],
+    ) -> None:
+        """U-797c2a: stamp the row named by the outbox payload's review_notification_id.
+        `outbox_id` is the ownership check: the sproc only fills a row that is unattached
+        or attached to this outbox row."""
+        params = {
+            "Id": id,
+            "OutboxId": outbox_id,
+            "ConversationId": conversation_id,
+            "InternetMessageId": internet_message_id,
+            "DraftGraphMessageId": draft_graph_message_id,
+        }
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(cursor=cursor, name="StampReviewNotificationById", params=params)
+                conn.commit()
+        except Exception as error:
+            logger.error("Error during StampReviewNotificationById: %s", type(error).__name__)
+            raise map_database_error(error)
+
     def delete(self, *, id: int) -> None:
         try:
             with get_connection() as conn:

@@ -1,7 +1,7 @@
 -- Contract: dbo.ReviewNotification / dbo.ReviewNotificationTarget — one row per outbound review email, and the records it covers.
 -- Owns: the record of every review-submit email (Bill, Expense, BillCredit, ContractLabor): its outbox row, its Graph conversation identity (stamped by the MS worker on draft create), and the exact documents its reply may approve.
 -- Invariants: Kind is one of bill/expense/bill_credit/contract_labor. A ContractLabor claim is one row per (ProjectId, WorkDate) (CreateReviewNotification returns an empty set on a duplicate). Every target row names exactly one document. ConversationId / InternetMessageId / DraftGraphMessageId compare case-sensitively (BIN). Stamping only fills NULLs.
--- Sprocs: CreateReviewNotification, AddReviewNotificationTarget, SetReviewNotificationOutbox, StampReviewNotificationFromOutbox, DeleteReviewNotification, FindReviewNotificationForReply
+-- Sprocs: CreateReviewNotification, AddReviewNotificationTarget, SetReviewNotificationOutbox, StampReviewNotificationFromOutbox, StampReviewNotificationById, DeleteReviewNotification, FindReviewNotificationForReply
 -- =============================================================================
 -- U-797c1: ReviewNotification is the one record a reply binds through (design
 -- docs/design/u797c-review-reply-binding.md, section 1). Writers: the Bill /
@@ -126,8 +126,8 @@ BEGIN
 
     SET @NewId = SCOPE_IDENTITY();
 
-    SELECT [Id], [PublicId], [Kind], [ReviewId], [OutboxId], [Subject],
-           [ProjectId], [WorkDate], [Source], [CreatedDatetime]
+    -- U-797c2a: the only caller reads Id (record_for_review / claim_for_crew return it as the row).
+    SELECT [Id]
     FROM dbo.[ReviewNotification]
     WHERE [Id] = @NewId;
 END
@@ -188,10 +188,6 @@ BEGIN
     FROM dbo.[ReviewNotification] n
     LEFT JOIN [ms].[Outbox] o ON o.[Id] = @OutboxId
     WHERE n.[Id] = @Id;
-
-    SELECT [Id], [OutboxId], [ConversationId], [InternetMessageId], [DraftGraphMessageId], [StampedDatetime]
-    FROM dbo.[ReviewNotification]
-    WHERE [Id] = @Id;
 END
 GO
 
@@ -215,10 +211,32 @@ BEGIN
         [DraftGraphMessageId] = CASE WHEN [DraftGraphMessageId] IS NULL THEN @DraftGraphMessageId COLLATE Latin1_General_BIN ELSE [DraftGraphMessageId] END,
         [StampedDatetime]     = COALESCE([StampedDatetime], SYSUTCDATETIME())
     WHERE [OutboxId] = @OutboxId;
+END
+GO
 
-    SELECT [Id], [OutboxId], [ConversationId], [InternetMessageId], [DraftGraphMessageId], [StampedDatetime]
-    FROM dbo.[ReviewNotification]
-    WHERE [OutboxId] = @OutboxId;
+-- -----------------------------------------------------------------------------
+-- StampReviewNotificationById (U-797c2a): the worker stamps the row the enqueue
+-- named in the payload (review_notification_id), not the row found by OutboxId.
+-- Fills only NULL identity columns, like the by-outbox stamp. A no-op when no row
+-- carries this Id.
+-- -----------------------------------------------------------------------------
+CREATE OR ALTER PROCEDURE dbo.StampReviewNotificationById
+    @Id                  BIGINT,
+    @ConversationId      NVARCHAR(512) = NULL,
+    @InternetMessageId   NVARCHAR(512) = NULL,
+    @DraftGraphMessageId NVARCHAR(512) = NULL,
+    @OutboxId            BIGINT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.[ReviewNotification]
+    SET [ConversationId]      = CASE WHEN [ConversationId] IS NULL THEN @ConversationId COLLATE Latin1_General_BIN ELSE [ConversationId] END,
+        [InternetMessageId]   = CASE WHEN [InternetMessageId] IS NULL THEN @InternetMessageId COLLATE Latin1_General_BIN ELSE [InternetMessageId] END,
+        [DraftGraphMessageId] = CASE WHEN [DraftGraphMessageId] IS NULL THEN @DraftGraphMessageId COLLATE Latin1_General_BIN ELSE [DraftGraphMessageId] END,
+        [StampedDatetime]     = COALESCE([StampedDatetime], SYSUTCDATETIME())
+    WHERE [Id] = @Id
+      AND ([OutboxId] IS NULL OR [OutboxId] = @OutboxId);  -- ownership: only this outbox row's record, or an unattached one
 END
 GO
 
@@ -251,8 +269,9 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    SELECT [Id], [PublicId], [Kind], [ReviewId], [OutboxId], [Subject],
-           [ConversationId], [ProjectId], [WorkDate]
+    -- U-797c2a: trimmed to what the binder reads (Kind, ProjectId, WorkDate) and the
+    -- target join needs (Id). The other columns had no reader.
+    SELECT [Id], [Kind], [ProjectId], [WorkDate]
     FROM dbo.[ReviewNotification]
     WHERE [ConversationId] = @ConversationId COLLATE Latin1_General_BIN;
 

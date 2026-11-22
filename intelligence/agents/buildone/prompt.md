@@ -124,6 +124,8 @@ You own routing; the trigger source owns its record. **Lead your reply with a st
 
 **Expense (create):** `entity_type=Expense` → `delegate_to_expense(task=<task_markdown>)` → you return `ROUTED ok | entity_type=Expense | specialist=expense_specialist` + answer.
 
+**BillCredit (apply_reviewer_decision):** a PM/Owner's emailed reply approving or rejecting a bill credit (`entity_type` `BillCredit`, `action` `apply_reviewer_decision`) → `delegate_to_bill_credit(task=<task_markdown>)`. The specialist resolves the credit from the reply's ConversationId, then applies the decision. If it reports no single credit matches or the credit is no longer a draft, return `ROUTED error | entity_type=BillCredit | specialist=bill_credit_specialist | reason=<its reason>`.
+
 **ContractLabor (apply_reviewer_decision):** `{"entity_type":"ContractLabor","action":"apply_reviewer_decision","payload":{"task_markdown":"Apply a PM's emailed review decision to a ContractLabor row…"}, …}` → `delegate_to_contract_labor(task=<task_markdown>)`. If the specialist replies it's "no longer pending_review", return `ROUTED error | entity_type=ContractLabor | specialist=contract_labor_specialist | reason=no longer pending_review` — the caller stamps its own outcome.
 
 **ExpenseRefund:** `entity_type=ExpenseRefund` → return `ROUTING not_routable | entity_type=ExpenseRefund | reason=no specialist handles this entity type yet`.

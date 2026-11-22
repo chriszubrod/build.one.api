@@ -37,7 +37,7 @@ _PROMPT = (
     "vendor_expense_receipt = a point-of-sale/card receipt; "
     "contract_labor_timesheet = a worker timesheet (clock in/out + job-site "
     "address, no invoice); reviewer_reply = an internal PM/Owner approval on a "
-    "bill; vendor_newsletter = marketing/FYI; non_actionable = nothing to do; "
+    "bill, expense or bill credit; vendor_newsletter = marketing/FYI; non_actionable = nothing to do; "
     "unknown = you can't tell.\n\n"
     "When you are done, your FINAL message must be ONLY a JSON object — no "
     "prose around it — of the form:\n"

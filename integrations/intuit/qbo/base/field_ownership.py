@@ -448,3 +448,50 @@ def for_entity(entity_name: str) -> FieldOwnership:
             f"Known: {sorted(_REGISTRY.keys())}"
         )
     return rules
+
+
+# Parent lifecycle statuses during which a human owns the coding (the Expense
+# U-551b-f1-f1 rule, mirrored for BillCredit).
+UNDER_REVIEW_STATUSES = frozenset({"submitted", "in_review", "approved"})
+
+
+def under_review_line_coding(
+    *,
+    local,
+    status,
+    resolved_holding=False,
+    qbo_sub_cost_code_id,
+    qbo_project_public_id,
+    qbo_description,
+):
+    """The (sub_cost_code_id, project_public_id, description, preserved) a QBO pull
+    may write onto an existing line.
+
+    Approved and QBO resolved the holding code: keep the local SCC (even unset);
+    the caller records it. Otherwise, under review, a line that already carries a
+    local SCC keeps it, its local project (returned as None, which the service
+    treats as "leave unchanged") and a non-blank local description. Anything else
+    takes QBO's values. `preserved` is True when a local value was kept. Quantity,
+    unit price, amount and billable state never come from here: they always come
+    from QBO.
+    """
+    under_review = status in UNDER_REVIEW_STATUSES
+    local_scc = getattr(local, "sub_cost_code_id", None)
+    preserved = False
+    scc = qbo_sub_cost_code_id
+    if status == "approved" and resolved_holding:
+        scc = local_scc
+        preserved = local_scc is not None
+    elif under_review and local_scc is not None:
+        scc = local_scc
+        preserved = True
+    project = qbo_project_public_id
+    if under_review and getattr(local, "project_id", None) is not None:
+        project = None
+        preserved = True
+    description = qbo_description
+    local_description = getattr(local, "description", None)
+    if under_review and local_description is not None and str(local_description).strip():
+        description = local_description
+        preserved = True
+    return scc, project, description, preserved

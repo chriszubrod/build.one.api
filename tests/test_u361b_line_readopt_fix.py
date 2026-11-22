@@ -184,3 +184,5 @@ def test_content_change_alongside_id_regeneration_does_not_readopt(grant_qbo_app
     by_id = {li.id: li for li in all_lines}
     assert by_id[created.id].qbo_id == "1"  # the original orphan is untouched (no fingerprint match)
     assert by_id[created.id].description == "Materials"
+
+pytestmark = pytest.mark.usefixtures("u797c4b_vc_parent_lifecycle_offline")

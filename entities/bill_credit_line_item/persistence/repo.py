@@ -11,6 +11,7 @@ import pyodbc
 from entities.bill_credit_line_item.business.model import BillCreditLineItem
 from shared.database import (
     call_procedure,
+    conn_ctx,
     get_connection,
     map_database_error,
 )
@@ -183,6 +184,25 @@ class BillCreditLineItemRepository:
             logger.error(f"Error during read bill credit line items by bill credit ID: {error}")
             raise map_database_error(error)
 
+    def count_by_bill_credit_id_for_update(self, bill_credit_id: int, *, conn=None) -> int:
+        """U-797c4b: line count under UPDLOCK (CountBillCreditLineItemsByBillCreditIdForUpdate)."""
+        try:
+            cm = conn_ctx(conn) if conn is not None else get_connection()
+            with cm as c:
+                cursor = c.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="CountBillCreditLineItemsByBillCreditIdForUpdate",
+                    params={"BillCreditId": bill_credit_id},
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return 0
+                return int(row.LineCount)
+        except Exception as error:
+            logger.error(f"Error during CountBillCreditLineItemsByBillCreditIdForUpdate: {error}")
+            raise map_database_error(error)
+
     def read_by_qbo_identity(self, bill_credit_id: int, qbo_id: str) -> Optional[BillCreditLineItem]:
         """
         Read a bill credit line item by its dbo-native QBO identity, scoped to
@@ -208,13 +228,18 @@ class BillCreditLineItemRepository:
             logger.error(f"Error during read bill credit line item by QBO identity: {error}")
             raise map_database_error(error)
 
-    def update_by_id(self, line_item: BillCreditLineItem) -> Optional[BillCreditLineItem]:
+    def update_by_id(
+        self, line_item: BillCreditLineItem, *, conn=None
+    ) -> Optional[BillCreditLineItem]:
         """
-        Update a bill credit line item by ID.
+        Update a bill credit line item by ID. With a caller-owned `conn`
+        (U-797c4b) the sproc runs inside that transaction; ROWVERSION is still
+        checked by the sproc.
         """
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            cm = conn_ctx(conn) if conn is not None else get_connection()
+            with cm as c:
+                cursor = c.cursor()
                 params = {
                     "Id": line_item.id,
                     "RowVersion": line_item.row_version_bytes,

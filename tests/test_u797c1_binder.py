@@ -225,7 +225,7 @@ def test_legacy_retire_constant_is_sixty_days_after_c1():
 def test_bill_expense_apply_emailed_routes_through_the_notification_binder():
     src = inspect.getsource(rd.apply_emailed)
     assert "bind_reviewer_reply_with_notification(" in src
-    assert "target=(spec.parent, parent.id)" in src
+    assert "target=(spec.kind, parent.id)" in src
     # The legacy binder is still the fallback, unchanged.
     assert "bind_reviewer_reply_to_review_thread(" in src
     assert src.index("bind_reviewer_reply_with_notification(") < src.index("bind_reviewer_reply_to_review_thread(")

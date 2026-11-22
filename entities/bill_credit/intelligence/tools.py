@@ -570,6 +570,99 @@ remove_bill_credit_line_item = Tool(
 )
 
 
+class ApplyBillCreditReviewerDecisionArgs(BaseModel):
+    bill_credit_public_id: str = Field(
+        description="The BillCredit's public_id (UUID) the reviewer's reply is about.",
+    )
+    decision: str = Field(
+        description="Either 'approved' or 'rejected' (also used for 'needs revision').",
+    )
+    reviewer_email: str = Field(
+        description=(
+            "The from-address of the reviewer's reply. The server authorizes it "
+            "against the credit's recipient set (PM or Owner). Unauthorized "
+            "addresses are refused."
+        ),
+    )
+    sub_cost_code_public_id: Optional[str] = Field(
+        default=None,
+        description="Required when decision='approved'. Omit on rejection.",
+    )
+    description: Optional[str] = Field(
+        default=None,
+        description="Optional line description, when the reply spells one out.",
+    )
+    raw_reply_text: Optional[str] = Field(
+        default=None,
+        description="The reviewer's reply body verbatim, persisted as Review.Comments.",
+    )
+    reviewer_email_message_public_id: str = Field(
+        ...,
+        description=(
+            "Required. Public_id of the inbound EmailMessage carrying the reviewer's "
+            "reply. The server refuses apply without it."
+        ),
+    )
+
+
+async def _apply_bill_credit_reviewer_decision(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = ApplyBillCreditReviewerDecisionArgs(**args)
+    body = {
+        "decision": parsed.decision,
+        "reviewer_email": parsed.reviewer_email,
+        "sub_cost_code_public_id": parsed.sub_cost_code_public_id,
+        "description": parsed.description,
+        "raw_reply_text": parsed.raw_reply_text,
+        "reviewer_email_message_public_id": parsed.reviewer_email_message_public_id,
+    }
+    return await ctx.call_api(
+        "POST",
+        f"/api/v1/bill-credit/{parsed.bill_credit_public_id}/apply-reviewer-decision",
+        body=body,
+    )
+
+
+apply_bill_credit_reviewer_decision = Tool(
+    name="apply_bill_credit_reviewer_decision",
+    description=(
+        "Apply a Project Manager's emailed approval or rejection to a draft "
+        "BillCredit (vendor credit). The server authorizes the sender, and on "
+        "approval codes the credit's ONE line (sub cost code + description). A "
+        "multi-line or zero-line credit is refused with a 400: do NOT retry, "
+        "return the error so the orchestrator flags it for a human. Resolve the "
+        "sub cost code with `find_sub_cost_code_for_reply` before an approval. "
+        "409 `line_row_version_stale` and 422 `status_locked` are also do-not-retry."
+    ),
+    input_schema=input_schema_from(ApplyBillCreditReviewerDecisionArgs),
+    handler=_apply_bill_credit_reviewer_decision,
+)
+
+
+class FindBillCreditByConversationIdArgs(BaseModel):
+    conversation_id: str = Field(
+        description="MS Graph ConversationId of the inbound reviewer reply.",
+    )
+
+
+async def _find_bill_credit_by_conversation_id(args: dict, ctx: ToolContext) -> ToolResult:
+    parsed = FindBillCreditByConversationIdArgs(**args)
+    query = urlencode({"conversation_id": parsed.conversation_id}, quote_via=quote)
+    return await ctx.call_api("GET", f"/api/v1/get/bill-credit/find-by-conversation-id?{query}")
+
+
+find_bill_credit_by_conversation_id = Tool(
+    name="find_bill_credit_by_conversation_id",
+    description=(
+        "Find the BillCredit a reviewer's reply belongs to, from the reply's "
+        "ConversationId. Returns the credit's public_id and draft state, or null "
+        "when no single credit matches. Call this before "
+        "apply_bill_credit_reviewer_decision."
+    ),
+    input_schema=input_schema_from(FindBillCreditByConversationIdArgs),
+    handler=_find_bill_credit_by_conversation_id,
+)
+
+
 # ─── Self-register ───────────────────────────────────────────────────────
 
 for _tool in (
@@ -583,5 +676,7 @@ for _tool in (
     add_bill_credit_line_items,
     update_bill_credit_line_item,
     remove_bill_credit_line_item,
+    apply_bill_credit_reviewer_decision,
+    find_bill_credit_by_conversation_id,
 ):
     register(_tool)

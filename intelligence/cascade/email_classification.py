@@ -52,7 +52,7 @@ _SYSTEM_PROMPT = (
     "- vendor_expense_receipt: a point-of-sale / card receipt.\n"
     "- contract_labor_timesheet: a worker-submitted timesheet (clock in/out + "
     "job-site address, no invoice attached).\n"
-    "- reviewer_reply: an internal PM/Owner reply approving/rejecting a bill.\n"
+    "- reviewer_reply: an internal PM/Owner reply approving/rejecting a bill, expense or bill credit.\n"
     "- internal_reply / internal_forward: other intra-company mail.\n"
     "- vendor_newsletter: marketing / FYI / non-transactional.\n"
     "- non_actionable: nothing to act on. unknown: you cannot tell.\n\n"

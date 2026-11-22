@@ -349,6 +349,21 @@ GO
 
 GO
 
+-- U-797c4b: line count under UPDLOCK for the BillCredit reviewer decision
+-- (mirrors CountBillLineItemsByBillIdForUpdate).
+CREATE OR ALTER PROCEDURE CountBillCreditLineItemsByBillCreditIdForUpdate
+(
+    @BillCreditId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT COUNT(*) AS [LineCount]
+    FROM dbo.[BillCreditLineItem] WITH (UPDLOCK, HOLDLOCK)
+    WHERE [BillCreditId] = @BillCreditId;
+END;
+GO
+
 CREATE OR ALTER PROCEDURE DeleteBillCreditLineItemById
 (
     @Id BIGINT

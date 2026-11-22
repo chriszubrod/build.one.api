@@ -582,3 +582,5 @@ def test_sync_from_qbo_invoice_compensating_delete_on_database_constraint_error(
 
     connector.invoice_service.delete_by_public_id.assert_called_once_with("inv-pub-1057")
     connector._sync_line_items.assert_not_called()
+
+pytestmark = pytest.mark.usefixtures("u797c4b_vc_parent_lifecycle_offline")

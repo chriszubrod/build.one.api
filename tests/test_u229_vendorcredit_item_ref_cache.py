@@ -1,4 +1,5 @@
 """U-229 — run-scoped item-ref cache for VendorCredit line resolver."""
+import pytest
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -142,3 +143,5 @@ def test_cached_miss_item_ref_memoized():
 
     # Second call served from the run-scoped cache — resolver queried once.
     connector.sub_cost_code_service.read_by_qbo_identity.assert_called_once_with("MISSING-ITEM", None)
+
+pytestmark = pytest.mark.usefixtures("u797c4b_vc_parent_lifecycle_offline")

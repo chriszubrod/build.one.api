@@ -67,6 +67,23 @@ END
 ELSE
     PRINT CONCAT('  bill_credit_agent: role exists (id=', @RoleId, ')');
 
+-- U-797c4b — bill_credit_agent MUST carry IsAgent = 1.
+--
+-- The reviewer-reply route POST /bill-credit/{id}/apply-reviewer-decision lets the
+-- AGENT act in a reviewer's name and refuses everyone else, so an unflagged user
+-- would have its reviewer-reply automation refused with 403. Same shape as
+-- seed.expense_agent.sql (U-552).
+--
+-- UNCONDITIONAL, not inside the INSERT branch above: it runs whether or not the
+-- user was just created. It only touches a row whose flag is unset (the predicate),
+-- so once the flag is set it is a no-op and ModifiedDatetime is left alone. Fresh install parity only: prod user 28 is already IsAgent=1, so no prod apply is needed.
+UPDATE dbo.[User]
+   SET IsAgent = 1,
+       ModifiedDatetime = @Now
+ WHERE Id = @UserId
+   AND (IsAgent IS NULL OR IsAgent = 0);
+PRINT CONCAT('  bill_credit_agent: IsAgent ensured (id=', @UserId, ')');
+
 IF NOT EXISTS (SELECT 1 FROM dbo.UserRole WHERE UserId = @UserId AND RoleId = @RoleId)
 BEGIN
     INSERT INTO dbo.UserRole (CreatedDatetime, ModifiedDatetime, UserId, RoleId)

@@ -109,6 +109,28 @@ class BillCreditLineItemService:
         assert_can_access_bill_credit(bill_credit_id)
         return self.repo.read_by_bill_credit_id(bill_credit_id)
 
+    def count_by_bill_credit_id_for_update(self, bill_credit_id: int, *, conn=None) -> int:
+        """U-797c4b: locked line count for the reviewer decision (no access assert:
+        the caller has already authorized the parent)."""
+        return self.repo.count_by_bill_credit_id_for_update(bill_credit_id, conn=conn)
+
+    def update_coding_in_transaction(
+        self,
+        *,
+        line_item: BillCreditLineItem,
+        row_version: str,
+        sub_cost_code_id: int,
+        description: Optional[str],
+        conn,
+    ) -> BillCreditLineItem:
+        """U-797c4b: apply reviewer SCC coding on one line in the caller's transaction.
+        ROWVERSION is checked by UpdateBillCreditLineItemById."""
+        line_item.row_version = row_version
+        line_item.sub_cost_code_id = sub_cost_code_id
+        if description is not None:
+            line_item.description = description
+        return self.repo.update_by_id(line_item, conn=conn)
+
     def read_by_qbo_identity(self, bill_credit_id: int, qbo_id: str) -> Optional[BillCreditLineItem]:
         """
         Read a bill credit line item directly by its dbo-native QBO identity,

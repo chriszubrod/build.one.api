@@ -23,9 +23,10 @@ from integrations.intuit.qbo.base.line_orphan_recorder import (
 )
 from integrations.intuit.qbo.base.cost_code_resolver import resolve_dbo_sub_cost_code
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
+from shared.lifecycle.resolver import resolve_document_status
+from integrations.intuit.qbo.base.field_ownership import under_review_line_coding
 
 logger = logging.getLogger(__name__)
-
 
 class VendorCreditLineItemConnector:
     """Connector for syncing QBO VendorCredit lines to BillCreditLineItems."""
@@ -156,12 +157,47 @@ class VendorCreditLineItemConnector:
             straight out of this closure, still caught by `_sync_line_items`'s
             generic handler and still failing/retrying the credit the same way.
             """
+            # U-797c4b item 6: a credit under human review keeps its local coding.
+            # F1: read LATE, after `direct` (the line this update protects) and before
+            # the write, so a review transition after the line read is seen.
+            status, credit = self._parent_lifecycle(bill_credit_id)
+            scc_svc = self.sub_cost_code_service or SubCostCodeService()
+            resolved_holding = bool(
+                status == "approved"
+                and sub_cost_code_id is not None
+                and scc_svc.is_holding_code(sub_cost_code_id)
+            )
+            if resolved_holding:
+                self._record_holding_on_approved(
+                    credit,
+                    bill_credit_public_id,
+                    realm_id,
+                    f"QBO pull left approved BillCredit {bill_credit_id} line {direct.id} "
+                    f"with QBO-resolved holding SCC; kept local SubCostCodeId "
+                    f"{direct.sub_cost_code_id}.",
+                )
+            write_scc, write_project, write_description, preserved = under_review_line_coding(
+                local=direct,
+                status=status,
+                resolved_holding=resolved_holding,
+                qbo_sub_cost_code_id=sub_cost_code_id,
+                qbo_project_public_id=project_public_id,
+                qbo_description=qbo_line.description,
+            )
+            if preserved:
+                logger.info(
+                    "qbo.pull.local_coding_preserved_under_review "
+                    "bill_credit=%s line_id=%s status=%s local_sub_cost_code_id=%s "
+                    "qbo_sub_cost_code_id=%s",
+                    bill_credit_id, direct.id, status,
+                    direct.sub_cost_code_id, sub_cost_code_id,
+                )
             updated = self.bill_credit_line_item_service.update_by_public_id(
                 direct.public_id,
                 row_version=direct.row_version,
-                sub_cost_code_id=sub_cost_code_id,
-                project_public_id=project_public_id,
-                description=qbo_line.description,
+                sub_cost_code_id=write_scc,
+                project_public_id=write_project,
+                description=write_description,
                 quantity=qbo_line.qty,
                 unit_price=qbo_line.unit_price,
                 amount=qbo_line.amount,
@@ -350,6 +386,51 @@ class VendorCreditLineItemConnector:
     # purchase / vendorcredit / bill). All four are realm-scoped as of U-060; they
     # still diverge on heal (invoice only) and caching (invoice + purchase only).
     # Lift into one shared resolver when multi-realm lands — see TODO.md.
+    def _record_holding_on_approved(
+        self, credit, bill_credit_public_id: str, realm_id: Optional[str], details: str
+    ) -> None:
+        """holding_code_on_approved for a BillCredit (mirrors the Expense branch).
+
+        `credit` is the parent read by the late lifecycle read; it is not re-read."""
+        from integrations.intuit.qbo.base.reconciliation_recorder import (
+            record_holding_code_on_approved_deduped,
+        )
+
+        record_holding_code_on_approved_deduped(
+            self.reconciliation_repo,
+            entity_type="BillCredit",
+            entity_public_id=bill_credit_public_id,
+            qbo_id=str(getattr(credit, "qbo_id", None) or "") if credit else "",
+            realm_id=realm_id or "",
+            details=details,
+        )
+
+    @staticmethod
+    def _parent_lifecycle(bill_credit_id: int):
+        """(status, credit): the parent credit's lifecycle status (draft / submitted /
+        in_review / approved / declined / completed, derived as the API does: IsDraft
+        x the latest Review kind) and the credit it was derived from. (None, None)
+        when the credit is missing.
+
+        Read LATE: once per HIT line, after that line (`direct`) is read and before
+        its update (U-551b-f1-f1 F2 pattern), so a review that opens after the line
+        read is seen. Not fenced: unlike Expense, whose UPDATE carries
+        @ObservedParentStatus, BillCredit has no Status column to fence on, so a
+        transition between this read and the write is not refused (see the c4b
+        design doc)."""
+        from entities.bill_credit.business.service import BillCreditService
+        from entities.review.persistence.repo import ReviewRepository
+
+        credit = BillCreditService().read_by_id(bill_credit_id)
+        if credit is None:
+            return None, None
+        review = ReviewRepository().read_current_by_bill_credit_id(bill_credit_id)
+        status = resolve_document_status(
+            is_draft=credit.is_draft,
+            review_kind=getattr(review, "review_kind", None) if review else None,
+        )
+        return status, credit
+
     def _get_project_public_id(self, qbo_customer_ref_value: str, realm_id: Optional[str] = None) -> Optional[str]:
         """Resolve QBO customer ref to local project public_id, memoized for this
         connector's lifetime (U-278) — same shape as `_get_sub_cost_code_id` below.

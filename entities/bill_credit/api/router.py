@@ -5,7 +5,20 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 # Local Imports
-from entities.bill_credit.api.schemas import BillCreditCreate, BillCreditUpdate
+import logging
+
+from entities.bill_credit.api.schemas import (
+    BillCreditApplyReviewerDecisionRequest,
+    BillCreditCreate,
+    BillCreditUpdate,
+)
+from entities.email_message.business.service import MailboxPollService, review_reply_item
+from entities.review.api.review_reply_sync import sync_review_replies
+from entities.review.business.decision_errors import (
+    ReviewDecisionApplyError,
+    review_decision_api_error,
+)
+from shared.authz.provenance import recorded_review_conversation_ids
 from shared.api.money import to_decimal_or_none
 from entities.bill_credit.business.service import (
     BillCreditService,
@@ -29,6 +42,7 @@ from shared.api.responses import (
 )
 
 router = APIRouter(prefix="/api/v1", tags=["api", "bill_credit"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/create/bill-credit")
@@ -158,6 +172,26 @@ def get_bill_credit_by_credit_number_and_vendor_router(credit_number: str, vendo
     return None
 
 
+@router.get("/get/bill-credit/find-by-conversation-id")
+def find_bill_credit_by_conversation_id_router(
+    conversation_id: str = Query(..., description="MS Graph ConversationId from an inbound reply."),
+    current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS)),
+):
+    """The BillCredit a reviewer reply targets (U-797c4b). A miss is item_response(None)
+    with 200, exactly as Bill's finder (no match and access-denied answer alike)."""
+    bill_credit = BillCreditService().find_for_reviewer_reply(conversation_id)
+    if bill_credit is None:
+        return item_response(None)
+    return item_response(
+        {
+            "id": bill_credit.id,
+            "public_id": str(bill_credit.public_id),
+            "credit_number": bill_credit.credit_number,
+            "is_draft": bill_credit.is_draft,
+        }
+    )
+
+
 @router.get("/get/bill-credit/{public_id}")
 def get_bill_credit_by_public_id_router(public_id: str, current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS))):
     """
@@ -247,6 +281,54 @@ def delete_bill_credit_by_public_id_router(public_id: str, current_user: dict = 
         raise_workflow_error(err, "Failed to delete bill credit")
     
     return item_response(result.get("data"))
+
+
+@router.post("/bill-credit/{public_id}/apply-reviewer-decision")
+def apply_reviewer_decision_router(
+    public_id: str,
+    body: BillCreditApplyReviewerDecisionRequest,
+    current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS, "can_update")),
+):
+    """Apply an emailed Project Manager / Owner review decision to a BillCredit (U-797c4b).
+
+    Mirrors POST /bill/{public_id}/apply-reviewer-decision: the sender must be a
+    PM/Owner on the credit's recipient envelope; an approval codes the credit's
+    ONE line (multi-line or zero-line refused); the Review is inserted with the
+    raw reply as Comments. ValueError -> 400; ReviewDecisionApplyError keeps its
+    own status (409 line_row_version_stale, 422 status_locked).
+    """
+    try:
+        result = BillCreditService().apply_reviewer_decision(
+            bill_credit_public_id=public_id,
+            decision=body.decision,
+            reviewer_email=body.reviewer_email,
+            sub_cost_code_public_id=body.sub_cost_code_public_id,
+            description=body.description,
+            raw_reply_text=body.raw_reply_text,
+            reviewer_email_message_public_id=body.reviewer_email_message_public_id,
+        )
+        return item_response(result)
+    except ReviewDecisionApplyError as error:
+        raise review_decision_api_error(error) from error
+    except ValueError as error:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(error))
+
+
+@router.post("/bill-credit/{public_id}/review-replies/sync")
+def sync_review_replies_router(
+    public_id: str,
+    current_user: dict = Depends(require_module_api(Modules.BILL_CREDITS, "can_update")),
+):
+    """On-demand copy of reviewer inbox replies for this bill credit's review thread."""
+    return sync_review_replies(
+        entity_type="BillCredit",
+        public_id=public_id,
+        read_parent=lambda: BillCreditService().read_by_public_id(public_id=public_id),
+        recorded_conversation_ids=recorded_review_conversation_ids,
+        poll_service_factory=MailboxPollService,
+        reply_item=review_reply_item,
+        logger=logger,
+    )
 
 
 @router.post("/complete/bill-credit/{public_id}")

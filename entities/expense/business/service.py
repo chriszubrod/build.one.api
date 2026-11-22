@@ -1495,6 +1495,7 @@ class ExpenseService:
 
         return ReviewerDecisionSpec(
             parent="expense",
+            kind="expense",
             entity_type="Expense",
             provenance_what="an expense reviewer decision",
             read_parent=lambda public_id: self.read_by_public_id(public_id=public_id),

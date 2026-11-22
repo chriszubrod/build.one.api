@@ -63,6 +63,10 @@ class ReviewerDecisionSpec:
     parent: str
     entity_type: str
     provenance_what: str
+    # The ReviewNotification Kind / binder target. Explicit and required by design:
+    # it diverges from `parent` for BillCredit (parent "bill_credit", prose noun
+    # "bill credit"), so it must never be derived from `parent`.
+    kind: str
 
     # Entity hooks.
     read_parent: Callable[[str], Any]
@@ -70,7 +74,6 @@ class ReviewerDecisionSpec:
     line_service_factory: Callable[[], Any]
     read_lines: Callable[[Any, int], list]
     count_lines_for_update: Callable[[Any, int, Any], int]
-    read_lines_in_transaction: Callable[[Any, int, Any], list]
     lock_current_review: Callable[[Any, int, Any], Any]
     apply_error: Callable[..., ReviewDecisionApplyError]
 
@@ -82,6 +85,16 @@ class ReviewerDecisionSpec:
 
     # Path A drift switch (see module docstring).
     emailed_fresh_status_service_for_readback: bool
+    # Required by apply_transactional only (the emailed path never reads it); a None
+    # here is refused there. Optional so the emailed-only BillCredit spec can omit it.
+    read_lines_in_transaction: Optional[Callable[[Any, int, Any], list]] = None
+    # U-797c4b: prose noun for error text; None means "use `parent`" (Bill/Expense).
+    noun: Optional[str] = None
+
+    @property
+    def error_noun(self) -> str:
+        """The noun in refusal prose ("multi-line bill credit")."""
+        return self.noun or self.parent
 
     @property
     def fk_kwarg(self) -> str:
@@ -132,7 +145,7 @@ def _resolve_approval_scc(
 
 def _holding_code_refusal(spec: ReviewerDecisionSpec) -> HoldingCodeRefused:
     return HoldingCodeRefused(
-        f"This {spec.parent} cannot be approved while coded to the suspense "
+        f"This {spec.error_noun} cannot be approved while coded to the suspense "
         "sub cost code. Recode those lines first."
     )
 
@@ -189,7 +202,7 @@ def _refuse_unless_one_line(
     raise ValueError(
         f"{spec.entity_type} {public_id} has {line_count} line items; "
         "a reviewer decision cannot be auto-applied to a multi-line "
-        f"{spec.parent} (would stamp one cost code over a manual split)."
+        f"{spec.error_noun} (would stamp one cost code over a manual split)."
     )
 
 
@@ -282,7 +295,7 @@ def apply_emailed(
     if match is None:
         raise ValueError(
             f"Sender '{reviewer_email}' is not an authorized reviewer for "
-            f"this {spec.parent} (must be Project Manager or Owner on the project)."
+            f"this {spec.error_noun} (must be Project Manager or Owner on the project)."
         )
     reviewer_user_id = match.user_id
 
@@ -293,13 +306,12 @@ def apply_emailed(
 
     # U-797c1: flag OFF runs the legacy thread binding unchanged; flag ON binds
     # through the ReviewNotification record first, legacy only when no row exists.
-    # NOTE: spec.parent ("bill" / "expense") doubles as the ReviewNotification.Kind
-    # key here. A spec whose error-text noun differs from its Kind (c4 BillCredit:
-    # "bill credit" vs "bill_credit") must pass the Kind explicitly instead.
+    # The binder keys ReviewNotification on spec.kind (explicit since U-797c4b);
+    # spec.parent only names the FK and payload keys.
     bound_reply = bind_reviewer_reply_with_notification(
         reviewer_email=reviewer_email,
         reviewer_email_message_public_id=reviewer_email_message_public_id,
-        target=(spec.parent, parent.id),
+        target=(spec.kind, parent.id),
         what=spec.provenance_what,
         legacy=lambda: bind_reviewer_reply_to_review_thread(
             entity_type=spec.entity_type,
@@ -539,6 +551,10 @@ def apply_transactional(
                 return _replay(existing)
             _assert_expected_review_current(spec, expected_review_public_id, current)
             _require_sole_line(spec.count_lines_for_update(line_service, parent.id, conn))
+            if spec.read_lines_in_transaction is None:
+                raise RuntimeError(
+                    "ReviewerDecisionSpec.read_lines_in_transaction is required by apply_transactional"
+                )
             locked_lines = spec.read_lines_in_transaction(line_service, parent.id, conn)
             _require_sole_line(len(locked_lines))
             locked_line = locked_lines[0]

@@ -6,6 +6,7 @@ from decimal import Decimal
 from pydantic import BaseModel, Field
 
 # Local Imports
+from entities.review.api.schemas import EmailedReviewerDecisionRequestBase
 
 
 class BillCreditCreate(BaseModel):
@@ -63,3 +64,7 @@ class BillCreditUpdate(BaseModel):
     # where the lifecycle gate lives. Pydantic ignores unknown fields, so a
     # client that still sends it (build.one.web echoes the stored value on
     # every save) gets a 200 and the field is ignored — not a 422.
+
+
+class BillCreditApplyReviewerDecisionRequest(EmailedReviewerDecisionRequestBase):
+    """Body for POST /bill-credit/{public_id}/apply-reviewer-decision (U-797c4b)."""

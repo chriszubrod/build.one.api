@@ -59,7 +59,7 @@ LINE_SERVICE = "integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_
 # The MISS branch runs under run_line_identity_fastpath_dbo_only's create lock —
 # grant it for every test in this pure-logic module (tests that need to OBSERVE
 # lock traffic patch a tracking lock over this grant explicitly).
-pytestmark = pytest.mark.usefixtures("grant_qbo_app_lock")
+pytestmark = [pytest.mark.usefixtures("grant_qbo_app_lock"), pytest.mark.usefixtures("u797c4b_vc_parent_lifecycle_offline")]
 
 
 def _make_qbo_line(**overrides):

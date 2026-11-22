@@ -1043,6 +1043,7 @@ class BillService:
 
         return ReviewerDecisionSpec(
             parent="bill",
+            kind="bill",
             entity_type="Bill",
             provenance_what="a bill reviewer decision",
             read_parent=lambda public_id: self.read_by_public_id(public_id=public_id),

@@ -1,5 +1,5 @@
 -- Contract: dbo.Review — the Sprocs line below lists every procedure in this file; add new ones here.
--- Sprocs: CreateReview, DeleteReviewsByBillId, DeleteReviewsByContractLaborId, ReadCurrentReviewByBillId, ReadCurrentReviewByBillIdForUpdate, ReadCurrentReviewByBillCreditId, ReadCurrentReviewByContractLaborId, ReadCurrentReviewByContractLaborIdForUpdate, ReadCurrentReviewByExpenseId, ReadCurrentReviewByExpenseIdForUpdate, ReadCurrentReviewByInvoiceId, ReadCurrentReviewsByBillIds, ReadCurrentReviewsByBillCreditIds, ReadCurrentReviewsByExpenseIds, ReadCurrentReviewsByInvoiceIds, ReadReviewByIdempotencyKey, ReadReviewByPublicId, ReadReviewsByBillCreditId, ReadReviewsByBillId, ReadReviewsByContractLaborId, ReadReviewsByExpenseId, ReadReviewsByInvoiceId, ResolveContractLaborReviewRecipientsPerProject, ResolveReviewRecipientsByBillCreditId, ResolveReviewRecipientsByBillId, ResolveReviewRecipientsByContractLaborId, ResolveReviewRecipientsByExpenseId
+-- Sprocs: CreateReview, DeleteReviewsByBillId, DeleteReviewsByContractLaborId, ReadCurrentReviewByBillId, ReadCurrentReviewByBillIdForUpdate, ReadCurrentReviewByBillCreditId, ReadCurrentReviewByBillCreditIdForUpdate, ReadCurrentReviewByContractLaborId, ReadCurrentReviewByContractLaborIdForUpdate, ReadCurrentReviewByExpenseId, ReadCurrentReviewByExpenseIdForUpdate, ReadCurrentReviewByInvoiceId, ReadCurrentReviewsByBillIds, ReadCurrentReviewsByBillCreditIds, ReadCurrentReviewsByExpenseIds, ReadCurrentReviewsByInvoiceIds, ReadReviewByIdempotencyKey, ReadReviewByPublicId, ReadReviewsByBillCreditId, ReadReviewsByBillId, ReadReviewsByContractLaborId, ReadReviewsByExpenseId, ReadReviewsByInvoiceId, ResolveContractLaborReviewRecipientsPerProject, ResolveReviewRecipientsByBillCreditId, ResolveReviewRecipientsByBillId, ResolveReviewRecipientsByContractLaborId, ResolveReviewRecipientsByExpenseId
 GO
 
 IF OBJECT_ID('dbo.Review', 'U') IS NULL
@@ -839,6 +839,54 @@ BEGIN
     INNER JOIN dbo.[ReviewStatus] rs ON r.[ReviewStatusId] = rs.[Id]
     INNER JOIN dbo.[User] u          ON r.[UserId]         = u.[Id]
     WHERE r.[BillId] = @BillId
+    ORDER BY r.[CreatedDatetime] DESC, r.[Id] DESC;
+END;
+GO
+
+-- U-797c4b: locked current-read for the BillCredit reviewer decision (faithful
+-- copy of ReadCurrentReviewByBillIdForUpdate: parent row first, then Review).
+CREATE OR ALTER PROCEDURE ReadCurrentReviewByBillCreditIdForUpdate
+(
+    @BillCreditId BIGINT
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM dbo.[BillCredit] WITH (UPDLOCK, HOLDLOCK) WHERE [Id] = @BillCreditId
+    )
+        RETURN;
+
+    SELECT TOP 1
+        r.[Id],
+        r.[PublicId],
+        r.[RowVersion],
+        CONVERT(VARCHAR(19), r.[CreatedDatetime], 120) AS [CreatedDatetime],
+        CONVERT(VARCHAR(19), r.[ModifiedDatetime], 120) AS [ModifiedDatetime],
+        r.[ReviewStatusId],
+        r.[UserId],
+        r.[Comments],
+        r.[BillId],
+        r.[ExpenseId],
+        r.[BillCreditId],
+        r.[InvoiceId],
+        r.[ContractLaborId],
+        r.[EmailMessageId],
+        r.[IdempotencyKey],
+        rs.[Name]       AS [StatusName],
+        rs.[SortOrder]  AS [StatusSortOrder],
+        rs.[IsFinal]    AS [StatusIsFinal],
+        rs.[IsDeclined] AS [StatusIsDeclined],
+        r.[ReviewKind],
+        rs.[IsInitial]  AS [StatusIsInitial],
+        rs.[Color]      AS [StatusColor],
+        u.[Firstname]   AS [UserFirstname],
+        u.[Lastname]    AS [UserLastname]
+    FROM dbo.[Review] r WITH (UPDLOCK, HOLDLOCK)
+    INNER JOIN dbo.[ReviewStatus] rs ON r.[ReviewStatusId] = rs.[Id]
+    INNER JOIN dbo.[User] u          ON r.[UserId]         = u.[Id]
+    WHERE r.[BillCreditId] = @BillCreditId
     ORDER BY r.[CreatedDatetime] DESC, r.[Id] DESC;
 END;
 GO

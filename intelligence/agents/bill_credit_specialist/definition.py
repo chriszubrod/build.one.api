@@ -25,6 +25,10 @@ bill_credit_specialist = Agent(
         "add_bill_credit_line_items",
         "update_bill_credit_line_item",
         "remove_bill_credit_line_item",
+        # Reviewer reply (U-797c4b): apply a PM/Owner's emailed decision to a credit
+        "find_bill_credit_by_conversation_id",
+        "apply_bill_credit_reviewer_decision",
+        "find_sub_cost_code_for_reply",
         # Vendor read tools — for parent name resolution and lookup-by-name
         "search_vendors",
         "read_vendor_by_public_id",

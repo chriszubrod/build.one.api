@@ -211,3 +211,19 @@ def cl_line_item():
         return types.SimpleNamespace(**defaults)
 
     return _make
+
+
+@pytest.fixture
+def u797c4b_vc_parent_lifecycle_offline():
+    """U-797c4b: the VendorCredit HIT path reads the parent BillCredit's lifecycle
+    (a live read). Pin it to (None, None): draft-like, so QBO's values are written,
+    which is today's behaviour. Named (not autouse) and applied per module with
+    pytestmark = pytest.mark.usefixtures(...)."""
+    from unittest.mock import patch
+
+    with patch(
+        "integrations.intuit.qbo.vendorcredit.connector.bill_credit_line_item.business.service."
+        "VendorCreditLineItemConnector._parent_lifecycle",
+        return_value=(None, None),
+    ):
+        yield

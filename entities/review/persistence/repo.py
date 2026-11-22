@@ -307,6 +307,15 @@ class ReviewRepository:
     def read_current_by_bill_credit_id(self, bill_credit_id: int) -> Optional[Review]:
         return self._read_current("ReadCurrentReviewByBillCreditId", {"BillCreditId": bill_credit_id})
 
+    def read_current_by_bill_credit_id_for_update(
+        self, bill_credit_id: int, *, conn: Optional[pyodbc.Connection] = None
+    ) -> Optional[Review]:
+        return self._read_current(
+            "ReadCurrentReviewByBillCreditIdForUpdate",
+            {"BillCreditId": bill_credit_id},
+            conn=conn,
+        )
+
     def read_current_by_invoice_id(self, invoice_id: int) -> Optional[Review]:
         return self._read_current("ReadCurrentReviewByInvoiceId", {"InvoiceId": invoice_id})
 

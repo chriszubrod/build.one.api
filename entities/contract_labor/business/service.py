@@ -89,6 +89,9 @@ logger = logging.getLogger(__name__)
 CANNOT_DELETE_BILLED_ENTRIES = "Cannot delete billed entries"
 
 
+_CL_DECISION_WHAT = "a contract labor reviewer decision"
+
+
 class ContractLaborService:
     """
     Service for ContractLabor entity business operations.
@@ -548,16 +551,33 @@ class ContractLaborService:
         # 403 over a half-applied crew. Read-only; raises before the loop. A
         # refusal inside the loop can then only be a race after this check, and
         # is reported as an ordinary member failure.
-        for member in crew:
-            self._bind_cl_decision_reply(
-                reviewer_email=reviewer_email,
-                reviewer_email_message_public_id=reviewer_email_message_public_id,
-                contract_labor_id=member.get("contract_labor_id"),
-                contract_labor_public_id=member.get("contract_labor_public_id"),
-                project_public_id=project_public_id,
-                project_id=int(project.id),
-                work_date=work_date,
-            )
+        # U-797c2b: the record is resolved ONCE, before the loop. A bound record skips the
+        # per-member binding. Each member's write path (_apply_decision_to_single_cl) still
+        # re-checks the binding (defence in depth). None (flag off, or no row) runs today's
+        # per-member legacy binding only, with no second record lookup.
+        from shared.authz.provenance import resolve_reply_once
+
+        # crew[0]'s id is arbitrary: the project_date rule ignores the target id.
+        bound_once = resolve_reply_once(
+            reviewer_email=reviewer_email,
+            reviewer_email_message_public_id=reviewer_email_message_public_id,
+            target=("contract_labor", crew[0].get("contract_labor_id")),
+            what=_CL_DECISION_WHAT,
+            project_id=int(project.id),
+            work_date=work_date,
+        )
+        if bound_once is None:
+            for member in crew:
+                self._bind_cl_decision_reply(
+                    reviewer_email=reviewer_email,
+                    reviewer_email_message_public_id=reviewer_email_message_public_id,
+                    contract_labor_id=member.get("contract_labor_id"),
+                    contract_labor_public_id=member.get("contract_labor_public_id"),
+                    project_public_id=project_public_id,
+                    project_id=int(project.id),
+                    work_date=work_date,
+                    legacy_only=True,
+                )
 
         applied: list[dict] = []
         failures: list[str] = []
@@ -925,8 +945,14 @@ class ContractLaborService:
         project_public_id: str,
         project_id: int,
         work_date,
+        legacy_only: bool = False,
     ):
         """Bind the reply to ONE crew member (U-797c1).
+
+        U-797c2b: legacy_only=True means the caller already resolved the record ONCE and got None
+        (flag off, or no row), so only today's legacy binding runs here, with no second record
+        lookup. False (the default) keeps the per-member path below, which the single-member apply
+        path still uses.
 
         Flag OFF: today's thread binding, unchanged (the legacy binder and its own checks).
         Flag ON: bind through the ReviewNotification record. The reply's conversation must
@@ -951,14 +977,16 @@ class ContractLaborService:
                     project_public_id=project_public_id,
                     project_id=project_id,
                 ),
-                what="a contract labor reviewer decision",
+                what=_CL_DECISION_WHAT,
             )
 
+        if legacy_only:
+            return legacy()
         return bind_reviewer_reply_with_notification(
             reviewer_email=reviewer_email,
             reviewer_email_message_public_id=reviewer_email_message_public_id,
             target=("contract_labor", contract_labor_id),
-            what="a contract labor reviewer decision",
+            what=_CL_DECISION_WHAT,
             legacy=legacy,
             project_id=project_id,
             work_date=work_date,

@@ -57,8 +57,11 @@ from shared.authz.provenance import (  # noqa: E402
 )
 
 SINCE = "2026-10-01"
+# SUBJECT_FALLBACK (U-797c2b): the retitled-draft guard changed the decision. Reason is
+# "<previous label>|legacy_binds" when the legacy path provably binds the reply (Contract Labor,
+# applied record inside the legacy scope), else "<previous label>|legacy_unproven" (fails).
 LABELS = ("AGREE", "NO_ROW", "AMBIGUOUS", "DISAGREE", "NEW_BIND", "LISTED", "UNRESOLVED", "SKIPPED",
-          "LEGACY_BIND")
+          "LEGACY_BIND", "SUBJECT_FALLBACK")
 _CUTOFF = _LEGACY_CUTOFF_DT  # the live binder's own parsed cutoff
 
 SWEEP_SQL = """
@@ -68,6 +71,7 @@ SELECT r.[Id]              AS ReviewId,
        r.[ContractLaborId] AS ContractLaborId,
        r.[CreatedDatetime] AS CreatedDatetime,
        m.[ConversationId]  AS ConversationId,
+       m.[Subject]         AS ReplySubject,
        CONVERT(VARCHAR(10), cl.[WorkDate], 120) AS ClWorkDate,
        (SELECT STRING_AGG(CAST(x.[ProjectId] AS VARCHAR(20)), ',')
           FROM (SELECT DISTINCT li.[ProjectId] FROM dbo.[ContractLaborLineItem] li
@@ -140,7 +144,19 @@ def review_target(*, bill_id, expense_id, contract_labor_id):
     return None
 
 
-def classify_row(*, reply_conversation_id, matches, expected, project_id, work_date, pre_u579):
+def _traced_select(trace, matches, expected_target, **kw):
+    """The live select_notification, recording its reason in `trace` when given.
+
+    classify_applied reads the trace to tell whether the subject guard itself returned
+    subject_mismatch. No separate gate is re-derived here."""
+    result = select_notification(matches, expected_target, **kw)
+    if trace is not None:
+        trace.append(result[1])
+    return result
+
+
+def classify_row(*, reply_conversation_id, matches, expected, project_id, work_date, pre_u579,
+                 reply_subject=None, trace=None):
     """Label and reason for one applied reply, decided by the live binder's selector.
 
     matches: [(notification, {(kind, id), ...}), ...] for the reply's ConversationId."""
@@ -148,8 +164,9 @@ def classify_row(*, reply_conversation_id, matches, expected, project_id, work_d
         return ("UNRESOLVED", "no_scope")
     if not isinstance(reply_conversation_id, str) or not reply_conversation_id.strip():
         return ("NO_ROW", "null_conversation")
-    status, reason, _notification = select_notification(
-        matches, expected, project_id=project_id, work_date=work_date)
+    status, reason, _notification = _traced_select(
+        trace, matches, expected, project_id=project_id, work_date=work_date,
+        reply_subject=reply_subject)
     if status == "BOUND":
         return ("AGREE", "bound")
     if status == "NO_ROW":
@@ -182,7 +199,7 @@ def email_predates_u579(email_sent_at) -> bool:
 
 
 def classify_cl_reply(*, reply_conversation_id, resolver_result, matches, expected, pre_u579,
-                      cl_work_date, cl_project_ids):
+                      cl_work_date, cl_project_ids, reply_subject=None, trace=None):
     """Label and reason for a Contract Labor reply, tied to the record it was applied to.
 
     Scope comes from TODAY's legacy resolver. The applied record must sit inside that scope
@@ -204,8 +221,9 @@ def classify_cl_reply(*, reply_conversation_id, resolver_result, matches, expect
             return ("UNRESOLVED", "applied_cl_missing")
         statuses = []
         for project_id in sorted(project_ids):
-            status, reason, _n = select_notification(
-                matches, expected, project_id=project_id, work_date=cl_work_date)
+            status, reason, _n = _traced_select(
+                trace, matches, expected, project_id=project_id, work_date=cl_work_date,
+                reply_subject=reply_subject)
             if status == "BOUND":
                 return ("NEW_BIND", "legacy_refused")
             statuses.append(reason)
@@ -219,8 +237,9 @@ def classify_cl_reply(*, reply_conversation_id, resolver_result, matches, expect
         # mis-applied). Nothing records project history, so the test is what matters for the flag:
         # does the new binder land on the same (project, date) as today's resolver? Same scope
         # (BOUND, or NO_ROW which falls back to legacy) -> listed with the evidence; else it fails.
-        status, reason, _n = select_notification(
-            matches, expected, project_id=project_id, work_date=work_date)
+        status, reason, _n = _traced_select(
+            trace, matches, expected, project_id=project_id, work_date=work_date,
+            reply_subject=reply_subject)
         if status in ("BOUND", "NO_ROW"):
             return ("LISTED", "scope_agrees_record_changed")
         if reason == "ambiguous":
@@ -229,6 +248,7 @@ def classify_cl_reply(*, reply_conversation_id, resolver_result, matches, expect
     label, reason = classify_row(
         reply_conversation_id=reply_conversation_id, matches=matches, expected=expected,
         project_id=project_id, work_date=work_date, pre_u579=pre_u579,
+        reply_subject=reply_subject, trace=trace,
     )
     if label == "NO_ROW":
         # The applied record is inside the legacy scope and no notification row exists: with the
@@ -237,8 +257,42 @@ def classify_cl_reply(*, reply_conversation_id, resolver_result, matches, expect
     return (label, reason)
 
 
+def classify_applied(*, kind, reply_conversation_id, reply_subject, matches, expected, pre_u579,
+                     resolver_result=None, cl_work_date=None, cl_project_ids=None):
+    """Label for one applied reply, with the retitled-draft subject guard applied.
+
+    The base label is today's decision (no subject). When the live select_notification itself
+    returns reason "subject_mismatch" for this reply (a mismatch rescues only bound,
+    wrong_project_or_date and wrong_document; ambiguous and wrong_kind keep their base label),
+    the live binder falls back to legacy, so the decision changed: the row is SUBJECT_FALLBACK with the previous
+    label. It passes only when the legacy path provably binds it: Contract Labor, where the
+    subject-driven answer is LEGACY_BIND (applied record inside the legacy scope). Bill and
+    Expense legacy binding needs sent-items data this proof does not read, so it fails."""
+    def decide(subject, trace=None):
+        if kind == "contract_labor":
+            return classify_cl_reply(
+                reply_conversation_id=reply_conversation_id, resolver_result=resolver_result,
+                matches=matches, expected=expected, pre_u579=pre_u579,
+                cl_work_date=cl_work_date, cl_project_ids=cl_project_ids, reply_subject=subject,
+                trace=trace)
+        return classify_row(
+            reply_conversation_id=reply_conversation_id, matches=matches, expected=expected,
+            project_id=None, work_date=None, pre_u579=pre_u579, reply_subject=subject, trace=trace)
+
+    base = decide(None)
+    trace: list = []
+    with_subject = decide(reply_subject, trace)
+    if "subject_mismatch" not in trace:
+        # The live selector did not rescue this row: its base label stands, pass or fail.
+        return base
+    legacy_binds = kind == "contract_labor" and with_subject[0] == "LEGACY_BIND"
+    return ("SUBJECT_FALLBACK", f"{base[0]}|{'legacy_binds' if legacy_binds else 'legacy_unproven'}")
+
+
 def passes(label, reason) -> bool:
     """The D5 pass rule for one row: AGREE, LEGACY_BIND, SKIPPED, LISTED, or a pre-U-579 NO_ROW."""
+    if label == "SUBJECT_FALLBACK":
+        return reason.endswith("|legacy_binds")
     if label in ("AGREE", "LEGACY_BIND", "SKIPPED", "LISTED"):
         return True
     return label == "NO_ROW" and reason == "pre_u579_thread"
@@ -277,6 +331,20 @@ def _plan() -> None:
     print("Pass bar: every row AGREE or LEGACY_BIND, except LISTED and NO_ROW pre_u579_thread (printed for Chris).")
 
 
+def missing_subject_notifications(lookups):
+    """(conversation_id, notification_id) for every fetched notification row without a Subject attribute.
+
+    The subject guard needs Subject from FindReviewNotificationForReply. A database where that
+    sproc is not yet applied would otherwise classify every row without the guard: a false clean.
+    --run refuses, before classifying, when this list is not empty."""
+    out = []
+    for conv, matches in lookups.items():
+        for notification, _targets in matches:
+            if not hasattr(notification, "Subject"):
+                out.append((conv, getattr(notification, "Id", None)))
+    return out
+
+
 def _fetch(cursor, sql, params=()):
     cursor.execute(sql, list(params))
     return cursor.fetchall()
@@ -295,6 +363,18 @@ def _run() -> int:
     resolved: dict = {}  # one legacy-resolver call per conversation
     with get_connection() as conn:
         rows = _fetch(conn.cursor(), SWEEP_SQL, [SINCE])
+    # Fetch every record lookup first, then refuse before classifying if the sproc lacks Subject.
+    for row in rows:
+        if row.ConversationId not in lookups:
+            lookups[row.ConversationId] = service.lookup_for_reply(row.ConversationId)
+    missing = missing_subject_notifications(lookups)
+    if missing:
+        print("Refusing to classify: FindReviewNotificationForReply does not return Subject, so the "
+              "retitled-draft guard cannot run. Apply dbo.review_notification.sql first. "
+              "Notifications without Subject:")
+        for _conv, notification_id in missing:
+            print(f"  notification {notification_id}")
+        return 2
 
     results, listed, failing = [], [], []
     for row in rows:
@@ -303,28 +383,25 @@ def _run() -> int:
         if expected is None:
             results.append(("SKIPPED", "out_of_scope"))
             continue
-        if row.ConversationId not in lookups:
-            lookups[row.ConversationId] = service.lookup_for_reply(row.ConversationId)
         matches = lookups[row.ConversationId]
         pre = email_predates_u579(row.EmailSentDatetime)
+        resolver = None
         if expected[0] == "contract_labor":
             if row.ConversationId not in resolved:
                 resolved[row.ConversationId] = cl_service.find_for_reviewer_reply(
                     conversation_id=row.ConversationId)
             resolver = resolved[row.ConversationId]
-            label, reason = classify_cl_reply(
-                reply_conversation_id=row.ConversationId, resolver_result=resolver,
-                matches=matches, expected=expected, pre_u579=pre,
-                cl_work_date=row.ClWorkDate,
-                cl_project_ids={p for p in (row.ClProjectIds or "").split(",") if p},
-                )
-        else:
-            label, reason = classify_row(
-                reply_conversation_id=row.ConversationId, matches=matches, expected=expected,
-                project_id=None, work_date=None, pre_u579=pre)
+        label, reason = classify_applied(
+            kind=expected[0], reply_conversation_id=row.ConversationId,
+            reply_subject=row.ReplySubject, matches=matches, expected=expected, pre_u579=pre,
+            resolver_result=resolver, cl_work_date=row.ClWorkDate,
+            cl_project_ids={p for p in (row.ClProjectIds or "").split(",") if p})
         results.append((label, reason))
         if not passes(label, reason):
             failing.append((row.ReviewId, expected, label, reason))
+        elif label == "SUBJECT_FALLBACK":
+            listed.append((row.ReviewId, expected,
+                           f"subject mismatch: legacy binds it (was {reason.split('|')[0]})"))
         elif (label, reason) in _LISTED_WHY:
             listed.append((row.ReviewId, expected, _LISTED_WHY[(label, reason)]))
 

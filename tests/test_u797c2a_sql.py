@@ -60,13 +60,15 @@ def test_find_result_set_one_is_trimmed_to_what_the_binder_and_the_service_read(
     batch = _sproc_batch("FindReviewNotificationForReply")
     first_select = batch[batch.index("SELECT"):batch.index("FROM dbo.[ReviewNotification]")]
     columns = {c.strip() for c in first_select.replace("SELECT", "").split(",")}
-    assert columns == {"[Id]", "[Kind]", "[ProjectId]", "[WorkDate]"}
+    # U-797c2b: Subject added for the retitled-draft guard (the only addition).
+    assert columns == {"[Id]", "[Kind]", "[ProjectId]", "[WorkDate]", "[Subject]"}
 
 
 def test_the_binder_reads_only_kind_workdate_and_projectid_from_the_row():
     src = open(provenance.__file__, encoding="utf-8").read()
     reads = set(re.findall(r'getattr\(notification, "(\w+)"', src))
-    assert reads == {"Kind", "WorkDate", "ProjectId"}
+    # U-797c2b: Subject is read for the retitled-draft guard.
+    assert reads == {"Kind", "WorkDate", "ProjectId", "Subject"}
 
 
 class _Conn:

@@ -271,7 +271,9 @@ BEGIN
 
     -- U-797c2a: trimmed to what the binder reads (Kind, ProjectId, WorkDate) and the
     -- target join needs (Id). The other columns had no reader.
-    SELECT [Id], [Kind], [ProjectId], [WorkDate]
+    -- U-797c2b: Subject is read back for the retitled-draft guard (select_notification
+    -- reply_subject). Nothing else is added.
+    SELECT [Id], [Kind], [ProjectId], [WorkDate], [Subject]
     FROM dbo.[ReviewNotification]
     WHERE [ConversationId] = @ConversationId COLLATE Latin1_General_BIN;
 

@@ -334,8 +334,72 @@ def _norm_work_date(value) -> Optional[date]:
     return None
 
 
-def select_notification(matches, expected_target, *, project_id=None, work_date=None):
+# U-797c2b: per-kind coverage. "target" = the document must be among the notification's
+# targets. "project_date" = Contract Labor: Kind, ProjectId and WorkDate must match the request
+# (target membership is not used). A kind not listed here refuses (wrong_document).
+COVERAGE_BY_KIND = {
+    "bill": "target",
+    "expense": "target",
+    "bill_credit": "target",
+    "contract_labor": "project_date",
+}
+
+_REPLY_PREFIX = re.compile(r"^\s*(?:re|fw|fwd)\s*:\s*", re.IGNORECASE)
+
+
+def normalize_subject(subject) -> Optional[str]:
+    """A subject for comparison: reply/forward prefixes removed (repeatedly), whitespace
+    collapsed, casefolded. None, or a subject that is blank after that, gives None."""
+    if not isinstance(subject, str):
+        return None
+    text = subject.strip()
+    while True:
+        stripped = _REPLY_PREFIX.sub("", text, count=1).strip()
+        if stripped == text:
+            break
+        text = stripped
+    text = " ".join(text.split()).casefold()
+    return text or None
+
+
+def subject_mismatch(matches, reply_subject) -> bool:
+    """True only when the reply's subject is known, EVERY match has a known subject, and none
+    of them equals it. Anything less certain returns False, so the decision is today's."""
+    reply = normalize_subject(reply_subject)
+    if reply is None or not matches:
+        return False
+    for notification, _targets in matches:
+        match_subject = normalize_subject(getattr(notification, "Subject", None))
+        if match_subject is None or match_subject == reply:
+            return False
+    return True
+
+
+# U-797c2b fix round 1 (F1): the subject guard rescues ONLY these decisions, and only to legacy.
+# It never overrides ambiguous or wrong_kind.
+_SUBJECT_RESCUABLE_REFUSALS = frozenset({"wrong_project_or_date", "wrong_document"})
+
+
+def select_notification(matches, expected_target, *, project_id=None, work_date=None, reply_subject=None):
     """Pure decision shared by the live binder and the re-bind proof.
+
+    reply_subject (U-797c2b, the retitled-draft guard): today's decision is computed first, with
+    the subject ignored. Only when subject_mismatch(matches, reply_subject) is True AND that
+    decision is BOUND, or REFUSED with wrong_project_or_date or wrong_document, the answer is
+    ("NO_ROW", "subject_mismatch", None), so the caller falls back to the legacy binding. ambiguous
+    and wrong_kind stay refused whatever the subject. No matches stays no_row. The guard never
+    binds on a subject and never filters the matches."""
+    decision = _decide_ignoring_subject(
+        matches, expected_target, project_id=project_id, work_date=work_date)
+    status, reason, _notification = decision
+    if (status == "BOUND" or (status == "REFUSED" and reason in _SUBJECT_RESCUABLE_REFUSALS)) \
+            and subject_mismatch(matches, reply_subject):
+        return ("NO_ROW", "subject_mismatch", None)
+    return decision
+
+
+def _decide_ignoring_subject(matches, expected_target, *, project_id=None, work_date=None):
+    """The decision with no subject involved (today's select_notification, unchanged in shape).
 
     matches: [(notification, {(kind, id), ...}), ...] for the reply's ConversationId.
     Returns (status, reason, notification):
@@ -356,8 +420,12 @@ def select_notification(matches, expected_target, *, project_id=None, work_date=
         return ("REFUSED", "ambiguous", None)
     notification, targets = matches[0]
     kind = expected_target[0]
-    if kind == "contract_labor":
-        if getattr(notification, "Kind", None) != "contract_labor":
+    rule = COVERAGE_BY_KIND.get(kind)
+    if rule is None:
+        # An unknown kind is refused as a wrong document (trunk's reason), not wrong_kind.
+        return ("REFUSED", "wrong_document", None)
+    if rule == "project_date":
+        if getattr(notification, "Kind", None) != kind:
             return ("REFUSED", "wrong_kind", None)
         notification_date = _norm_work_date(getattr(notification, "WorkDate", None))
         request_date = _norm_work_date(work_date)
@@ -385,13 +453,14 @@ _REFUSAL_TEXT = {
 
 
 def bind_reply_via_notification(reply_conversation_id: Optional[str], expected_target,
-                                *, project_id=None, work_date=None):
+                                *, project_id=None, work_date=None, reply_subject=None):
     """Look the reply up in the ReviewNotification record and decide with select_notification.
 
     Returns the notification when bound. Returns None when no notification carries this
     ConversationId (the caller then uses the legacy binding). Raises ReviewerProvenanceRefused
     on any refusal: ambiguous, a notification that does not cover this document, or a
-    Contract Labor notification for another project or date. A refusal never falls back.
+    Contract Labor notification for another project or date. A refusal propagates, except the
+    subject-mismatch rescue (wrong_project_or_date and wrong_document), which falls back to legacy.
     """
     from entities.review.business.review_notification_service import (
         ReviewNotificationRecordService,
@@ -401,8 +470,13 @@ def bind_reply_via_notification(reply_conversation_id: Optional[str], expected_t
         return None
     matches = ReviewNotificationRecordService().lookup_for_reply(reply_conversation_id)
     status, reason, notification = select_notification(
-        matches, expected_target, project_id=project_id, work_date=work_date)
+        matches, expected_target, project_id=project_id, work_date=work_date,
+        reply_subject=reply_subject)
     if status == "NO_ROW":
+        if reason == "subject_mismatch":
+            # Ids and the reason only. Never the subject text, on either side.
+            logger.warning("review_reply_binder.subject_mismatch notification_ids=%s",
+                           [getattr(n, "Id", None) for n, _targets in matches])
         return None
     if status == "REFUSED":
         raise ReviewerProvenanceRefused(
@@ -426,18 +500,46 @@ def bind_reviewer_reply_with_notification(
     Flag ON: the generic checks (required id, resolves, inbox, From == reviewer)
     run first, then the record binds. A bound record returns the reply. No row
     falls back to `legacy()`. A refusal (ambiguous, or the record excludes this
-    document) propagates with no fallback.
+    document) propagates. The one exception is the subject-mismatch rescue: a mismatch turns a
+    wrong_project_or_date or wrong_document refusal into a no-row, which falls back to `legacy()`.
+    Ambiguous and wrong_kind always propagate with no fallback.
     """
+    em = resolve_reply_once(
+        reviewer_email=reviewer_email,
+        reviewer_email_message_public_id=reviewer_email_message_public_id,
+        target=target,
+        what=what,
+        project_id=project_id,
+        work_date=work_date,
+    )
+    return em if em is not None else legacy()
+
+
+def resolve_reply_once(
+    *,
+    reviewer_email: str,
+    reviewer_email_message_public_id: Optional[str],
+    target: tuple,
+    what: str,
+    project_id=None,
+    work_date=None,
+):
+    """U-797c2b: resolve the record decision ONCE for a whole decision (a Contract Labor crew).
+
+    Flag OFF: returns None with no check and no lookup. The caller then runs the per-document
+    binding exactly as today. Flag ON: the generic checks run, then the record is looked up once.
+    A bound row returns the reply, and the caller need not bind per member. No row returns None,
+    and the caller runs the per-document legacy binding. A refusal raises, as the per-document
+    binder does, before any write."""
     if not _binder_v2_enabled():
-        return legacy()
+        return None
     em = bind_reviewer_reply(
         reviewer_email=reviewer_email,
         reviewer_email_message_public_id=reviewer_email_message_public_id,
         what=what,
     )
     notification = bind_reply_via_notification(
-        em.conversation_id, target, project_id=project_id, work_date=work_date)
-    if notification is not None:
-        return em
-    return legacy()
+        em.conversation_id, target, project_id=project_id, work_date=work_date,
+        reply_subject=getattr(em, "subject", None))
+    return em if notification is not None else None
 

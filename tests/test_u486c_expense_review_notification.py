@@ -352,12 +352,16 @@ def test_review_sql_defines_prior_sprocs_plus_exactly_one_new_resolver():
     assert "ResolveReviewRecipientsByBillId" in names
     assert "ResolveReviewRecipientsByContractLaborId" in names
     assert "ResolveReviewRecipientsByExpenseId" in names
+    assert "ResolveReviewRecipientsByBillCreditId" in names  # U-797c4a
     resolver_names = [n for n in names if n.startswith("ResolveReviewRecipientsBy")]
-    assert len(resolver_names) == 3
+    assert len(resolver_names) == 4
 
 
 def test_enqueue_for_expense_swallows_exceptions():
-    src = inspect.getsource(ReviewNotificationService.enqueue_for_expense)
+    # U-797c4a Pass 2: the try/except moved into the shared `enqueue`; the expense
+    # wrapper is a one-line delegate to it.
+    assert "self.enqueue(" in inspect.getsource(ReviewNotificationService.enqueue_for_expense)
+    src = inspect.getsource(ReviewNotificationService.enqueue)
     assert "logger.exception" in src
     assert "except Exception" in src
 

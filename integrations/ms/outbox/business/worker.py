@@ -1498,7 +1498,7 @@ class MsOutboxWorker:
 
     # Entity types whose send_mail rows are review notifications. Rows enqueued before
     # U-797c2a carry no review_notification_id and are stamped by outbox id.
-    _REVIEW_STAMP_ENTITY_TYPES = ("Bill", "Expense", "ContractLabor")
+    _REVIEW_STAMP_ENTITY_TYPES = ("Bill", "Expense", "ContractLabor", "BillCredit")
 
     def _stamp_review_notification(self, row, payload: Dict[str, Any], draft_graph_message_id) -> None:
         """U-797c1 / U-797c2a: the draft's identity onto dbo.ReviewNotification.

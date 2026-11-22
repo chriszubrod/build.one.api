@@ -1,5 +1,5 @@
 -- Contract: dbo.Review — the Sprocs line below lists every procedure in this file; add new ones here.
--- Sprocs: CreateReview, DeleteReviewsByBillId, DeleteReviewsByContractLaborId, ReadCurrentReviewByBillId, ReadCurrentReviewByBillIdForUpdate, ReadCurrentReviewByBillCreditId, ReadCurrentReviewByContractLaborId, ReadCurrentReviewByContractLaborIdForUpdate, ReadCurrentReviewByExpenseId, ReadCurrentReviewByExpenseIdForUpdate, ReadCurrentReviewByInvoiceId, ReadCurrentReviewsByBillIds, ReadCurrentReviewsByBillCreditIds, ReadCurrentReviewsByExpenseIds, ReadCurrentReviewsByInvoiceIds, ReadReviewByIdempotencyKey, ReadReviewByPublicId, ReadReviewsByBillCreditId, ReadReviewsByBillId, ReadReviewsByContractLaborId, ReadReviewsByExpenseId, ReadReviewsByInvoiceId, ResolveContractLaborReviewRecipientsPerProject, ResolveReviewRecipientsByBillId, ResolveReviewRecipientsByContractLaborId, ResolveReviewRecipientsByExpenseId
+-- Sprocs: CreateReview, DeleteReviewsByBillId, DeleteReviewsByContractLaborId, ReadCurrentReviewByBillId, ReadCurrentReviewByBillIdForUpdate, ReadCurrentReviewByBillCreditId, ReadCurrentReviewByContractLaborId, ReadCurrentReviewByContractLaborIdForUpdate, ReadCurrentReviewByExpenseId, ReadCurrentReviewByExpenseIdForUpdate, ReadCurrentReviewByInvoiceId, ReadCurrentReviewsByBillIds, ReadCurrentReviewsByBillCreditIds, ReadCurrentReviewsByExpenseIds, ReadCurrentReviewsByInvoiceIds, ReadReviewByIdempotencyKey, ReadReviewByPublicId, ReadReviewsByBillCreditId, ReadReviewsByBillId, ReadReviewsByContractLaborId, ReadReviewsByExpenseId, ReadReviewsByInvoiceId, ResolveContractLaborReviewRecipientsPerProject, ResolveReviewRecipientsByBillCreditId, ResolveReviewRecipientsByBillId, ResolveReviewRecipientsByContractLaborId, ResolveReviewRecipientsByExpenseId
 GO
 
 IF OBJECT_ID('dbo.Review', 'U') IS NULL
@@ -1493,6 +1493,86 @@ BEGIN
             END AS [RolePrecedence]
         FROM dbo.[UserProject] up
         INNER JOIN ExpenseProjects ep ON ep.[ProjectId] = up.[ProjectId]
+        INNER JOIN dbo.[Role] r ON r.[Id] = up.[RoleId]
+        WHERE r.[Name] IN ('Project Manager', 'Owner')
+          AND (@ExcludeUserId IS NULL OR up.[UserId] <> @ExcludeUserId)
+          AND dbo.IsHumanReviewUser(up.[UserId]) = 1
+    ),
+    DedupedRoles AS (
+        SELECT
+            [UserId],
+            [RoleName],
+            [ProjectId],
+            ROW_NUMBER() OVER (
+                PARTITION BY [UserId]
+                ORDER BY [RolePrecedence] ASC, [ProjectId] ASC
+            ) AS rn
+        FROM UserProjectRoles
+    ),
+    UserEmails AS (
+        SELECT
+            c.[UserId],
+            c.[Email],
+            ROW_NUMBER() OVER (
+                PARTITION BY c.[UserId]
+                ORDER BY c.[Id] ASC
+            ) AS rn
+        FROM dbo.[Contact] c
+        WHERE c.[UserId] IS NOT NULL
+          AND c.[Email] IS NOT NULL
+    )
+    SELECT
+        u.[Id]        AS [UserId],
+        u.[Firstname],
+        u.[Lastname],
+        ue.[Email],
+        dr.[RoleName],
+        dr.[ProjectId]
+    FROM DedupedRoles dr
+    INNER JOIN dbo.[User] u ON u.[Id] = dr.[UserId]
+    LEFT JOIN UserEmails ue
+        ON ue.[UserId] = dr.[UserId]
+       AND ue.rn = 1
+    WHERE dr.rn = 1
+    ORDER BY dr.[RoleName], u.[Lastname], u.[Firstname];
+
+    COMMIT TRANSACTION;
+END;
+GO
+
+-- -----------------------------------------------------------------------------
+-- 4. BillCredit resolver (U-797c4a). The Bill resolver's body over
+-- dbo.BillCreditLineItem + SET NOCOUNT ON; pinned by tests/test_u797c4a_sql.py.
+-- -----------------------------------------------------------------------------
+CREATE OR ALTER PROCEDURE dbo.ResolveReviewRecipientsByBillCreditId
+(
+    @BillCreditId BIGINT,
+    @ExcludeUserId BIGINT = NULL
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    BEGIN TRANSACTION;
+
+    WITH BillCreditProjects AS (
+        SELECT DISTINCT bcli.[ProjectId]
+        FROM dbo.[BillCreditLineItem] bcli
+        WHERE bcli.[BillCreditId] = @BillCreditId
+          AND bcli.[ProjectId] IS NOT NULL
+    ),
+    UserProjectRoles AS (
+        SELECT
+            up.[UserId],
+            up.[ProjectId],
+            r.[Name] AS [RoleName],
+            CASE r.[Name]
+                WHEN 'Project Manager' THEN 1
+                WHEN 'Owner'           THEN 2
+                ELSE 99
+            END AS [RolePrecedence]
+        FROM dbo.[UserProject] up
+        INNER JOIN BillCreditProjects bcp ON bcp.[ProjectId] = up.[ProjectId]
         INNER JOIN dbo.[Role] r ON r.[Id] = up.[RoleId]
         WHERE r.[Name] IN ('Project Manager', 'Owner')
           AND (@ExcludeUserId IS NULL OR up.[UserId] <> @ExcludeUserId)

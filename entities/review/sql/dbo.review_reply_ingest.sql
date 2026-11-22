@@ -1,6 +1,6 @@
 -- Contract: dbo.ReadOpenReviewReplyConversations — the Graph ConversationIds whose review thread still has an open document.
 -- Owns: the read side of the reviewer-reply ingest (U-797c3). Returns DISTINCT ReviewNotification.ConversationId values, nothing else.
--- Invariants: a conversation qualifies only when its notification is inside the window AND an open target exists. Open means: bill target with Status IN ('submitted','in_review'); expense target with Status IN ('submitted','in_review') (IsDraft is computed as Status <> completed, so it also matched approved, declined and draft rows); contract_labor target with Status IN ('pending_review','submitted'). ConversationId compares case-sensitively (BIN). Read-only.
+-- Invariants: a conversation qualifies only when its notification is inside the window AND an open target exists. Open means: bill target with Status IN ('submitted','in_review'); expense target with Status IN ('submitted','in_review') (IsDraft is computed as Status <> completed, so it also matched approved, declined and draft rows); contract_labor target with Status IN ('pending_review','submitted'); bill_credit target with IsDraft = 1 AND the latest Review's frozen ReviewKind IN ('submitted','in_review') (U-797c4a). ConversationId compares case-sensitively (BIN). Read-only.
 -- Sprocs: ReadOpenReviewReplyConversations
 
 -- U-797c3: which Graph conversations the reviewer-reply ingest should watch. A reply
@@ -35,6 +35,15 @@ BEGIN
                 JOIN dbo.[ContractLabor] c ON c.[Id] = t.[ContractLaborId]
                 WHERE t.[ReviewNotificationId] = n.[Id]
                   AND c.[Status] IN (N'pending_review', N'submitted')))
+         OR (n.[Kind] = N'bill_credit' AND EXISTS (
+                SELECT 1
+                FROM dbo.[ReviewNotificationTarget] t
+                JOIN dbo.[BillCredit] bc ON bc.[Id] = t.[BillCreditId]
+                WHERE t.[ReviewNotificationId] = n.[Id]
+                  AND bc.[IsDraft] = 1
+                  AND (SELECT TOP 1 r.[ReviewKind]
+                       FROM dbo.[Review] r WHERE r.[BillCreditId] = bc.[Id]
+                       ORDER BY r.[CreatedDatetime] DESC, r.[Id] DESC) IN (N'submitted', N'in_review')))
           );
 END
 GO

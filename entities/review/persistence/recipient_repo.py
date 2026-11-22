@@ -41,6 +41,19 @@ class ReviewRecipientRepository:
             exclude_user_id=exclude_user_id,
         )
 
+    def resolve_for_bill_credit(
+        self,
+        *,
+        bill_credit_id: int,
+        exclude_user_id: Optional[int] = None,
+    ) -> list[ResolvedRecipient]:
+        return self._resolve(
+            sproc="ResolveReviewRecipientsByBillCreditId",
+            id_key="BillCreditId",
+            parent_id=bill_credit_id,
+            exclude_user_id=exclude_user_id,
+        )
+
     def resolve_for_contract_labor(
         self,
         *,

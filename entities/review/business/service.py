@@ -145,10 +145,10 @@ class ReviewService:
                     review.id,
                 )
 
-        # Per-parent review-submit notifications. Both Bill and ContractLabor
-        # fire a downstream notification ONLY on the initial Submit transition
+        # Per-parent review-submit notifications. Bill, Expense, BillCredit and
+        # ContractLabor each fire a downstream notification ONLY on the initial Submit transition
         # (review_status_id == first_status.id) — Advance / Decline / Approve
-        # transitions don't re-notify. The two branches are mutually exclusive
+        # transitions don't re-notify. The branches are mutually exclusive
         # because _build_payload sets exactly one parent FK per call.
         #
         # Trigger lives here (rather than in BillService.create) so that ANY
@@ -164,6 +164,7 @@ class ReviewService:
                 bill_id is not None
                 or contract_labor_id is not None
                 or expense_id is not None
+                or bill_credit_id is not None
             )
             else None
         )
@@ -296,6 +297,29 @@ class ReviewService:
                     "Failed to enqueue Expense coding recode on review submit "
                     "(expense_id=%s, review_id=%s)",
                     expense_id,
+                    review.id,
+                )
+
+        if bill_credit_id is not None and is_initial_submit:
+            # U-797c4a: the BillCredit review email. Failure-isolated like the others.
+            try:
+                from entities.bill_credit.business.service import BillCreditService
+                from entities.review.business.notification_service import (
+                    ReviewNotificationService,
+                )
+
+                bill_credit = BillCreditService().read_by_id(bill_credit_id)
+                if bill_credit is not None:
+                    ReviewNotificationService().enqueue_for_bill_credit(
+                        bill_credit=bill_credit,
+                        review=review,
+                        exclude_user_id=user_id,
+                    )
+            except Exception:
+                logger.exception(
+                    "Failed to enqueue BillCredit review-submit notification "
+                    "(bill_credit_id=%s, review_id=%s)",
+                    bill_credit_id,
                     review.id,
                 )
 

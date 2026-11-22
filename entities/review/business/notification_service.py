@@ -13,7 +13,7 @@ from entities.review.business import review_notification_service as _rns
 from entities.review.business.recipient_service import ReviewRecipientService
 from entities.review.business.review_email_composer import ReviewEmailComposer
 
-# Bill and Expense BCC the office archive under this display name.
+# Bill, Expense and BillCredit BCC the office archive under this display name.
 BILL_EXPENSE_ARCHIVE_NAME = "Invoice Inbox (archive)"
 
 # The reviewer ask for a bill or expense (sits under the header block).
@@ -92,11 +92,36 @@ def _expense_read_link(link_service, line_item):
     )
 
 
+def _bill_credit_envelope(credit, exclude_user_id) -> dict:
+    return ReviewRecipientService().resolve_for_bill_credit(
+        bill_credit_id=credit.id,
+        exclude_user_id=exclude_user_id,
+    )
+
+
+def _bill_credit_line_items(credit) -> list:
+    from entities.bill_credit_line_item.business.service import BillCreditLineItemService
+
+    return BillCreditLineItemService().read_by_bill_credit_id(credit.id) or []
+
+
+def _bill_credit_link_service():
+    from entities.bill_credit_line_item_attachment.business.service import (
+        BillCreditLineItemAttachmentService,
+    )
+
+    return BillCreditLineItemAttachmentService()
+
+
+def _bill_credit_read_link(link_service, line_item):
+    return link_service.read_by_bill_credit_line_item_id(str(line_item.public_id))
+
+
 @dataclass(frozen=True)
 class _NotificationSpec:
-    """What differs between a bill and an expense review notification."""
+    """What differs between the bill, expense and bill-credit review notifications."""
 
-    kind: str                      # "bill" | "expense" — log key + body lead-in noun
+    kind: str                      # "bill" | "expense" | "bill_credit" — log key + body noun
     entity_type: str               # outbox EntityType
     review_parent_kwarg: str       # parent-id kwarg on `ReviewService.create`
     outbox_parent_kwarg: Optional[str]  # parent-id kwarg on `enqueue_send_mail` (bill only)
@@ -110,6 +135,11 @@ class _NotificationSpec:
     read_line_items: Callable[[Any], list]
     link_service: Callable[[], Any]
     read_link: Callable[[Any, Any], Any]
+
+    @property
+    def noun(self) -> str:
+        """The body's lead-in noun: "bill", "expense", "bill credit"."""
+        return self.kind.replace("_", " ")
 
     @property
     def log_key(self) -> str:
@@ -150,10 +180,27 @@ EXPENSE_SPEC = _NotificationSpec(
     read_link=_expense_read_link,
 )
 
+BILL_CREDIT_SPEC = _NotificationSpec(
+    kind="bill_credit",
+    entity_type="BillCredit",
+    review_parent_kwarg="bill_credit_id",
+    outbox_parent_kwarg=None,
+    number_attr="credit_number",
+    number_placeholder="(no number)",
+    subject_number_prefix="Credit #",
+    body_number_label="Credit #",
+    renders_memo=False,
+    default_attachment_name="bill_credit.pdf",
+    resolve_envelope=_bill_credit_envelope,
+    read_line_items=_bill_credit_line_items,
+    link_service=_bill_credit_link_service,
+    read_link=_bill_credit_read_link,
+)
+
 
 class ReviewNotificationService:
     """
-    Builds + enqueues review-submit notification emails for bills and expenses.
+    Builds + enqueues review-submit notification emails for bills, expenses and bill credits.
     Called from `ReviewService.create` on the initial submit, once the Review
     row has been written.
 
@@ -181,19 +228,25 @@ class ReviewNotificationService:
     notification later if needed.
     """
 
-    def enqueue_for_bill(
-        self,
-        *,
-        bill,
-        review,
-        exclude_user_id: Optional[int] = None,
-    ) -> None:
+    def enqueue_for_bill(self, *, bill, review, exclude_user_id: Optional[int] = None) -> None:
         """Public surface. Resolves recipients, builds the message, and
         enqueues an `[ms].[Outbox]` `send_mail` row (always mode="draft")."""
+        self.enqueue(spec=BILL_SPEC, parent=bill, review=review, exclude_user_id=exclude_user_id)
+
+    def enqueue_for_expense(self, *, expense, review, exclude_user_id: Optional[int] = None) -> None:
+        """Enqueue a review-submit notification for an expense (U-486 C1)."""
+        self.enqueue(spec=EXPENSE_SPEC, parent=expense, review=review, exclude_user_id=exclude_user_id)
+
+    def enqueue_for_bill_credit(self, *, bill_credit, review, exclude_user_id: Optional[int] = None) -> None:
+        """Enqueue a review-submit notification for a bill credit (U-797c4a)."""
+        self.enqueue(spec=BILL_CREDIT_SPEC, parent=bill_credit, review=review, exclude_user_id=exclude_user_id)
+
+    def enqueue(self, *, spec: _NotificationSpec, parent, review, exclude_user_id: Optional[int] = None) -> None:
+        """The one enqueue path for every review-submit email. Never raises."""
         try:
             self._do_enqueue(
-                spec=BILL_SPEC,
-                parent=bill,
+                spec=spec,
+                parent=parent,
                 review=review,
                 exclude_user_id=exclude_user_id,
             )
@@ -202,31 +255,9 @@ class ReviewNotificationService:
             # most failure modes. This catch is for anything that slipped
             # past — config import errors, missing env, etc. Never raise.
             logger.exception(
-                "review_notification.enqueue_failed bill_public_id=%s review_id=%s: %s",
-                getattr(bill, "public_id", None),
-                getattr(review, "id", None),
-                error,
-            )
-
-    def enqueue_for_expense(
-        self,
-        *,
-        expense,
-        review,
-        exclude_user_id: Optional[int] = None,
-    ) -> None:
-        """Enqueue a review-submit notification for an expense (U-486 C1)."""
-        try:
-            self._do_enqueue(
-                spec=EXPENSE_SPEC,
-                parent=expense,
-                review=review,
-                exclude_user_id=exclude_user_id,
-            )
-        except Exception as error:
-            logger.exception(
-                "review_notification.enqueue_failed expense_public_id=%s review_id=%s: %s",
-                getattr(expense, "public_id", None),
+                "review_notification.enqueue_failed %s=%s review_id=%s: %s",
+                spec.log_key,
+                getattr(parent, "public_id", None),
                 getattr(review, "id", None),
                 error,
             )
@@ -736,7 +767,7 @@ class ReviewNotificationService:
 
         return (
             f"{greeting}"
-            f"<p>A new {spec.kind} has been submitted for review:</p>"
+            f"<p>A new {spec.noun} has been submitted for review:</p>"
             "<p>"
             f"Project: {project}<br/>"
             f"Vendor: {vendor}<br/>"

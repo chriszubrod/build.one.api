@@ -61,7 +61,10 @@ def test_sproc_open_target_rule_per_kind():
     assert "e.[IsDraft]" not in code
     assert "n.[Kind] = N'contract_labor'" in code
     assert "c.[Status] IN (N'pending_review', N'submitted')" in code
-    assert "N'bill_credit'" not in code
+    # U-797c4a: bill_credit now has an open rule (IsDraft = 1 and the latest review's kind),
+    # pinned in tests/test_u797c4a_sql.py. This U-797c3 assertion used to forbid it.
+    assert "n.[Kind] = N'bill_credit'" in code
+    assert "bc.[IsDraft] = 1" in code
 
 
 # ---------------------------------------------------------------- repo

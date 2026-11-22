@@ -54,6 +54,19 @@ class ReviewRecipientService:
         )
         return self._bucket(rows)
 
+    def resolve_for_bill_credit(
+        self,
+        *,
+        bill_credit_id: int,
+        exclude_user_id: Optional[int] = None,
+    ) -> dict[str, list[ResolvedRecipient]]:
+        """Resolve recipients for a BillCredit review (same {to,cc} envelope as Bill, U-797c4a)."""
+        rows = self.repo.resolve_for_bill_credit(
+            bill_credit_id=bill_credit_id,
+            exclude_user_id=exclude_user_id,
+        )
+        return self._bucket(rows)
+
     def resolve_for_contract_labor(
         self,
         *,

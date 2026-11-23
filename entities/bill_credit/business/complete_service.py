@@ -68,6 +68,11 @@ class BillCreditCompleteService:
     Service for orchestrating the complete bill credit process:
     1. Finalize BillCredit and BillCreditLineItems
     2. Upload attachments to SharePoint module folders
+    3. Enqueue the QBO VendorCredit create for a credit with no QBO identity (U-797c5a)
+
+    External writes: QBO via the outbox (`sync_bill_credit_to_qbo`). Enqueue is not gated
+    (as Bill's); the write gate ALLOW_QBO_WRITES is enforced at drain and in the HTTP layer.
+    Box via the box fan-outs. Nothing calls QBO inline.
     """
 
     def __init__(self):
@@ -293,6 +298,12 @@ class BillCreditCompleteService:
         # the completion result.
         self._enqueue_box_uploads(bill_credit=bill_credit, line_items=line_items)
 
+        # QBO push (U-797c5a, Bill parity): an app-created credit with no QBO identity is
+        # queued for its VendorCredit create. Failure-isolated: reported, never raised.
+        qbo_sync_result = self._enqueue_qbo_sync(bill_credit=bill_credit)
+        if qbo_sync_result.get("errors"):
+            all_errors.extend(qbo_sync_result["errors"])
+
         # Determine overall status
         has_errors = len(all_errors) > 0
         status_code = 200 if not has_errors else 207  # 207 = Multi-Status (partial success)
@@ -306,8 +317,56 @@ class BillCreditCompleteService:
             "bill_credit_finalized": True,
             "file_uploads": file_upload_results,
             "excel_syncs": excel_sync_results,
+            "qbo_sync": qbo_sync_result,
             "errors": all_errors
         }
+
+    @property
+    def qbo_auth_service(self):
+        """Lazy, as on BillService (patchable at the auth module)."""
+        if getattr(self, "_qbo_auth_service", None) is None:
+            from integrations.intuit.qbo.auth.business.service import QboAuthService
+
+            self._qbo_auth_service = QboAuthService()
+        return self._qbo_auth_service
+
+    def _enqueue_qbo_sync(self, bill_credit) -> dict:
+        """
+        Enqueue the QBO outbox row that creates this credit's VendorCredit (U-797c5a).
+
+        Kind `sync_bill_credit_to_qbo`; the enqueue is the shared one used by Bill
+        (shared/completion/qbo_enqueue.py) and is not gated (drain and HTTP are). A credit with a
+        qbo_id is not enqueued here: its coding update is U-797c5b. The by-id read is inside the
+        try, so a failure is reported and never raised.
+        """
+        from shared.completion.qbo_enqueue import enqueue_qbo_push
+
+        try:
+            # The public-id read is blind to QboId; the guard reads the credit by internal id.
+            current = self.bill_credit_service.read_by_id(bill_credit.id) or bill_credit
+        except Exception as error:
+            logger.exception(f"Failed to read BillCredit {bill_credit.public_id} for QBO enqueue")
+            return {
+                "success": False,
+                "message": f"Failed to enqueue QBO sync: {error}",
+                "qbo_sync_queued": False,
+                "errors": [{"step": "qbo_enqueue", "error": str(error)}],
+            }
+        if current.qbo_id:
+            return {
+                "success": True,
+                "message": "Already in QBO; no create queued",
+                "qbo_sync_queued": False,
+                "errors": [],
+            }
+        return enqueue_qbo_push(
+            kind="sync_bill_credit_to_qbo",
+            entity_type="BillCredit",
+            entity_public_id=str(bill_credit.public_id),
+            read_auths=lambda: self.qbo_auth_service.read_all(),
+            logger=logger,
+            label="BillCredit",
+        )
 
     def _enqueue_box_uploads(self, bill_credit, line_items: List) -> None:
         """Enqueue Box uploads for the bill credit's line-item attachments.

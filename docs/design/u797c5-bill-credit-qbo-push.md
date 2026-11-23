@@ -101,3 +101,60 @@ Each runs the full pipeline (Pass 1 x2, Pass 3, mutation, suite) and its own Gat
 1. **c5b first rollout in `log` mode** (proposed) before `write`, or straight to `write`?
 2. **Remove the dead `update_has_been_billed_in_qbo` in c5b** (proposed)?
 3. Anything in "the same as a Bill" you read differently from the table above?
+
+## c5a as built (U-797c5a)
+
+- **Shared helper:** `integrations/intuit/qbo/base/line_push.py`. `build_item_expense_line_plan` holds the Bill line decisions
+  (ItemRef, CustomerRef, BillableStatus, qty/rate/amount, markup). Resolvers are passed as callables so each connector keeps its
+  own resolution methods. `qbo_identity_stamp_landed` is the read-back check. Schema construction stays per connector. The
+  Bill connector's `_build_qbo_line` calls the helper; its output is pinned by `tests/test_u797c5a_line_push_golden.py`.
+  The record_mapping_issue calls stay at each call site, because the reconciliation width guard requires string-literal drift types.
+- **Credit create:** `VendorCreditBillCreditConnector.sync_to_qbo_vendor_credit(bill_credit_id, realm_id)`. It short-circuits on an
+  existing QboId after verify_identity_dbo_only, refuses holding and unmapped lines, creates through `QboVendorCreditClient`, records
+  and re-raises QboDuplicateError, stages through the pull's `QboVendorCreditService.upsert_from_external`, stamps each line by
+  LineNum, then the header, and verifies each stamp.
+- **Enqueue (round 2, R1):** the enqueue is shared. `shared/completion/qbo_enqueue.py::enqueue_qbo_push` is called by Bill's
+  `_enqueue_qbo_sync` (read_auths=`qbo_auth_service.read_all`) and by BillCredit's (its own `qbo_auth_service`). The qbo_id guard stays
+  in the credit caller and reads by internal id (inside the try). Enqueue is NOT gated: ALLOW_QBO_WRITES is enforced at drain and in
+  the HTTP layer, as for Bill. Failures are reported in the completion result, never raised.
+- **Worker:** dispatch entry `sync_bill_credit_to_qbo` (`_handle_sync_bill_credit`), a BillCredit branch in `_refresh_from_qbo`
+  (`_refresh_bill_credit`), and the kind in `KNOWN_KINDS`.
+- **Runbook:** `docs/runbooks/qbo-bill-credit-create-push.md`.
+
+### c5a round 1 (as built, review fixes)
+
+- **Unit price:** the helper takes explicit `unit_price_of` / `markup_of` accessors. Bill passes `.rate` and `.markup`;
+  a BillCreditLineItem (which has `unit_price` and no markup) passes `.unit_price` and `None`. Bill output is pinned by the golden.
+- **JSON:** `QboVendorCreditClient` create and update dump with `mode="json"`, as the Bill client does. Decimal amounts go out as strings.
+- **By-id reads:** the public-id read does not return QboId/RealmId, so the completion enqueue guard and the worker's refresh
+  gate read by internal id. Nothing in SQL changed.
+- **Refresh conflict:** the identity-conflict ValueError severs `__context__`, as Bill's does, so a genuine conflict dead-letters
+  rather than retrying.
+- **AP account (Bill parity):** `APAccountRef` comes from the same cache-then-scan logic as Bill's `_get_ap_account_ref`. Round 2 shares the body
+  (`base/push_refs.py::resolve_ap_account_ref`). A missing AP account is not fatal.
+- **Attachments (Bill parity):** each line's attachment uploads through the shared walk
+  (`attachable/line_attachments.py::sync_line_attachments`, dedupe as Bill's) with `entity_type="VendorCredit"`. It runs after the
+  create, in the worker handler, so a re-drain (which skips the create) still syncs attachments. The whole post-create step is guarded
+  (round 2, F2): a read error is logged and does not fail the row; budget and write refusal park it, as Bill.
+- **Negative amounts (round 2, F3):** the guard reads the COMPUTED line amount (qty x unit price when the stored amount is absent),
+  before any write. ValueError, permanent. Credits are stored positive.
+- **Stamp failures (round 2, F1):** a line stamp whose write raises or does not land is recorded (`bcli_line_push_stamp_failed`); the
+  push continues. A header stamp whose write raises is re-raised, as Bill does: the retry re-POSTs with the same RequestId, QBO dedups,
+  and the stamp is retried (tests: `test_header_stamp_retry_reuses_the_request_id_so_qbo_does_not_create_twice`).
+- **Drift type length:** `duplicate_qbo_vc_docnumber` (the longer name was 37 characters; the column allows 32). The dead-letter
+  record for this kind falls back to `outbox_dead_letter`; see the runbook.
+- **Deferred:** none of the Bill push's behaviour is deferred. Coding updates for pulled credits remain U-797c5b.
+
+
+### c5a round 2 (review fixes and Pass-2 sharing)
+
+- **Return value (E2):** `sync_to_qbo_vendor_credit` returns `VendorCreditPush(qbo_id, line_items)`. On a short-circuit the id is the
+  verified one; after a create it is the created id only if the header stamp landed. The handler uses it and no longer re-reads the credit.
+- **Shared with Bill:** `shared/completion/qbo_enqueue.py` (enqueue), `integrations/intuit/qbo/base/push_refs.py` (vendor, CustomerRef,
+  item, AP refs; each connector keeps a thin `_get_qbo_*_ref` wrapper), `integrations/intuit/qbo/attachable/line_attachments.py`
+  (line-attachment walk). Bill's push and enqueue output is unchanged: its tests and the line golden pass without edits.
+- **Worker:** `_raise_non_retryable` (the SyncToken `__context__` severing) is used by the Bill, BillCredit and invoice conflict sites.
+  The BillCredit block moved into `_record_bill_credit_identity_conflict`, mirroring Bill.
+- **Not shared (kept as mirrors):** the line-id stamp loop in the Bill connector (the R5 lift, booked by EM); the stamp detail text
+  (per-connector, kept so each record_mapping_issue stays a string literal at its call site).
+- **Runbook (F4):** after a manual stamp the row is re-queued (the create is skipped; the attachments are pushed).

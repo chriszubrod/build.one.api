@@ -1571,54 +1571,20 @@ class BillService:
         This replaces the old inline `_sync_to_qbo()` call. Completion
         returns immediately; the outbox worker picks up the row and actually
         calls QBO in the background. Retries, backoff, and dead-lettering
-        all happen at the worker.
+        all happen at the worker. The enqueue itself is shared with BillCredit
+        (shared/completion/qbo_enqueue.py) and is not gated: the write gate
+        applies at drain and in the HTTP layer.
         """
-        try:
-            # Enqueue must never depend on TOKEN HEALTH — we need only realm_id, a
-            # stored column. Forcing a refresh here meant a transient auth blip dropped
-            # the push entirely (no outbox row = nothing to retry and nothing to recover),
-            # which is worse than a dead-letter. Token validity is the outbox worker's
-            # problem, and since U-215 the worker RETRIES transient auth failures instead
-            # of dead-lettering them.
-            auths = self.qbo_auth_service.read_all()
-            realm_id = auths[0].realm_id if auths else None
-            if not realm_id:
-                logger.warning(
-                    f"Skipping QBO enqueue for Bill {bill.public_id}: no QBO auth record configured"
-                )
-                return {
-                    "success": False,
-                    "message": "No QBO auth record configured",
-                    "qbo_sync_queued": False,
-                    "errors": [{"step": "qbo_enqueue", "error": "No QBO auth record configured"}],
-                }
+        from shared.completion.qbo_enqueue import enqueue_qbo_push
 
-            from integrations.intuit.qbo.outbox.business.service import QboOutboxService
-            outbox_row = QboOutboxService().enqueue(
-                kind="sync_bill_to_qbo",
-                entity_type="Bill",
-                entity_public_id=str(bill.public_id),
-                realm_id=realm_id,
-            )
-            logger.info(
-                f"Enqueued QBO sync for Bill {bill.public_id} "
-                f"(outbox {outbox_row.public_id})"
-            )
-            return {
-                "success": True,
-                "message": f"QBO push queued (outbox {outbox_row.public_id})",
-                "qbo_sync_queued": True,
-                "outbox_public_id": outbox_row.public_id,
-                "errors": [],
-            }
-        except Exception as error:
-            logger.exception(f"Failed to enqueue QBO sync for Bill {bill.public_id}")
-            return {
-                "success": False,
-                "message": f"Failed to enqueue QBO sync: {error}",
-                "qbo_sync_queued": False,
-                "errors": [{"step": "qbo_enqueue", "error": str(error)}],
-            }
+        return enqueue_qbo_push(
+            kind="sync_bill_to_qbo",
+            entity_type="Bill",
+            entity_public_id=str(bill.public_id),
+            read_auths=lambda: self.qbo_auth_service.read_all(),
+            logger=logger,
+            label="Bill",
+        )
 
     def _enqueue_box_uploads(self, bill, line_items: List) -> None:
         """Enqueue Box uploads for the bill's line-item attachments.
@@ -1732,7 +1698,8 @@ class BillService:
 
     def _sync_attachments_to_qbo(self, bill, qbo_bill_id: str, realm_id: str) -> tuple:
         """
-        Sync all attachments for a Bill to QBO as Attachable objects.
+        Sync all attachments for a Bill to QBO as Attachable objects. The walk is shared with
+        BillCredit's push (integrations/intuit/qbo/attachable/line_attachments.py).
 
         Args:
             bill: The finalized Bill record
@@ -1742,64 +1709,26 @@ class BillService:
         Returns:
             Tuple of (attachments_synced: int, errors: list[str])
         """
+        from integrations.intuit.qbo.attachable.line_attachments import sync_line_attachments
+
         bill_id = int(bill.id) if isinstance(bill.id, str) else bill.id
         line_items = self.bill_line_item_service.read_by_bill_id(bill_id=bill_id)
         if not line_items:
             return 0, []
 
-        attachments_synced = 0
-        errors = []
-        synced_attachment_ids = set()
-
-        for line_item in line_items:
-            if not line_item.public_id:
-                continue
-
-            # Get attachment link for this line item
-            attachment_link = self.bill_line_item_attachment_service.read_by_bill_line_item_id(
-                bill_line_item_public_id=line_item.public_id
-            )
-            if not attachment_link or not attachment_link.attachment_id:
-                continue
-
-            # Skip if already synced (same attachment shared across line items)
-            if attachment_link.attachment_id in synced_attachment_ids:
-                continue
-
-            attachment = self.attachment_service.read_by_id(id=attachment_link.attachment_id)
-            if not attachment or not attachment.blob_url:
-                continue
-
-            try:
-                self.attachable_attachment_connector.sync_attachment_to_qbo(
-                    attachment=attachment,
-                    realm_id=realm_id,
-                    entity_type="Bill",
-                    entity_id=qbo_bill_id,
-                )
-                synced_attachment_ids.add(attachment_link.attachment_id)
-                attachments_synced += 1
-            except QboBudgetExceededError:
-                # U-211: a tripped monthly API budget is environmental, not an
-                # attachment failure — best-effort isolation must not swallow
-                # it, or the outbox row marks done with attachments silently
-                # dropped. Propagate so the worker parks the row until the cap
-                # resets (re-drain is idempotent: header updates, already-
-                # mapped attachments skip).
-                raise
-            except QboWriteRefusedError:
-                # U-218e: same category as budget — refused locally, no bytes
-                # sent; propagate so the worker parks instead of reporting pushed.
-                raise
-            except Exception as e:
-                error_msg = f"Attachment {attachment.id} sync failed: {str(e)}"
-                logger.error(f"Failed to sync attachment {attachment.id} to QBO for Bill {bill_id}: {e}")
-                errors.append(error_msg)
-
-        if attachments_synced > 0:
-            logger.info(f"Synced {attachments_synced} attachment(s) to QBO for Bill {bill_id}")
-
-        return attachments_synced, errors
+        return sync_line_attachments(
+            line_items=line_items,
+            read_link=lambda line_public_id: self.bill_line_item_attachment_service.read_by_bill_line_item_id(
+                bill_line_item_public_id=line_public_id
+            ),
+            read_attachment=lambda attachment_id: self.attachment_service.read_by_id(id=attachment_id),
+            connector=self.attachable_attachment_connector,
+            entity_type="Bill",
+            qbo_entity_id=qbo_bill_id,
+            realm_id=realm_id,
+            logger=logger,
+            label=f"Bill {bill_id}",
+        )
 
     def sync_to_excel_workbook(
         self,

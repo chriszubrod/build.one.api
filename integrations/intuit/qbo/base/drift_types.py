@@ -136,9 +136,17 @@ DRIFT_CHARGE_UNINVOICED_LOCALLY_BILLED = "charge_uninvoiced_locally_billed"
 
 # U-784a: report-only orphaned-applock watchdog (shared/applock_watchdog.py).
 DRIFT_APPLOCK_ORPHAN_SUSPECTED = "applock_orphan_suspected"
+# U-797c5a: BillCredit create push (sync_bill_credit_to_qbo) -- identity conflict on
+# a re-pull, a stamp that did not land after a create, and a DocNumber collision.
+DRIFT_BILL_CREDIT_IDENTITY_CONFLICT = "bill_credit_identity_conflict"
+DRIFT_BILL_CREDIT_PUSH_STAMP_FAILED = "bill_credit_push_stamp_failed"
+DRIFT_BCLI_LINE_PUSH_STAMP_FAILED = "bcli_line_push_stamp_failed"
+DRIFT_DUPLICATE_QBO_VENDOR_CREDIT_DOCNUMBER = "duplicate_qbo_vc_docnumber"
 
 KNOWN_DRIFT_TYPES: FrozenSet[str] = frozenset({
     DRIFT_APPLOCK_ORPHAN_SUSPECTED,
+    DRIFT_BILL_CREDIT_IDENTITY_CONFLICT, DRIFT_BILL_CREDIT_PUSH_STAMP_FAILED,
+    DRIFT_BCLI_LINE_PUSH_STAMP_FAILED, DRIFT_DUPLICATE_QBO_VENDOR_CREDIT_DOCNUMBER,
     DRIFT_CHARGE_UNINVOICED_LOCALLY_BILLED,
     DRIFT_QBO_MISSING_LOCALLY, DRIFT_LOCAL_MISSING_QBO, DRIFT_STALE_SYNC_TOKEN,
     DRIFT_MISSING_MAPPING, DRIFT_FIELD_MISMATCH, DRIFT_DUPLICATE_MAPPING,

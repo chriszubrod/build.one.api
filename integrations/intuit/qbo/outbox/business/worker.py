@@ -131,6 +131,20 @@ def _merge_written_lines(previous: list, new: list) -> list:
     return list(merged.values())
 
 
+def _raise_non_retryable(error: ValueError) -> None:
+    """
+    Raise a conflict as non-retryable. Must be called from inside an except block (a SyncToken
+    refresh): a plain raise there inherits the retryable QboSyncTokenMismatchError through
+    __context__, and would retry a genuine conflict instead of dead-lettering it. The raise is
+    caught and re-raised so __context__ is cleared (is_retryable_error walks __context__).
+    """
+    try:
+        raise error
+    except ValueError:
+        error.__context__ = None
+        raise
+
+
 class QboOutboxWorker:
     """
     Drain-loop for the QBO outbox. Intended to be called periodically by
@@ -158,6 +172,7 @@ class QboOutboxWorker:
         # context so all POST/PUTs it issues carry the row's RequestId.
         self._dispatch_table: Dict[str, Callable[[QboOutbox], None]] = {
             "sync_bill_to_qbo": self._handle_sync_bill,
+            "sync_bill_credit_to_qbo": self._handle_sync_bill_credit,
             "sync_invoice_to_qbo": self._handle_sync_invoice,
             "recode_purchase_line": self._handle_recode_purchase_line,
         }
@@ -727,6 +742,8 @@ class QboOutboxWorker:
         """
         if row.entity_type == "Bill":
             self._refresh_bill(row)
+        elif row.entity_type == "BillCredit":
+            self._refresh_bill_credit(row)
         elif row.entity_type == "Invoice":
             self._refresh_invoice(row)
         else:
@@ -845,16 +862,74 @@ class QboOutboxWorker:
         # this hard-refuse requires. The only way to make __context__ stick is
         # to catch our own raise immediately and re-raise the SAME object —
         # a bare `raise` re-propagates as-is without re-deriving __context__.
-        conflict_error = ValueError(
+        _raise_non_retryable(ValueError(
             f"Bill {bill.id} identity conflict — dbo.Bill.QboId no longer resolves back to "
             f"this Bill on a fresh dbo-only read. See the recorded bill_identity_conflict "
             f"ReconciliationIssue for detail."
+        ))
+
+    def _record_bill_credit_identity_conflict(self, row: QboOutbox, bill_credit) -> None:
+        """
+        Record the conflict and raise (never a silent return), mirroring _record_bill_identity_conflict:
+        a genuine identity conflict must dead-letter, not retry.
+        """
+        from integrations.intuit.qbo.base.reconciliation_recorder import record_mapping_issue
+        from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
+
+        record_mapping_issue(
+            ReconciliationIssueRepository(),
+            drift_type="bill_credit_identity_conflict",
+            entity_type="BillCredit",
+            entity_public_id=row.entity_public_id,
+            qbo_id=bill_credit.qbo_id,
+            realm_id=row.realm_id or "",
+            details=(
+                f"Outbox refresh for BillCredit {bill_credit.id} found a genuine identity conflict: "
+                f"dbo.BillCredit.QboId={bill_credit.qbo_id!r} no longer resolves back to it. "
+                f"Dead-lettering outbox row {row.public_id}; investigate which side is correct."
+            ),
         )
-        try:
-            raise conflict_error
-        except ValueError:
-            conflict_error.__context__ = None
-            raise
+        _raise_non_retryable(ValueError(
+            f"BillCredit {bill_credit.id} identity conflict — dbo.BillCredit.QboId no longer resolves back to "
+            f"this credit on a fresh dbo-only read. See the recorded bill_credit_identity_conflict ReconciliationIssue."
+        ))
+
+    def _refresh_bill_credit(self, row: QboOutbox) -> None:
+        """
+        U-797c5a: re-pull the one VendorCredit behind a BillCredit into the local cache so
+        the SyncToken is current before a retry. Mirrors _refresh_bill: no QboId = nothing
+        to refresh; a QboId that no longer resolves back to this credit is recorded and
+        raised (never silently refreshed).
+        """
+        from entities.bill_credit.business.service import BillCreditService
+        from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
+        from integrations.intuit.qbo.vendorcredit.business.service import QboVendorCreditService
+        from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service import (
+            VendorCreditBillCreditConnector,
+        )
+        from integrations.intuit.qbo.vendorcredit.external.client import QboVendorCreditClient
+
+        bill_credit_service = BillCreditService()
+        by_public = bill_credit_service.read_by_public_id(row.entity_public_id)
+        if not by_public:
+            return
+        # The public-id read does not return QboId/RealmId; gate on the by-id read.
+        bill_credit = bill_credit_service.read_by_id(by_public.id)
+        if not bill_credit or not bill_credit.qbo_id:
+            return
+
+        verified = verify_identity_dbo_only(
+            bill_credit, read_direct_by_qbo_identity=bill_credit_service.read_by_qbo_identity,
+        )
+        if not verified:
+            self._record_bill_credit_identity_conflict(row, bill_credit)
+
+        with QboVendorCreditClient(realm_id=row.realm_id) as client:
+            fresh = client.get_vendor_credit(verified)
+        refreshed_vc, refreshed_lines = QboVendorCreditService().upsert_from_external(fresh, row.realm_id)
+        VendorCreditBillCreditConnector().sync_from_qbo_vendor_credit(
+            qbo_vc=refreshed_vc, qbo_lines=refreshed_lines,
+        )
 
     def _refresh_invoice(self, row: QboOutbox) -> None:
         """
@@ -945,16 +1020,11 @@ class QboOutboxWorker:
                 f"is correct."
             ),
         )
-        conflict_error = ValueError(
+        _raise_non_retryable(ValueError(
             f"Invoice {invoice.id} identity conflict — dbo.Invoice.QboId no longer resolves "
             f"back to this Invoice on a fresh dbo-only read. See the recorded "
             f"invoice_identity_conflict ReconciliationIssue for detail."
-        )
-        try:
-            raise conflict_error
-        except ValueError:
-            conflict_error.__context__ = None
-            raise
+        ))
 
     def _handle_sync_bill(self, row: QboOutbox) -> None:
         # Lazy imports to avoid heavyweight chains at module load.
@@ -969,6 +1039,45 @@ class QboOutboxWorker:
         # and raises QboError on failure — the worker's outer handler
         # translates that into retry / dead-letter decisions.
         bill_service.push_to_qbo(bill=bill, realm_id=row.realm_id)
+
+    def _handle_sync_bill_credit(self, row: QboOutbox) -> None:
+        """
+        U-797c5a: create the VendorCredit for a completed app-created BillCredit, then push its line
+        attachments (after the create, as on Bill's push). A transient error in the attachment step
+        is logged and does not fail the row: the credit exists. Budget and write refusal park the row.
+        """
+        from entities.bill_credit.business.service import BillCreditService
+        from integrations.intuit.qbo.base.errors import QboBudgetExceededError, QboWriteRefusedError
+        from integrations.intuit.qbo.vendorcredit.connector.bill_credit.business.service import (
+            VendorCreditBillCreditConnector,
+        )
+
+        bill_credit = BillCreditService().read_by_public_id(row.entity_public_id)
+        if not bill_credit:
+            raise ValueError(f"BillCredit not found for public_id {row.entity_public_id}")
+
+        connector = VendorCreditBillCreditConnector()
+        push = connector.sync_to_qbo_vendor_credit(bill_credit_id=bill_credit.id, realm_id=row.realm_id)
+        if not push.qbo_id:
+            return
+        try:
+            _synced, attachment_errors = connector.sync_attachments_to_qbo_vendor_credit(
+                bill_credit_id=bill_credit.id,
+                qbo_vendor_credit_id=push.qbo_id,
+                realm_id=row.realm_id,
+                line_items=push.line_items,
+            )
+        except (QboBudgetExceededError, QboWriteRefusedError):
+            raise
+        except Exception:
+            logger.exception(
+                f"BillCredit {bill_credit.id} attachment step failed after the QBO create; the credit exists in QBO"
+            )
+            return
+        if attachment_errors:
+            logger.warning(
+                f"BillCredit {bill_credit.id} attachment sync had {len(attachment_errors)} error(s): {attachment_errors}"
+            )
 
     def _handle_sync_invoice(self, row: QboOutbox) -> None:
         from entities.invoice.business.service import InvoiceService

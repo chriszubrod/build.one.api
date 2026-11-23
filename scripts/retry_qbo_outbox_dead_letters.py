@@ -45,6 +45,7 @@ KNOWN_KINDS = frozenset({
     "sync_bill_to_qbo",
     "sync_invoice_to_qbo",
     "recode_purchase_line",
+    "sync_bill_credit_to_qbo",
 })
 
 # SQL Server caps bound parameters at 2100; UPDATE uses 2 datetime params + N ids.

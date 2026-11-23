@@ -191,7 +191,7 @@ class QboVendorCreditClient:
         """
         data = self._http_client.post(
             "vendorcredit",
-            json=vendor_credit.model_dump(by_alias=True, exclude_none=True),
+            json=vendor_credit.model_dump(by_alias=True, exclude_none=True, mode="json"),
             idempotency_key=idempotency_key,
             operation_name="qbo.vendorcredit.create",
         )
@@ -206,7 +206,7 @@ class QboVendorCreditClient:
         """Update an existing VendorCredit in QBO."""
         data = self._http_client.post(
             "vendorcredit",
-            json=vendor_credit.model_dump(by_alias=True, exclude_none=True),
+            json=vendor_credit.model_dump(by_alias=True, exclude_none=True, mode="json"),
             idempotency_key=idempotency_key,
             operation_name="qbo.vendorcredit.update",
         )

@@ -33,6 +33,8 @@ from integrations.intuit.qbo.base.field_ownership import preserve_human_edited_r
 from integrations.intuit.qbo.base.identity_consistency import verify_identity_dbo_only
 from integrations.intuit.qbo.base.identity_fastpath import run_identity_fastpath_dbo_only
 from integrations.intuit.qbo.base.ids import coerce_id
+from integrations.intuit.qbo.base.line_push import build_item_expense_line_plan, qbo_identity_stamp_landed
+from integrations.intuit.qbo.base.push_refs import resolve_ap_account_ref, resolve_item_ref, resolve_verified_dbo_ref
 from integrations.intuit.qbo.base.reconciliation_recorder import (
     record_holding_code_on_completed_deduped,
     record_mapping_issue,
@@ -725,7 +727,7 @@ class BillBillConnector:
                         # unverified silent no-op here would leave a real, live-in-QBO
                         # line with no dbo-native identity and no visibility into it.
                         restamped = self.bill_line_item_service.repo.read_by_id(bill_line_item_id)
-                        if not restamped or restamped.qbo_id != qbo_line.id:
+                        if not qbo_identity_stamp_landed(restamped, qbo_line.id):
                             record_mapping_issue(
                                 self.reconciliation_repo,
                                 drift_type="bli_line_push_stamp_failed",
@@ -931,7 +933,8 @@ class BillBillConnector:
     # U-005[reuse] entry before adding a 6th copy or consolidating.
     def _get_qbo_vendor_ref(self, vendor_id: int) -> Optional[QboReferenceType]:
         """
-        Get QBO VendorRef from local vendor_id.
+        Get QBO VendorRef from local vendor_id: dbo-native identity re-verified against a fresh
+        dbo-only read. The resolution is shared with BillCredit's push (base/push_refs.py).
 
         Args:
             vendor_id: Local vendor database ID
@@ -939,40 +942,19 @@ class BillBillConnector:
         Returns:
             QboReferenceType with QBO vendor value and name, or None
         """
-        if not vendor_id:
-            return None
-
-        vendor = self.vendor_service.read_by_id(vendor_id)
-        if not vendor:
-            logger.warning(f"Vendor not found for id: {vendor_id}")
-            return None
-
-        # U-313: dbo.Vendor's native QboId is the SOLE identity store for
-        # Vendor (Wave 5 "trust dbo alone" — qbo.VendorVendor no longer has a
-        # writer, see docs/design/wave5.md). Still re-verified against a
-        # fresh dbo-only read before trusting it for an outbound push — a
-        # stale/"stolen" dbo QboId must never misroute a live Bill to the
-        # wrong QBO vendor (mirrors U-276 round-4's push-side finding for
-        # Project; see identity_consistency.py). No legacy hop left to fall
-        # back to on a miss (removed; it had no data source left either).
-        verified_qbo_id = verify_identity_dbo_only(
-            vendor, read_direct_by_qbo_identity=self.vendor_service.read_by_qbo_identity,
+        ref = resolve_verified_dbo_ref(
+            vendor_id,
+            read_by_id=self.vendor_service.read_by_id,
+            read_by_qbo_identity=self.vendor_service.read_by_qbo_identity,
+            log=logger,
+            not_found_msg="Vendor not found for id: {entity_id}",
+            unverified_msg="No verified QBO identity for Vendor {entity_id}",
         )
-        if verified_qbo_id:
-            return QboReferenceType(value=verified_qbo_id, name=vendor.name)
-
-        logger.warning(f"No verified QBO identity for Vendor {vendor_id}")
-        return None
+        return QboReferenceType(value=ref[0], name=ref[1]) if ref else None
 
     def _get_qbo_item_ref(self, sub_cost_code_id: int, realm_id: Optional[str] = None) -> Optional[QboReferenceType]:
         """
-        Get QBO ItemRef from local sub_cost_code_id.
-
-        U-307b: dbo-native SubCostCode.QboId direct via
-        cost_code_resolver.resolve_qbo_item_ref -- no qbo.Item hop, realm-verified
-        (see that module for the resolution/realm-matching contract) -- mirrors
-        `_get_qbo_vendor_ref`/`_get_qbo_sales_term_ref`'s existing outbound-push
-        identity verification.
+        Get QBO ItemRef from local sub_cost_code_id (cost_code_resolver via base/push_refs.py).
 
         Args:
             sub_cost_code_id: Local SubCostCode database ID
@@ -981,30 +963,15 @@ class BillBillConnector:
         Returns:
             QboReferenceType with QBO item value and name, or None
         """
-        item_ref = resolve_qbo_item_ref(
-            sub_cost_code_id,
-            realm_id,
-            sub_cost_code_service=self.sub_cost_code_service,
+        ref = resolve_item_ref(
+            sub_cost_code_id, realm_id, sub_cost_code_service=self.sub_cost_code_service, log=logger,
         )
-        if item_ref is None:
-            logger.warning(f"No QBO Item mapping resolved for sub_cost_code_id: {sub_cost_code_id}")
-            return None
-
-        return QboReferenceType(value=item_ref.value, name=item_ref.name)
+        return QboReferenceType(value=ref[0], name=ref[1]) if ref else None
 
     def _get_qbo_customer_ref(self, project_id: int) -> Optional[QboReferenceType]:
         """
-        Get QBO CustomerRef from local project_id.
-
-        U-276 (Phase-4 pilot): reads dbo.Project.Name/.QboId directly (native
-        since U-238a) instead of hopping qbo.CustomerProject -> qbo.Customer
-        for DisplayName. Returns None if the Project has never been QBO-synced
-        (no QboId stamped) — same "not mapped, don't push" contract as before.
-        U-311 (Wave-5 Option A): the dbo identity is verified via
-        `verify_identity_dbo_only` (a plain re-read of dbo.Project by its own
-        (qbo_id, realm_id), trusted only when it still resolves back to this
-        same row) — dbo-internal uniqueness alone doesn't guarantee the row
-        wasn't reassigned between the read above and this call.
+        Get QBO CustomerRef from local project_id: the project's QboId, re-verified against a fresh
+        dbo-only read (U-311). Shared with BillCredit's push (base/push_refs.py).
 
         Args:
             project_id: Local Project database ID
@@ -1012,44 +979,21 @@ class BillBillConnector:
         Returns:
             QboReferenceType with QBO customer value and name, or None
         """
-        if not project_id:
-            return None
-
-        project = self.project_service.read_by_id(project_id)
-        if not project or not project.qbo_id:
-            logger.debug(f"Project {project_id} has no QBO identity (QboId) stamped")
-            return None
-
-        verified_qbo_id = verify_identity_dbo_only(
-            project,
-            read_direct_by_qbo_identity=self.project_service.read_by_qbo_identity,
+        ref = resolve_verified_dbo_ref(
+            project_id,
+            read_by_id=self.project_service.read_by_id,
+            read_by_qbo_identity=self.project_service.read_by_qbo_identity,
+            require_qbo_id=True,
+            log=logger,
+            missing_qbo_id_msg="Project {entity_id} has no QBO identity (QboId) stamped",
         )
-        if not verified_qbo_id:
-            return None
-
-        return QboReferenceType(value=verified_qbo_id, name=project.name)
+        return QboReferenceType(value=ref[0], name=ref[1]) if ref else None
 
     def _get_ap_account_ref(self, realm_id: str) -> Optional[QboReferenceType]:
         """
-        Get the Accounts Payable account reference for a realm.
-
-        Reads dbo.Company's cached AP-account fields FIRST (U-281) —
-        populated by QboAccountService's scheduled qbo.Account pull, which
-        re-derives "the Accounts-Payable-type account for this realm" after
-        every batch, so this no longer scans qbo.Account on every live Bill
-        push. Falls back to that same live scan when the Company row hasn't
-        been backfilled/pulled yet for this realm (old-container-safe during
-        the rollout window, same shape U-275 used for the QboActive mirror)
-        — a live Bill push must not break because the cache is merely empty,
-        OR because the cache read itself failed (a transient dbo.Company
-        error is unrelated to qbo.Account and must not newly break a push
-        that never touched dbo.Company before this repoint). **U-296**:
-        proved this fallback is still real defense (not migration
-        scaffolding) — it's what keeps a live push from hard-failing for any
-        realm that hasn't had an Account pull run yet — so it stays, now
-        reading the same server-side-filtered query the cache derivation
-        uses (`read_by_realm_id_and_account_type`) instead of a full-mirror
-        Python scan.
+        Get the Accounts Payable account reference for a realm (cached dbo.Company fields first,
+        live qbo.Account scan as fallback). The body is shared with BillCredit's push via
+        base/push_refs.py::resolve_ap_account_ref.
 
         Args:
             realm_id: QBO realm ID
@@ -1057,25 +1001,10 @@ class BillBillConnector:
         Returns:
             QboReferenceType with AP account value and name, or None
         """
-        try:
-            company = self.company_service.read_by_realm_id(realm_id)
-        except Exception as e:
-            logger.warning(f"Failed to read cached AP account for realm_id {realm_id}: {e}")
-            company = None
-
-        if company and company.ap_account_qbo_id:
-            return QboReferenceType(value=company.ap_account_qbo_id, name=company.ap_account_name)
-
-        # Fallback: cache not yet populated for this realm — scan qbo.Account
-        # directly (server-side filtered to AccountType, U-296), same
-        # select_ap_account() this method used before the U-281 repoint.
-        accounts = self.qbo_account_repo.read_by_realm_id_and_account_type(realm_id, AP_ACCOUNT_TYPE)
-        ap_account = select_ap_account(accounts)
-        if ap_account:
-            return QboReferenceType(value=ap_account.qbo_id, name=ap_account.name)
-
-        logger.warning(f"No Accounts Payable account found for realm_id: {realm_id}")
-        return None
+        ref = resolve_ap_account_ref(
+            realm_id, company_service=self.company_service, qbo_account_repo=self.qbo_account_repo, log=logger,
+        )
+        return QboReferenceType(value=ref[0], name=ref[1]) if ref else None
 
     def _get_qbo_sales_term_ref(self, payment_term_id: int, realm_id: str) -> Optional[QboReferenceType]:
         """
@@ -1121,7 +1050,9 @@ class BillBillConnector:
 
     def _build_qbo_line(self, line_item, line_num: int, realm_id: Optional[str] = None) -> Optional[QboBillLineSchema]:
         """
-        Build a QBO Bill line from a local BillLineItem.
+        Build a QBO Bill line from a local BillLineItem. The decisions (ItemRef,
+        CustomerRef, BillableStatus, amounts) are made by the shared helper in
+        qbo/base/line_push.py (U-797c5a), which BillCredit's push also uses.
 
         Args:
             line_item: BillLineItem record
@@ -1131,82 +1062,27 @@ class BillBillConnector:
         Returns:
             QboBillLineSchema or None
         """
-        logger.debug(f"Building QBO line for BillLineItem {line_item.id}: sub_cost_code_id={line_item.sub_cost_code_id}, project_id={line_item.project_id}")
-
-        # Get QBO references — all line items must have valid mappings
-        item_ref = None
-        if line_item.sub_cost_code_id:
-            item_ref = self._get_qbo_item_ref(line_item.sub_cost_code_id, realm_id)
-            if not item_ref:
-                raise ValueError(
-                    f"BillLineItem {line_item.id}: no QBO Item mapping for sub_cost_code_id={line_item.sub_cost_code_id}. "
-                    f"Map the SubCostCode to a QBO Item before syncing."
-                )
-        else:
-            raise ValueError(f"BillLineItem {line_item.id} has no sub_cost_code_id. All line items require a SubCostCode for QBO sync.")
-
-        customer_ref = self._get_qbo_customer_ref(line_item.project_id) if line_item.project_id else None
-
-        # Determine billable status.
-        # is_billable=None means default billable (treat same as True).
-        # is_billable=False means explicitly not billable.
-        # Note: If BillableStatus is "Billable", CustomerRef is REQUIRED by QBO.
-        if line_item.is_billable is not False:
-            if customer_ref:
-                billable_status = "HasBeenBilled" if line_item.is_billed is True else "Billable"
-            elif line_item.project_id:
-                # Fail loud: a billable line WITH a project but no QBO CustomerRef mapping must not
-                # be silently downgraded to NotBillable (that silent downgrade let 14 OVH bills push
-                # in the wrong state unnoticed, 2026-07). Raise like the missing-Item-mapping path
-                # above so the push dead-letters via the outbox instead of shipping a not-billable bill.
-                raise ValueError(
-                    f"BillLineItem {line_item.id}: billable line on project_id={line_item.project_id} "
-                    f"has no QBO CustomerRef mapping. Ensure the Project has a QBO identity stamped "
-                    f"(dbo.Project.QboId/RealmId, e.g. by syncing it from QBO) before syncing this bill."
-                )
-            else:
-                # Billable but no project to bill against — nothing to map; keep NotBillable.
-                logger.warning(
-                    f"Line item {line_item.id} is billable but has no project_id; setting to NotBillable."
-                )
-                billable_status = "NotBillable"
-        else:
-            billable_status = "NotBillable"
-
-        # Calculate markup percent (convert from decimal like 0.10 to percentage like 10)
-        markup_percent = None
-        if line_item.markup is not None:
-            markup_percent = line_item.markup * Decimal('100')
-
-        # Item-based expense line
-        # Ensure we have an amount - QBO requires either Amount or (Qty + UnitPrice)
-        line_amount = line_item.amount
-        qty = Decimal(str(line_item.quantity)) if line_item.quantity is not None else None
-        unit_price = line_item.rate
-
-        # If no amount, try to calculate from qty * rate
-        if line_amount is None and qty is not None and unit_price is not None:
-            line_amount = qty * unit_price
-
-        # If still no amount, use 0 as fallback
-        if line_amount is None:
-            logger.warning(f"Line item {line_item.id} has no amount, qty, or rate. Using 0.")
-            line_amount = Decimal('0')
-
+        plan = build_item_expense_line_plan(
+            line_item,
+            line_num,
+            realm_id,
+            resolve_item_ref=self._get_qbo_item_ref,
+            resolve_customer_ref=self._get_qbo_customer_ref,
+            unit_price_of=lambda li: li.rate,
+            markup_of=lambda li: li.markup,
+        )
         detail = QboItemBasedExpenseLineDetail(
-            item_ref=item_ref,
-            customer_ref=customer_ref,
-            billable_status=billable_status,
-            qty=qty,
-            unit_price=unit_price,
-            # float() is acceptable here: percentage value inside Dict[str, Any] needs
-            # JSON-serializable numeric type; Pydantic won't auto-convert Decimal in dicts.
-            markup_info={"Percent": float(markup_percent)} if markup_percent is not None else None,
+            item_ref=plan.item_ref,
+            customer_ref=plan.customer_ref,
+            billable_status=plan.billable_status,
+            qty=plan.qty,
+            unit_price=plan.unit_price,
+            markup_info=plan.markup_info,
         )
         return QboBillLineSchema(
-            line_num=line_num,
-            description=line_item.description,
-            amount=line_amount,
+            line_num=plan.line_num,
+            description=plan.description,
+            amount=plan.amount,
             detail_type="ItemBasedExpenseLineDetail",
             item_based_expense_line_detail=detail,
         )

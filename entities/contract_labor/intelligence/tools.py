@@ -153,7 +153,7 @@ create_contract_labor = Tool(
         "     subject + body\n\n"
         "No approval gate — the row is a draft awaiting human review. "
         "If the API returns 422 (vendor not found, etc.), do NOT retry; "
-        "report back so email_specialist stamps `flagged_needs_review`."
+        "report back so the calling agent stamps `flagged_needs_review`."
     ),
     input_schema=input_schema_from(_CreateContractLaborArgs),
     handler=_create_contract_labor,
@@ -238,10 +238,10 @@ find_contract_labor_by_conversation_id = Tool(
         "(non-Outlook clients sometimes lose it), pass `project_hint` + "
         "`work_date_hint` parsed from the reply's own subject "
         "(`worker_hint` is ignored). Single-result-or-null is preserved "
-        "— ambiguous cases return null so the email_specialist stamps "
+        "— ambiguous cases return null so the calling agent stamps "
         "`flagged_needs_review`.\n\n"
         "Null result means: not a tracked CL conversation (or "
-        "ambiguous). Report back to email_specialist; do NOT proceed "
+        "ambiguous). Report back to the calling agent; do NOT proceed "
         "to apply."
     ),
     input_schema=input_schema_from(_FindByConversationIdArgs),
@@ -287,7 +287,10 @@ class _ApplyReviewerDecisionArgs(BaseModel):
     sub_cost_code_public_id: Optional[str] = Field(
         default=None,
         description=(
-            "Required on approval; SCC to apply to each ContractLaborLineItem "
+            "Required on approval, EXCEPT omit it for a bare 'Approved' reply to a "
+            "suggestions email: the server then applies the codes the email showed "
+            "to each clean crew member and lists back the rest in `not_applied` "
+            "(with a reason). Otherwise, the SCC to apply to each ContractLaborLineItem "
             "on the matched project. Resolve via "
             "`find_sub_cost_code_for_reply` (shared with bill_specialist) "
             "from the PM's SCC text shorthand ('13.1', 'Cleaning - 62.0', etc.)."
@@ -384,20 +387,24 @@ apply_contract_labor_reviewer_decision = Tool(
         "returns normally with `failures` listed for AP to reconcile.\n\n"
         "**Multi-SCC bailout:** if the PM's reply mentions 2+ distinct "
         "SCCs (e.g. `Cleaning - 62.0 (...) Trim Labor - 44.0 (...)`), "
-        "DO NOT call this tool. Report back to email_specialist with "
+        "DO NOT call this tool. Report back to the calling agent with "
         "the parsed SCC list so it can stamp `flagged_needs_review`. "
         "Auto-splitting hours across SCCs is out of v1.\n\n"
         "**Error responses (HTTP 400)** the agent should expect:\n"
         "  - 'No reviewable ContractLabor found on project X for {date}' "
-        "→ the crew already advanced past review; tell email_specialist "
+        "→ the crew already advanced past review; tell the calling agent "
         "to classify `internal_reply` + `marked_irrelevant` (too late).\n"
         "  - 'failed for all N crew member(s) ...' with 'not an "
         "authorized reviewer' → from-address isn't a PM/Owner on this "
         "project; classify same as above.\n"
+        "  - Bare 'Approved' on the suggestions email (no sub_cost_code_public_id): "
+        "if no member is applied the error starts 'applied none of the N crew member(s)' "
+        "and lists each member's reason (not_applied) and failure (for example "
+        "'not an authorized reviewer'). Report each reason; do not retry.\n"
         "  - 'SubCostCode with public_id X not found' → pass the SCC's "
         "public_id verbatim from find_sub_cost_code_for_reply (don't "
         "pass the human-readable name).\n\n"
-        "Do NOT retry on any of these; report back so email_specialist "
+        "Do NOT retry on any of these; report back so the calling agent "
         "stamps the right outcome."
     ),
     input_schema=input_schema_from(_ApplyReviewerDecisionArgs),

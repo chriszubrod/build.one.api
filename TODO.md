@@ -249,6 +249,16 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
 
 - [ ] [P3, U-798, DECISION] **Retire the legacy `Contract Labor - ` subject form once every pre-U-798 thread is closed.** U-798 makes the reply binding accept both `[Review] Contract Labor - ` and the legacy `Contract Labor - ` with no end date (`is_cl_notification_subject` in `entities/review/business/cl_notification_service.py`; the OR in `FindContractLaborForReviewerReply`). The legacy form is no riskier than before U-798, because the exact `ContractLaborNotification.OutboundSubject` join still bounds it. Dropping it shrinks the accepted set again (Pass 3 note). Decision for Chris: when, say about 30 days after deploy, once no `submitted`/`pending_review` CL has a legacy-subject notification. Check with `SELECT COUNT(*) FROM dbo.ContractLaborNotification WHERE OutboundSubject LIKE 'Contract Labor - %'` joined to not-ready CL lines on (project, date).
 
+## U-797b2 follow-ups - bare "Approved" applies the shown CL suggestions (booked 2026-11-23)
+
+- [ ] **Per-member corrections** ("Approved, but Weston 19.00"). Deferred by design (Gate 1). Today the specialist prompt flags such a reply for a human; the paste workflow must not send it as a bare Approved.
+- [ ] **iOS / edit-page approval path** does not read the snapshot. Deferred by design.
+- [ ] **No live email-reply caller.** The email_specialist that turned inbound CL replies into apply calls was retired by U-218f (`f14909ae`, 2026-08-16). The only live caller is the interactive paste workflow. Decide whether CL replies get an automated apply path (`/em` + `/pm`).
+- [ ] **Per-member re-bind cost (pre-existing).** `_apply_decision_to_single_cl` re-binds the reply per member (a Settings() build, an EmailMessage read and a notification lookup each). Defence in depth, from trunk. A cached settings accessor would remove the repeated work. Not worth it at crew sizes of 2-15.
+- [ ] **Pre-coded lines.** A member whose project lines already carry a code at compose time still shows a suggestion in the email, but a bare Approved skips them ("already coded"). Prod 2026-11-23: 2 of 76 submitted project lines in 45 days. Consider hiding the suggestion for coded members in the email.
+- [ ] **Error text names an internal SCC id** ("SubCostCode with id N not found") when a snapshot points at a deleted code. Low impact; swap to the code number if it ever fires.
+- [ ] **`_NO_SNAPSHOTS_REFUSAL` rarely fires.** A pre-b1 or flag-off notification has target rows with NULL snapshot columns, so the call ends in the "applied none ... no suggestion shown" error instead. Safe, nothing written; the wording could say "this email had no suggestions".
+
 ## U-797b1 follow-ups - CL suggestions in the review email (booked 2026-11-23)
 
 - [ ] **Existing CL email gaps (trunk, not b1): decide.** Trunk never emails a crew day when its last `pending_review`

@@ -515,6 +515,36 @@ def bind_reviewer_reply_with_notification(
     return em if em is not None else legacy()
 
 
+def resolve_reply_notification_once(
+    *,
+    reviewer_email: str,
+    reviewer_email_message_public_id: Optional[str],
+    target: tuple,
+    what: str,
+    project_id=None,
+    work_date=None,
+):
+    """U-797c2b / U-797b2: resolve the record decision ONCE for a whole decision (a Contract Labor crew).
+
+    Returns (em, notification) when the reply binds to a ReviewNotification row, else None.
+    Flag OFF: returns None with no check and no lookup. The caller then runs the per-document
+    binding exactly as today. Flag ON: the generic checks run, then the record is looked up once.
+    No row returns None, and the caller runs the per-document legacy binding. A refusal raises,
+    as the per-document binder does, before any write. U-797b2 needs the notification itself:
+    its snapshots are keyed by the notification id."""
+    if not _binder_v2_enabled():
+        return None
+    em = bind_reviewer_reply(
+        reviewer_email=reviewer_email,
+        reviewer_email_message_public_id=reviewer_email_message_public_id,
+        what=what,
+    )
+    notification = bind_reply_via_notification(
+        em.conversation_id, target, project_id=project_id, work_date=work_date,
+        reply_subject=getattr(em, "subject", None))
+    return (em, notification) if notification is not None else None
+
+
 def resolve_reply_once(
     *,
     reviewer_email: str,
@@ -526,20 +556,15 @@ def resolve_reply_once(
 ):
     """U-797c2b: resolve the record decision ONCE for a whole decision (a Contract Labor crew).
 
-    Flag OFF: returns None with no check and no lookup. The caller then runs the per-document
-    binding exactly as today. Flag ON: the generic checks run, then the record is looked up once.
-    A bound row returns the reply, and the caller need not bind per member. No row returns None,
-    and the caller runs the per-document legacy binding. A refusal raises, as the per-document
-    binder does, before any write."""
-    if not _binder_v2_enabled():
-        return None
-    em = bind_reviewer_reply(
+    Thin wrapper over resolve_reply_notification_once. Returns the EmailMessage when the reply
+    binds to a record, else None. Flag OFF returns None with no lookup."""
+    bound = resolve_reply_notification_once(
         reviewer_email=reviewer_email,
         reviewer_email_message_public_id=reviewer_email_message_public_id,
+        target=target,
         what=what,
+        project_id=project_id,
+        work_date=work_date,
     )
-    notification = bind_reply_via_notification(
-        em.conversation_id, target, project_id=project_id, work_date=work_date,
-        reply_subject=getattr(em, "subject", None))
-    return em if notification is not None else None
+    return bound[0] if bound is not None else None
 

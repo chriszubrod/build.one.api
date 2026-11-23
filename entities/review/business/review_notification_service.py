@@ -86,10 +86,13 @@ def stamp_review_notification(*, outbox_id: int, review_notification_id: Optiona
 
 
 def _hours_text(value: Any) -> str:
-    """Hours as a Decimal string ('2.50'). A missing value counts as zero."""
+    """Hours as a two-decimal Decimal string ('2.50', '8.00'). A missing value counts as 0.00.
+
+    Normalized to two places so 8, '8.0', 8.0 and Decimal('8.00') fingerprint the same. Changing this
+    definition is safe only while no fingerprint is stored (b1 not deployed)."""
     if value is None:
-        return "0"
-    return str(Decimal(str(value)))
+        return "0.00"
+    return str(Decimal(str(value)).quantize(Decimal("0.01")))
 
 
 def cl_lines_fingerprint(pairs: Iterable[tuple[Any, Any]]) -> str:

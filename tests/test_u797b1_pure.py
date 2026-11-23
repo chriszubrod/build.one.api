@@ -211,7 +211,7 @@ def test_fingerprint_changes_when_a_line_is_added_or_removed():
 
 def test_fingerprint_treats_missing_hours_as_zero_and_is_hex_64():
     fp = rns.cl_lines_fingerprint([(9, None)])
-    assert fp == _sha("9:0")
+    assert fp == _sha("9:0.00")
     assert len(fp) == 64 and all(c in "0123456789abcdef" for c in fp)
 
 

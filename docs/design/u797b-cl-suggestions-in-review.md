@@ -56,7 +56,7 @@ Columns on `dbo.ReviewNotificationTarget` (nullable, one guarded ALTER): `Sugges
 | failed, skipped, pending, no row | NULL | NULL | NULL | NULL |
 
 `LinesFingerprint` is `cl_lines_fingerprint(pairs)`: SHA-256 hex over the sorted `lineItemId:hours` strings, joined
-by newlines. Hours are a Decimal string, and a missing value counts as `0`. It is order-independent, and it is the
+by newlines. Hours are a two-decimal Decimal string (`8.00`), and a missing value counts as `0.00`. It is order-independent, and it is the
 one definition b2 reuses to detect lines that changed after the email.
 
 Bill, Expense and BillCredit targets leave every snapshot column NULL.
@@ -100,3 +100,46 @@ and b2 acts only on what it can prove was shown and is still current.
 state, escaping, the ask), `test_u797b1_gate.py` (the wait, the timeout, flag off, the snapshot, the double fire),
 `test_u797b1_tick.py` (the re-fire, the sweep, attempts, flag off), `test_u797b1_structure.py` (the order, the repo
 and record service, and the SQL house rules).
+
+## U-797b2 — bare Approved applies the shown suggestions
+
+What b2 does: on a reply to the suggestions email, a bare "Approved" (no sub cost code) applies the code
+each crew member's row showed. It applies only the members whose shown suggestion is clean. Anyone else is
+returned in `not_applied` and is not written. Flag CL_SUGGESTIONS_IN_REVIEW_ENABLED only. Flag off keeps today's
+behaviour exactly.
+
+Eligibility (all must hold for a member to be applied). These are read from the ReviewNotification crew
+snapshot, keyed by ContractLabor id, that b1 wrote at compose time:
+- The member has a snapshot (they were in the email).
+- A code was shown: suggested_sub_cost_code_id is not NULL.
+- suggestion_may_split is exactly False. NULL is not clean.
+- suggestion_source is "history" or "model". "rules" and NULL are not clean.
+- lines_fingerprint is recorded.
+- At apply time, the member's lines on the project still hash to lines_fingerprint.
+
+not_applied reasons, one per ineligible member:
+- "not in the email": no snapshot for the member.
+- "no suggestion shown": no code, may_split NULL, source not clean, or no fingerprint.
+- "possible split — name a code": may_split is True.
+- "already coded — name a code to change it": a matched line already carries a sub cost code (set by AP or an
+  earlier reply). A bare Approved never overwrites it. Named-code replies still recode, as today.
+- "lines changed since the email": the fingerprint check failed. Checked per member before the transaction
+  opens. Nothing is written for that member.
+
+Notification binding: the reply binds to the ReviewNotification record once, through
+resolve_reply_notification_once. No bound record refuses before any write, with the message "A bare 'Approved'
+applies the suggested codes only on a reply to the suggestions email; reply with a sub cost code instead." There
+is no per-member legacy binding in this mode. A notification with no snapshots refuses the same way.
+
+Partial vs all-fail:
+- Some member applied: the call returns normally. The result carries mode "suggested" and not_applied, and any
+  per-member failures are listed too.
+- No member applied (all ineligible, all failed, or all refused on lines): ValueError listing every not_applied
+  reason and every failure. Nothing is written.
+- A HoldingCodeRefused on one member's suggested code is a per-member failure in this mode. It does not abort
+  the others. In the named-code mode it still re-raises as today.
+
+Named-code and rejected calls: unchanged. They report mode "named_code" and not_applied []. Flag off with a bare
+Approved still ends in the existing "sub_cost_code_public_id is required" per-member error.
+
+Deferred: per-member corrections in the reply (for example "Weston 19.00") and the iOS / edit-page path.

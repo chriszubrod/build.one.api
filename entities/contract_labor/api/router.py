@@ -179,7 +179,9 @@ def apply_reviewer_decision_router(
       work_date:                string 'YYYY-MM-DD' (the matched date from find_for_reviewer_reply)
       decision:                 'approved' | 'rejected'
       reviewer_email:           string (must match a PM/Owner on the project)
-      sub_cost_code_public_id:  string (required when decision='approved')
+      sub_cost_code_public_id:  string (required when decision='approved', except a bare
+                                 'Approved' reply to the suggestions email: then omit it, and the
+                                 server applies the shown suggestions and returns not_applied)
       description:              string (optional; replaces line-item descriptions on approval)
       raw_reply_text:           string (the PM's reply body, persisted to Review.Comments)
       reviewer_email_message_public_id: string (FK to the source EmailMessage)

@@ -7,6 +7,9 @@ Invariants
   RBAC: Modules.CONTRACT_LABOR require_module_api; list/detail assert_can_access_project on project_id.
   Money: labor_price_two_shot and Decimal(str(...)) on hours/rate/markup/total_amount.
   Concurrency: UpdateContractLaborById and UpdateContractLaborLineItemById use @RowVersion.
+  Suggestion apply (U-797b2, flag on): a bare Approved applies only the codes the email showed, and only
+    for members whose snapshot is clean and whose lines are unchanged. Anything else is listed in
+    not_applied and is never written.
 External writes
   None.
 Sprocs
@@ -60,7 +63,7 @@ Sprocs
 """
 # Python Standard Library Imports
 import logging
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Optional, Tuple
 from decimal import Decimal
 
 # Third-party Imports
@@ -92,12 +95,70 @@ from shared.authz.delegation import assert_may_act_as
 from shared.database import call_procedure, get_connection
 from shared.lifecycle.completion_gate import HoldingCodeRefused
 
+if TYPE_CHECKING:
+    from entities.review.business.review_notification_service import CrewTargetSnapshot
+
 logger = logging.getLogger(__name__)
 
 CANNOT_DELETE_BILLED_ENTRIES = "Cannot delete billed entries"
 
 
 _CL_DECISION_WHAT = "a contract labor reviewer decision"
+
+# U-797b2: a bare "Approved" (no sub cost code) applies the suggestions the email showed, flag on only.
+_BARE_APPROVED_REFUSAL = (
+    "A bare 'Approved' applies the suggested codes only on a reply to the suggestions email; "
+    "reply with a sub cost code instead."
+)
+_NO_SNAPSHOTS_REFUSAL = (
+    "The suggestions email for this crew recorded no per-member suggestions to apply; "
+    "reply with a sub cost code instead."
+)
+_REASON_NOT_IN_EMAIL = "not in the email"
+_REASON_NO_SUGGESTION = "no suggestion shown"
+_REASON_SPLIT = "possible split — name a code"
+_REASON_CHANGED = "lines changed since the email"
+_REASON_ALREADY_CODED = "already coded — name a code to change it"
+_CLEAN_SUGGESTION_SOURCES = frozenset({"history", "model"})
+
+
+class _SuggestionNotApplied(ValueError):
+    """U-797b2: one crew member's suggestion is not applied (lines changed, or already coded).
+
+    `reason` is the not_applied text. The member is not written, and the apply loop records it."""
+
+    def __init__(self, message: str, reason: str):
+        super().__init__(message)
+        self.reason = reason
+
+
+def _suggestion_ineligibility(snap) -> Optional[str]:
+    """Why a crew member's shown suggestion cannot be applied by a bare Approved, or None when it can.
+
+    Clean means: the member was in the email, a code was shown, the split note is exactly False,
+    the code came from history or the model, and the lines fingerprint was recorded."""
+    if snap is None:
+        return _REASON_NOT_IN_EMAIL
+    if (snap.suggested_sub_cost_code_id is None
+            or snap.suggestion_may_split is None
+            or snap.suggestion_source not in _CLEAN_SUGGESTION_SOURCES
+            or snap.lines_fingerprint is None):
+        return _REASON_NO_SUGGESTION
+    if snap.suggestion_may_split:
+        return _REASON_SPLIT
+    return None
+
+
+def _not_applied_entry(member: dict, reason: str) -> dict:
+    return {
+        'contract_labor_public_id': member.get('contract_labor_public_id'),
+        'employee_name': member.get('employee_name'),
+        'reason': reason,
+    }
+
+
+def _member_label(member: dict) -> str:
+    return f"{member.get('contract_labor_public_id')} ({member.get('employee_name')})"
 
 
 class ContractLaborService:
@@ -531,6 +592,15 @@ class ContractLaborService:
         when the crew is empty or EVERY member failed (a hard, actionable
         error for the agent); a partial success returns normally with the
         failures listed for AP to reconcile.
+
+        U-797b2 SUGGESTION MODE: decision 'approved' with no sub_cost_code_public_id, flag
+        CL_SUGGESTIONS_IN_REVIEW_ENABLED on. The reply must bind to the suggestions notification,
+        or the call refuses before any write. Each member is applied with the snapshot code the
+        email showed, but only when clean (see _suggestion_ineligibility) and when its lines are
+        unchanged since the email. Other members are listed in `not_applied` and not written. A
+        per-member holding-code refusal becomes a failure. Result `mode` is 'suggested'. Named-code
+        and rejected calls keep today's path, with `mode` 'named_code' and `not_applied` []. The
+        per-member corrections and the iOS/edit-page path are deferred (U-797b2 design doc).
         """
         if decision not in ('approved', 'rejected'):
             raise ValueError(
@@ -563,36 +633,90 @@ class ContractLaborService:
         # per-member binding. Each member's write path (_apply_decision_to_single_cl) still
         # re-checks the binding (defence in depth). None (flag off, or no row) runs today's
         # per-member legacy binding only, with no second record lookup.
-        from shared.authz.provenance import resolve_reply_once
-
-        # crew[0]'s id is arbitrary: the project_date rule ignores the target id.
-        bound_once = resolve_reply_once(
-            reviewer_email=reviewer_email,
-            reviewer_email_message_public_id=reviewer_email_message_public_id,
-            target=("contract_labor", crew[0].get("contract_labor_id")),
-            what=_CL_DECISION_WHAT,
-            project_id=int(project.id),
-            work_date=work_date,
+        from entities.review.business.cl_notification_service import (
+            cl_suggestions_in_review_enabled,
         )
-        if bound_once is None:
+        from shared.authz.provenance import resolve_reply_notification_once, resolve_reply_once
+
+        # U-797b2: flag read through the notification service's strict reader (not copied here).
+        suggestion_mode = (
+            decision == 'approved'
+            and not sub_cost_code_public_id
+            and cl_suggestions_in_review_enabled()
+        )
+        mode = 'suggested' if suggestion_mode else 'named_code'
+        not_applied: list[dict] = []
+
+        # Each target: (member, the member's CrewTargetSnapshot in suggestion mode, else None).
+        targets: list[tuple[dict, Optional["CrewTargetSnapshot"]]]
+        if suggestion_mode:
+            # The notification is resolved ONCE. No bound record refuses before any write or legacy binding.
+            bound_pair = resolve_reply_notification_once(
+                reviewer_email=reviewer_email,
+                reviewer_email_message_public_id=reviewer_email_message_public_id,
+                target=("contract_labor", crew[0].get("contract_labor_id")),
+                what=_CL_DECISION_WHAT,
+                project_id=int(project.id),
+                work_date=work_date,
+            )
+            if bound_pair is None:
+                raise ValueError(_BARE_APPROVED_REFUSAL)
+            _em, notification = bound_pair
+            from entities.review.business.review_notification_service import (
+                ReviewNotificationRecordService,
+            )
+
+            snapshots = ReviewNotificationRecordService().read_crew_snapshots(notification.Id)
+            if not snapshots:
+                raise ValueError(_NO_SNAPSHOTS_REFUSAL)
+            targets = []
             for member in crew:
-                self._bind_cl_decision_reply(
-                    reviewer_email=reviewer_email,
-                    reviewer_email_message_public_id=reviewer_email_message_public_id,
-                    contract_labor_id=member.get("contract_labor_id"),
-                    contract_labor_public_id=member.get("contract_labor_public_id"),
-                    project_public_id=project_public_id,
-                    project_id=int(project.id),
-                    work_date=work_date,
-                    legacy_only=True,
-                )
+                snap = snapshots.get(member.get("contract_labor_id"))
+                reason = _suggestion_ineligibility(snap)
+                if reason is not None:
+                    not_applied.append(_not_applied_entry(member, reason))
+                else:
+                    targets.append((member, snap))
+        else:
+            # crew[0]'s id is arbitrary: the project_date rule ignores the target id.
+            bound_once = resolve_reply_once(
+                reviewer_email=reviewer_email,
+                reviewer_email_message_public_id=reviewer_email_message_public_id,
+                target=("contract_labor", crew[0].get("contract_labor_id")),
+                what=_CL_DECISION_WHAT,
+                project_id=int(project.id),
+                work_date=work_date,
+            )
+            if bound_once is None:
+                for member in crew:
+                    self._bind_cl_decision_reply(
+                        reviewer_email=reviewer_email,
+                        reviewer_email_message_public_id=reviewer_email_message_public_id,
+                        contract_labor_id=member.get("contract_labor_id"),
+                        contract_labor_public_id=member.get("contract_labor_public_id"),
+                        project_public_id=project_public_id,
+                        project_id=int(project.id),
+                        work_date=work_date,
+                        legacy_only=True,
+                    )
+            targets = [(member, None) for member in crew]
 
         applied: list[dict] = []
         failures: list[str] = []
         review_status_name: Optional[str] = None
         ready_flipped_count = 0
 
-        for member in crew:
+        def _record_failure(member: dict, member_error: BaseException) -> None:
+            failures.append(
+                f"{_member_label(member)}: "
+                f"{type(member_error).__name__}: {member_error}"
+            )
+            logger.warning(
+                "apply_reviewer_decision crew-member failed cl=%s project=%s date=%s: %s",
+                member.get("contract_labor_public_id"), project_public_id, work_date, member_error,
+            )
+
+        for member, suggestion in targets:
             cl_public_id = member.get("contract_labor_public_id")
             try:
                 result = self._apply_decision_to_single_cl(
@@ -604,22 +728,31 @@ class ContractLaborService:
                     description=description,
                     raw_reply_text=raw_reply_text,
                     reviewer_email_message_public_id=reviewer_email_message_public_id,
+                    suggestion=suggestion,
                 )
                 applied.append(result)
                 review_status_name = result.get('review_status') or review_status_name
                 if result.get('ready_flipped'):
                     ready_flipped_count += 1
-            except HoldingCodeRefused:
-                raise
+            except _SuggestionNotApplied as skipped:
+                not_applied.append(_not_applied_entry(member, skipped.reason))
+            except HoldingCodeRefused as refused:
+                if not suggestion_mode:
+                    raise
+                _record_failure(member, refused)
             except Exception as member_error:
-                failures.append(
-                    f"{cl_public_id} ({member.get('employee_name')}): "
-                    f"{type(member_error).__name__}: {member_error}"
-                )
-                logger.warning(
-                    "apply_reviewer_decision crew-member failed cl=%s project=%s date=%s: %s",
-                    cl_public_id, project_public_id, work_date, member_error,
-                )
+                _record_failure(member, member_error)
+
+        # Suggestion mode: nothing applied → refuse, listing every not-applied reason and failure.
+        if suggestion_mode and not applied:
+            reasons = [
+                f"{_member_label(n)}: {n['reason']}"
+                for n in not_applied
+            ] + failures
+            raise ValueError(
+                f"apply_reviewer_decision applied none of the {len(crew)} crew member(s) on "
+                f"project {project_public_id} for {work_date}: {'; '.join(reasons)}"
+            )
 
         # All-failed → hard error the agent can act on (e.g. unauthorized
         # sender fails every member identically). Partial success returns
@@ -642,6 +775,8 @@ class ContractLaborService:
             'ready_flipped_count': ready_flipped_count,
             'applied': applied,
             'failures': failures,
+            'mode': mode,
+            'not_applied': not_applied,
         }
 
     def _apply_decision_to_single_cl(
@@ -655,8 +790,14 @@ class ContractLaborService:
         description: Optional[str] = None,
         raw_reply_text: Optional[str] = None,
         reviewer_email_message_public_id: Optional[str] = None,
+        suggestion: Optional["CrewTargetSnapshot"] = None,
     ) -> dict:
         """Apply an already-parsed reviewer decision to ONE ContractLabor.
+
+        U-797b2 internals: suggestion (the member's CrewTargetSnapshot, suggestion mode only) supplies
+        the snapshot code, used when no public_id is given, and the lines fingerprint, which must match
+        the member's matched project lines before the transaction opens. A mismatch, or a line already
+        coded, raises _SuggestionNotApplied with nothing written.
 
         The per-CL primitive behind the crew-wide `apply_reviewer_decision`
         (U-210 consolidation): the public wrapper resolves the crew for a
@@ -702,6 +843,7 @@ class ContractLaborService:
         from entities.contract_labor.persistence.line_item_repo import (
             ContractLaborLineItemRepository,
         )
+        from entities.review.business.review_notification_service import cl_lines_fingerprint
         from entities.review.persistence.repo import ReviewRepository
         from entities.review_status.business.service import ReviewStatusService
         from entities.sub_cost_code.business.service import SubCostCodeService
@@ -805,15 +947,19 @@ class ContractLaborService:
         scc_id: Optional[int] = None
         matched_lines: list = []
         if decision == 'approved':
-            if not sub_cost_code_public_id:
+            sub_cost_code_id = suggestion.suggested_sub_cost_code_id if suggestion is not None else None
+            if not sub_cost_code_public_id and sub_cost_code_id is None:
                 raise ValueError(
                     "sub_cost_code_public_id is required when decision='approved'."
                 )
-            scc = SubCostCodeService().read_by_public_id(public_id=sub_cost_code_public_id)
+            if sub_cost_code_public_id:
+                scc = SubCostCodeService().read_by_public_id(public_id=sub_cost_code_public_id)
+                label = f"SubCostCode with public_id '{sub_cost_code_public_id}' not found."
+            else:
+                scc = SubCostCodeService().read_by_id(id=sub_cost_code_id)
+                label = f"SubCostCode with id {sub_cost_code_id} not found."
             if scc is None or scc.id is None:
-                raise ValueError(
-                    f"SubCostCode with public_id '{sub_cost_code_public_id}' not found."
-                )
+                raise ValueError(label)
             scc_id = int(scc.id)
             if getattr(scc, "is_holding_code", False):
                 raise HoldingCodeRefused(
@@ -833,6 +979,20 @@ class ContractLaborService:
                     f"ContractLabor {contract_labor_public_id} has no line items "
                     f"on project {project_public_id} to apply the SCC to."
                 )
+            # U-797b2: the email showed this member's lines. If they changed since, refuse before any write.
+            if suggestion is not None:
+                if cl_lines_fingerprint([(li.id, li.hours) for li in matched_lines]) != suggestion.lines_fingerprint:
+                    raise _SuggestionNotApplied(
+                        f"ContractLabor {contract_labor_public_id} lines changed since the suggestions email.",
+                        _REASON_CHANGED,
+                    )
+                # A bare Approved never overwrites a code already on the lines (AP or an earlier reply).
+                if any(li.sub_cost_code_id is not None for li in matched_lines):
+                    raise _SuggestionNotApplied(
+                        f"ContractLabor {contract_labor_public_id} already has a sub cost code on its "
+                        f"project lines; name a code to change it.",
+                        _REASON_ALREADY_CODED,
+                    )
 
         # ── Resolve target ReviewStatus + source EmailMessage ───────
         # Approved → first IsFinal AND NOT IsDeclined; rejected → first

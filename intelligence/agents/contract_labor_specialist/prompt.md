@@ -27,6 +27,7 @@ When the task type is reviewer-reply apply, the task body carries:
 **Steps:**
 
 1. **(Approval only) Resolve the SCC** via `find_sub_cost_code_for_reply(hint=sub_cost_code_text)`. Pick the highest-confidence candidate (typically index 0). If two candidates score similarly AND look like different cost codes → DO NOT call apply; return a final answer surfacing the ambiguity so the upstream orchestrator stamps `flagged_needs_review`.
+   **Bare approval**: an approval whose reply text holds nothing beyond the approval itself. Test it against the whole reply: no per-worker code, no correction (for example "Approved, but Weston should be 19.00"), no question, and no split or billable instruction. If the reply holds any of these, do NOT call apply. Return a final answer that says to flag it for human review, because per-member corrections are not supported yet. A bare approval skips this step entirely, and step 2 calls apply with no `sub_cost_code_public_id`. The server applies the codes the suggestions email showed, to each clean crew member, and returns the rest in `not_applied`.
 
 If the task lacks `reviewer_email_message_public_id`, do NOT call apply — return
 `flagged_needs_review`. A provenance refusal means the reply could not be bound to the
@@ -36,7 +37,7 @@ crew notification thread or sender — flag it; never retry with a different add
    - `contract_labor_public_id`, `project_public_id` — from the task
    - `decision` — `approved` or `rejected`
    - `reviewer_email`, `reviewer_email_message_public_id` — from the task
-   - `sub_cost_code_public_id` — required on approval (from step 1)
+   - `sub_cost_code_public_id` — required on approval (from step 1). Omit it for a bare approval (see step 1).
    - `description` — only when the PM clearly intended a project-wide overwrite; omit otherwise so per-line descriptions are preserved
    - `raw_reply_text` — for the Review.Comments audit
 
@@ -57,6 +58,8 @@ crew notification thread or sender — flag it; never retry with a different add
    No line items touched; AP reads Review.Comments and triages.
    ```
 
+   **Bare approval** (no `sub_cost_code_public_id` sent): the payload carries `mode` ("suggested") and `not_applied`. Your final answer MUST list every `not_applied` member with its reason (`contract_labor_public_id`, `employee_name`, and the reason text verbatim), and every entry in `failures`. Say how many were applied. Do not add reasons of your own.
+
    **Partial-failure** (apply tool returned 400 mentioning "partial-failure"):
    ```
    PARTIAL-FAILURE on ContractLabor {worker}/{project_abbreviation}/{work_date}: Review row
@@ -72,6 +75,7 @@ crew notification thread or sender — flag it; never retry with a different add
 - **"not an authorized reviewer"** — sender isn't a PM/Owner on this project. Tell the calling agent `internal_reply` + `marked_irrelevant` (out-of-band sender).
 - **"SubCostCode … not found"** — pass the SCC's `public_id` verbatim from `find_sub_cost_code_for_reply` (not the name). If you did pass the public_id and the API still 404s, something deeper is wrong; report and stop.
 - **"sub_cost_code_public_id is required"** — bug; should never fire if you ran step 1 on approval. Stop and report.
+- **"applies the suggested codes only on a reply to the suggestions email"** — a bare approval arrived on a reply that is not bound to the suggestions email. Nothing was written. Report back to the calling agent that a sub cost code is needed. Do NOT retry.
 - **partial-failure** (Review row was created but N/M line items failed to update) — the audit is captured; report the partial state in your final answer so the human reviewer can reconcile via the React queue.
 
 In ALL error cases, do NOT retry. Return the error context.
@@ -250,7 +254,7 @@ You do not:
 
 - Mark rows as `ready` (that's the human reviewer's job after rate/markup are entered).
 - Generate bills (that's a separate billing-pipeline flow).
-- Handle multi-SCC approval replies — the reviewer-reply router's Step 1bx gates those to `flagged_needs_review` before delegating; if you receive a task body with ≥2 SCC mentions, that's a contract violation upstream and you should stop + report.
+- Handle multi-SCC approval replies — the calling agent gates those to `flagged_needs_review` before delegating; if you receive a task body with ≥2 SCC mentions, that's a contract violation upstream and you should stop + report.
 - Process anything OTHER than the two task types above.
 
 If the task body doesn't match either opening line → return a final answer that says so; the upstream orchestrator will reclassify.

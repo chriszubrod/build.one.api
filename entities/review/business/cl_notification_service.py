@@ -149,6 +149,21 @@ def _crew_snapshots(lines: list, displays: dict) -> dict:
     return out
 
 
+def cl_suggestions_in_review_enabled(settings=None) -> bool:
+    """CL_SUGGESTIONS_IN_REVIEW_ENABLED, read strictly by the same rules as the class reader.
+
+    settings=None loads Settings. A load failure logs a neutral line and reads as off."""
+    if settings is None:
+        try:
+            from config import Settings
+
+            settings = Settings()
+        except Exception:
+            logger.warning("cl_suggestions_in_review.settings_load_failed — flag off", exc_info=True)
+            return False
+    return ContractLaborReviewNotificationService._suggestions_in_review_enabled(settings)
+
+
 class ContractLaborReviewNotificationService:
     """Per-project draft generator for ContractLabor reviews."""
 

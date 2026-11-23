@@ -174,6 +174,22 @@ class ReviewService:
         )
 
         if contract_labor_id is not None and is_initial_submit:
+            # U-797a/U-797b1: shadow coding prediction, enqueued BEFORE the CL drafts so the email's
+            # suggestion wait (cl_notification_service) finds the row. Failure-isolated, outside the drafts try:
+            # a drafts failure still enqueues it, and an enqueue failure never delays or alters the email.
+            try:
+                from entities.contract_labor.business.coding_shadow_service import (
+                    ContractLaborCodingShadowService,
+                )
+
+                ContractLaborCodingShadowService().enqueue_for_contract_labor(contract_labor_id)
+            except Exception as shadow_error:
+                logger.warning(
+                    "cl_coding_shadow.hook_failed contract_labor_id=%s error=%s",
+                    contract_labor_id,
+                    type(shadow_error).__name__,
+                )
+
             try:
                 from entities.contract_labor.business.service import ContractLaborService
                 from entities.review.business.cl_notification_service import (
@@ -224,21 +240,6 @@ class ReviewService:
                     "(contract_labor_id=%s, review_id=%s)",
                     contract_labor_id,
                     review.id,
-                )
-
-            # U-797a: shadow coding prediction. Outside the drafts try, so a drafts failure still
-            # enqueues the shadow. Failure-isolated so it can never delay or alter the review email.
-            try:
-                from entities.contract_labor.business.coding_shadow_service import (
-                    ContractLaborCodingShadowService,
-                )
-
-                ContractLaborCodingShadowService().enqueue_for_contract_labor(contract_labor_id)
-            except Exception as shadow_error:
-                logger.warning(
-                    "cl_coding_shadow.hook_failed contract_labor_id=%s error=%s",
-                    contract_labor_id,
-                    type(shadow_error).__name__,
                 )
 
         if bill_id is not None and is_initial_submit:

@@ -26,11 +26,23 @@ manually address.
 
 Failure isolation: never raises. Enqueue failures log and continue; the
 Review row is never rolled back.
+
+SUGGESTIONS (U-797b1). Rollout and rollback are governed by CL_SUGGESTIONS_IN_REVIEW_ENABLED (Settings
+cl_suggestions_in_review_enabled, default off, strict). Flag off is trunk's email. Flag on: the email shows each
+crew member's suggested code in a table, and a (project, date) email is held while a counted member's suggestion
+is pending and the crew's latest submit is under CL_SUGGESTION_WAIT_MINUTES. A held day is marked in
+dbo.ContractLaborReviewHold, which is the only thing the sweep and the completion re-fire act on. The marker is
+deleted when the claim succeeds. A fire that does not delete the marker counts an attempt, and after five the
+sweep gives up on it and logs ids only. The shadow flag (CL_CODING_SHADOW_ENABLED) only produces the suggestion
+rows. It does not change the email. The claim stores a snapshot of what each crew member's row showed.
 """
 
 import html
 import logging
+from datetime import datetime, timezone
 from typing import Optional
+
+from shared.env_flags import is_truthy
 
 from entities.review.business import review_notification_service as _rns
 from entities.review.business.review_email_composer import (
@@ -64,8 +76,18 @@ def is_cl_notification_subject(subject: Optional[str]) -> bool:
 logger = logging.getLogger(__name__)
 
 
-def contract_labor_ask(project_label: str, work_date: str) -> str:
-    """The reviewer ask for a consolidated crew draft (one project, one date)."""
+def contract_labor_ask(project_label: str, work_date: str, *, suggestions: bool = False) -> str:
+    """The reviewer ask for a consolidated crew draft (one project, one date).
+
+    suggestions=False is trunk's ask, byte for byte (flag off). suggestions=True (U-797b1, flag on) asks for the
+    suggested codes and keeps the decline guidance."""
+    if suggestions:
+        return (
+            f"<p>The following Contract Labor for {html.escape(project_label)} "
+            f"on {html.escape(work_date)} has been submitted for review. "
+            'Reply "Approved" to apply the suggested codes, or reply with a sub cost code '
+            "to apply it to the whole crew. To decline, reply \"Not approved\" with the reason.</p>"
+        )
     return (
         f"<p>The following Contract Labor for {html.escape(project_label)} "
         f"on {html.escape(work_date)} has been submitted for review. When "
@@ -73,6 +95,58 @@ def contract_labor_ask(project_label: str, work_date: str) -> str:
         "sub cost code and description or not approved. The sub cost code "
         "you provide will be applied to the full crew listed below.</p>"
     )
+
+
+# The per-row note for a suggestion that is not a shown code (U-797b1). Clean and no-suggestion rows have none.
+_STATE_NOTES = {
+    "holding": "holding code, not suggested",
+    "failed": "suggestion failed",
+    "skipped": "suggestion skipped",
+    "pending": "suggestion pending when sent",
+}
+
+
+def _suggested_cell(display) -> str:
+    if display.code_label:
+        return display.code_label + (" (split?)" if display.split_shown else "")
+    return "no suggestion"
+
+
+def _note_cell(display) -> str:
+    parts: list[str] = []
+    if display.split_shown:
+        parts.append(
+            "possible split" + (": " + ", ".join(display.candidate_labels) if display.candidate_labels else "")
+        )
+    note = _STATE_NOTES.get(display.state)
+    if note:
+        parts.append(note)
+    return "; ".join(parts)
+
+
+def _crew_snapshots(lines: list, displays: dict) -> dict:
+    """One CrewTargetSnapshot per ContractLabor on the crew, from what its email row showed (U-797b1).
+
+    The fingerprint covers that member's lines on this project at compose time (cl_lines_fingerprint)."""
+    from entities.review.business import review_notification_service as rns
+
+    pairs_by_cl: dict = {}
+    for r in lines:
+        pairs_by_cl.setdefault(r.ContractLaborId, []).append(
+            (getattr(r, "LineItemId", None), getattr(r, "Hours", None))
+        )
+    out: dict = {}
+    for cl_id, pairs in pairs_by_cl.items():
+        display = displays[cl_id]
+        out[cl_id] = rns.CrewTargetSnapshot(
+            contract_labor_id=cl_id,
+            suggested_sub_cost_code_id=display.code_id,
+            suggestion_id=display.suggestion_id,
+            suggestion_source=display.source,
+            suggestion_may_split=display.split_shown,
+            lines_fingerprint=rns.cl_lines_fingerprint(pairs),
+        )
+    return out
 
 
 class ContractLaborReviewNotificationService:
@@ -149,6 +223,8 @@ class ContractLaborReviewNotificationService:
         # contexts; never let it break the enqueue path.
         bcc_addresses = self._build_bcc_addresses()
 
+        settings = self._load_settings()  # one Settings per enqueue
+        suggestions_on = self._suggestions_in_review_enabled(settings)
         outbox = MsOutboxService()
         enqueued = 0
         for project_id in sorted(lines_by_project.keys()):
@@ -157,6 +233,27 @@ class ContractLaborReviewNotificationService:
             representative_cl_id = meta["representative_cl_id"]
             project_label = self._format_project_label(meta, project_id)
             subject = f"{CL_NOTIFICATION_SUBJECT_PREFIX}{project_label} - {work_date_str}"
+
+            # ── SUGGESTIONS (U-797b1, flag on only) ─────────────
+            # Hold this (project, date) while a counted member's suggestion is pending and the crew's latest submit
+            # is under the wait. A held day is marked, so the sweep and the completion re-fire can find it. If the
+            # marker cannot be written the email goes now rather than being held with no way to release it.
+            displays: dict = {}
+            snapshots = None
+            if suggestions_on:
+                from entities.contract_labor.business.coding_shadow_service import suggestion_hold
+
+                suggestion_rows, labels = self._read_suggestions(project_id, work_date)
+                if suggestion_hold(suggestion_rows, now=datetime.now(timezone.utc)) and self._mark_held(
+                    project_id, work_date
+                ):
+                    logger.info(
+                        "cl_review_notification.held_for_suggestions project_id=%s work_date=%s",
+                        project_id, work_date_str,
+                    )
+                    continue
+                displays = self._displays_for_crew(lines, suggestion_rows, labels)
+                snapshots = _crew_snapshots(lines, displays)
 
             # ── CLAIM (dedup + straggler-manual + race guard) ────
             # Atomically insert the (project, date) token; only the
@@ -186,6 +283,7 @@ class ContractLaborReviewNotificationService:
                 work_date=work_date,
                 subject=subject,
                 contract_labor_ids=sorted({r.ContractLaborId for r in lines}),
+                snapshots=snapshots,
             )
 
             # Claim is held from here down. Any exit without an outbox row releases it so a later
@@ -205,6 +303,8 @@ class ContractLaborReviewNotificationService:
                     work_date=work_date_str,
                     lines=lines,
                     pms=pms,
+                    suggestions=displays,
+                    suggestions_enabled=suggestions_on,
                 )
 
                 outbox_row = ReviewEmailComposer.send_with_record(
@@ -226,6 +326,8 @@ class ContractLaborReviewNotificationService:
                 )
                 if outbox_row:
                     enqueued += 1
+                    if suggestions_on:
+                        self._clear_hold(project_id, work_date)
                     continue
                 logger.error(
                     "cl_review_notification.enqueue_project_no_row "
@@ -329,10 +431,83 @@ class ContractLaborReviewNotificationService:
             )
             return False
 
+    @staticmethod
+    def _load_settings():
+        """The Settings for one enqueue. None when they cannot load: the email then goes as trunk's."""
+        try:
+            from config import Settings
+
+            return Settings()
+        except Exception:
+            logger.warning("cl_review_notification.settings_load_failed — email unchanged", exc_info=True)
+            return None
+
+    @staticmethod
+    def _suggestions_in_review_enabled(settings=None) -> bool:
+        """CL_SUGGESTIONS_IN_REVIEW_ENABLED, read strictly: only a real True, or the string "true", turns it on.
+        No Settings, a stand-in (a MagicMock), or any other value leaves it off (trunk's email)."""
+        value = getattr(settings, "cl_suggestions_in_review_enabled", False) if settings is not None else False
+        if value is True:
+            return True
+        return isinstance(value, str) and is_truthy(value)
+
+    def _hold_repo(self):
+        from entities.contract_labor.persistence.coding_suggestion_repo import (
+            ContractLaborCodingSuggestionRepository,
+        )
+
+        return ContractLaborCodingSuggestionRepository()
+
+    def _mark_held(self, project_id: int, work_date) -> bool:
+        """Write the marker for a held (project, date). False when it could not be written. Never raises."""
+        try:
+            self._hold_repo().upsert_review_hold(project_id, work_date)
+            return True
+        except Exception as error:
+            logger.error(
+                "cl_review_notification.hold_mark_failed project_id=%s error=%s", project_id, type(error).__name__,
+            )
+            return False
+
+    def _clear_hold(self, project_id: int, work_date) -> None:
+        """Delete the marker once its claim has succeeded. Never raises."""
+        try:
+            self._hold_repo().delete_review_hold(project_id, work_date)
+        except Exception as error:
+            logger.error(
+                "cl_review_notification.hold_clear_failed project_id=%s error=%s", project_id, type(error).__name__,
+            )
+
+    def _read_suggestions(self, project_id: int, work_date):
+        """(suggestion rows, labels) for one project's day. A read failure returns no rows, so the email goes
+        without suggestions rather than being held on a read that cannot answer. Never raises."""
+        try:
+            from entities.contract_labor.persistence.coding_suggestion_repo import (
+                ContractLaborCodingSuggestionRepository,
+            )
+
+            return ContractLaborCodingSuggestionRepository().read_suggestions_for_project_day(project_id, work_date)
+        except Exception as error:
+            logger.error(
+                "cl_review_notification.suggestions_read_failed project_id=%s error=%s",
+                project_id, type(error).__name__,
+            )
+            return [], {}
+
+    @staticmethod
+    def _displays_for_crew(lines: list, rows: list, labels: dict) -> dict:
+        from entities.contract_labor.business.coding_shadow_service import suggestion_display
+
+        by_cl = {row.contract_labor_id: row for row in rows}
+        return {
+            cl_id: suggestion_display(by_cl.get(cl_id), labels)
+            for cl_id in {r.ContractLaborId for r in lines}
+        }
+
     def _claim_review_notification(self, *, project_id: int, work_date, subject: str,
-                                   contract_labor_ids: list):
+                                   contract_labor_ids: list, snapshots: Optional[dict] = None):
         """U-797c1: record the crew claim on dbo.ReviewNotification. Never raises.
-        Returns None when not written (already claimed, or a failure)."""
+        Returns None when not written (already claimed, or a failure). snapshots: U-797b1."""
         context = f"project_id={project_id} work_date={work_date}"
         records = ReviewEmailComposer.records_or_none(
             lambda: _rns.ReviewNotificationRecordService(), context,
@@ -344,6 +519,7 @@ class ContractLaborReviewNotificationService:
             work_date=work_date,
             subject=subject,
             contract_labor_ids=contract_labor_ids,
+            snapshots=snapshots,
             context=context,
         )
 
@@ -503,6 +679,66 @@ class ContractLaborReviewNotificationService:
         work_date: str,
         lines: list,
         pms: list[dict],
+        suggestions: Optional[dict] = None,
+        suggestions_enabled: bool = False,
+    ) -> str:
+        """Consolidated crew HTML body for one (project, date).
+
+        suggestions_enabled=False (flag off): trunk's body, byte for byte. True (U-797b1): the greeting, the new ask
+        and one table for the crew with the suggestions. suggestions maps ContractLabor id to a SuggestionDisplay."""
+        if not suggestions_enabled:
+            return self._build_body_legacy(project_label=project_label, work_date=work_date, lines=lines, pms=pms)
+        greeting = ReviewEmailComposer.greeting(self._greeting_names(pms), dedupe=True)
+        ask = contract_labor_ask(project_label, work_date, suggestions=True)
+        return greeting + ask + self._format_crew_table(lines, suggestions)
+
+    def _format_crew_table(self, lines: list, suggestions: Optional[dict]) -> str:
+        """One table for the crew, a row per line, in the sproc's (project, worker, line) order.
+        Columns: Worker, Hours, Notes/Description, Suggested code, Note (the Bill email's table style)."""
+        from entities.contract_labor.business.coding_shadow_service import suggestion_display
+
+        header = (
+            "<tr><th align='left'>Worker</th><th align='left'>Hours</th>"
+            "<th align='left'>Is Billable</th><th align='left'>Is Overhead</th>"
+            "<th align='left'>Notes/Description</th><th align='left'>Suggested code</th>"
+            "<th align='left'>Note</th></tr>"
+        )
+        rows: list[str] = []
+        for r in lines:
+            display = suggestions[r.ContractLaborId]
+            name = getattr(r, "EmployeeName", None) or "Worker"
+            hours = self._fmt_hours(getattr(r, "Hours", None))
+            desc = (getattr(r, "Description", None) or "").strip() or "(no description)"
+            billable = self._fmt_yes_no(getattr(r, "IsBillable", None), default_true=True)
+            overhead = self._fmt_yes_no(getattr(r, "IsOverhead", None), default_true=False)
+            rows.append(
+                f"<tr><td>{html.escape(name)}</td><td>{html.escape(hours)}</td>"
+                f"<td>{html.escape(billable)}</td><td>{html.escape(overhead)}</td>"
+                f"<td>{html.escape(desc)}</td><td>{html.escape(_suggested_cell(display))}</td>"
+                f"<td>{html.escape(_note_cell(display))}</td></tr>"
+            )
+        return (
+            "<table cellpadding='4' cellspacing='0' border='1' "
+            "style='border-collapse:collapse; margin-top:6px;'>"
+            f"{header}{''.join(rows)}</table>"
+        )
+
+    @staticmethod
+    def _fmt_hours(value) -> str:
+        if value is None:
+            return "0.00"
+        try:
+            return f"{float(value):.2f}"
+        except (TypeError, ValueError):
+            return str(value)
+
+    def _build_body_legacy(
+        self,
+        *,
+        project_label: str,
+        work_date: str,
+        lines: list,
+        pms: list[dict],
     ) -> str:
         """Consolidated crew HTML body for one (project, date):
 
@@ -570,15 +806,6 @@ class ContractLaborReviewNotificationService:
             )
         inner = "<br><br>".join(line_blocks)
         return f"<p><b>{html.escape(worker['name'])}</b><br>{inner}</p>"
-
-    @staticmethod
-    def _fmt_hours(value) -> str:
-        if value is None:
-            return "0.00"
-        try:
-            return f"{float(value):.2f}"
-        except (TypeError, ValueError):
-            return str(value)
 
     @staticmethod
     def _fmt_yes_no(value, *, default_true: bool) -> str:

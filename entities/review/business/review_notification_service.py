@@ -12,8 +12,11 @@ here never blocks or rolls back the email. The stamp and try_* methods report
 failure as a return value and never raise.
 """
 
+import hashlib
 import logging
-from typing import Iterable, Optional
+from dataclasses import dataclass
+from decimal import Decimal
+from typing import Any, Iterable, Mapping, Optional
 
 from entities.review.persistence.review_notification_repo import ReviewNotificationRepository
 
@@ -82,6 +85,38 @@ def stamp_review_notification(*, outbox_id: int, review_notification_id: Optiona
     ), context)
 
 
+def _hours_text(value: Any) -> str:
+    """Hours as a Decimal string ('2.50'). A missing value counts as zero."""
+    if value is None:
+        return "0"
+    return str(Decimal(str(value)))
+
+
+def cl_lines_fingerprint(pairs: Iterable[tuple[Any, Any]]) -> str:
+    """SHA-256 hex over one crew member's lines: the sorted 'lineItemId:hours' strings, joined by newlines.
+
+    The one definition: U-797b1 writes it into the claim snapshot, U-797b2 recomputes it at apply time to
+    refuse an apply when the lines changed since the email. Order-independent by the sort."""
+    items = sorted(f"{line_id}:{_hours_text(hours)}" for line_id, hours in pairs)
+    return hashlib.sha256("\n".join(items).encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class CrewTargetSnapshot:
+    """What the CL crew email showed for one crew member, plus the fingerprint of their lines then (U-797b1).
+
+    suggested_sub_cost_code_id / suggestion_id / suggestion_source are NULL when the email showed no code.
+    suggestion_may_split is the split note as shown (NULL when no completed row was shown).
+    """
+
+    contract_labor_id: int
+    suggested_sub_cost_code_id: Optional[int]
+    suggestion_id: Optional[int]
+    suggestion_source: Optional[str]
+    suggestion_may_split: Optional[bool]
+    lines_fingerprint: Optional[str]
+
+
 def target_pairs(target_rows: Iterable, notification_id) -> set:
     """(kind, id) pairs for the targets of one notification."""
     pairs: set = set()
@@ -122,9 +157,11 @@ class ReviewNotificationRecordService:
         return row
 
     def claim_for_crew(self, *, project_id: int, work_date, subject: Optional[str],
-                       contract_labor_ids: Iterable[int]):
+                       contract_labor_ids: Iterable[int],
+                       snapshots: Optional[Mapping[int, CrewTargetSnapshot]] = None):
         """The Contract Labor (project, date) claim, with one target per crew member.
 
+        snapshots (U-797b1) maps a ContractLabor id to what the email showed for it; each target stores it.
         Returns None when the claim already exists (no targets are written).
         If a target write fails, the claim is released so a retry can run."""
         row = self.repo.create(
@@ -138,7 +175,8 @@ class ReviewNotificationRecordService:
             return None
         try:
             for cl_id in contract_labor_ids:
-                self._add_target(row.Id, "contract_labor", cl_id)
+                snap = snapshots.get(cl_id) if snapshots else None
+                self._add_target(row.Id, "contract_labor", cl_id, snapshot=snap)
         except Exception:
             self.release(row.Id)
             raise
@@ -163,10 +201,12 @@ class ReviewNotificationRecordService:
             return None
 
     def try_claim_for_crew(self, *, project_id: int, work_date, subject: Optional[str],
-                           contract_labor_ids: Iterable[int], context: str = ""):
+                           contract_labor_ids: Iterable[int],
+                           snapshots: Optional[Mapping[int, CrewTargetSnapshot]] = None,
+                           context: str = ""):
         try:
             return self.claim_for_crew(project_id=project_id, work_date=work_date, subject=subject,
-                                       contract_labor_ids=contract_labor_ids)
+                                       contract_labor_ids=contract_labor_ids, snapshots=snapshots)
         except Exception as error:
             _log_failure("claim_for_crew", error, context)
             return None
@@ -237,12 +277,40 @@ class ReviewNotificationRecordService:
         notifications, targets = self.repo.find_for_reply(conversation_id=conv)
         return [(n, target_pairs(targets, n.Id)) for n in notifications]
 
-    def _add_target(self, notification_id: int, kind: str, target_id: int):
+    def read_crew_snapshots(self, notification_id: int) -> dict[int, CrewTargetSnapshot]:
+        """U-797b1: the snapshot of each crew member's target on one CL notification, keyed by ContractLabor id."""
+        rows = self.repo.read_target_snapshots(review_notification_id=notification_id)
+        out: dict[int, CrewTargetSnapshot] = {}
+        for r in rows:
+            cl_id = int(r.ContractLaborId)
+            out[cl_id] = CrewTargetSnapshot(
+                contract_labor_id=cl_id,
+                suggested_sub_cost_code_id=int(r.SuggestedSubCostCodeId) if r.SuggestedSubCostCodeId is not None else None,
+                suggestion_id=int(r.SuggestionId) if r.SuggestionId is not None else None,
+                suggestion_source=r.SuggestionSource,
+                suggestion_may_split=bool(r.SuggestionMaySplit) if r.SuggestionMaySplit is not None else None,
+                lines_fingerprint=r.LinesFingerprint,
+            )
+        return out
+
+    def _add_target(self, notification_id: int, kind: str, target_id: int,
+                    snapshot: Optional[CrewTargetSnapshot] = None):
         field = _TARGET_FIELD[kind]
+        extra: dict[str, Any] = {}
+        if snapshot is not None:
+            extra = dict(
+                with_snapshot=True,
+                suggested_sub_cost_code_id=snapshot.suggested_sub_cost_code_id,
+                suggestion_id=snapshot.suggestion_id,
+                suggestion_source=snapshot.suggestion_source,
+                suggestion_may_split=snapshot.suggestion_may_split,
+                lines_fingerprint=snapshot.lines_fingerprint,
+            )
         return self.repo.add_target(
             review_notification_id=notification_id,
             bill_id=target_id if field == "BillId" else None,
             expense_id=target_id if field == "ExpenseId" else None,
             bill_credit_id=target_id if field == "BillCreditId" else None,
             contract_labor_id=target_id if field == "ContractLaborId" else None,
+            **extra,
         )

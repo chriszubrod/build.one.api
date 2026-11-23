@@ -15,10 +15,18 @@ Sprocs
   ClaimNextContractLaborCodingSuggestion
   CompleteContractLaborCodingSuggestion
   CountContractLaborCodingCallsToday
+  CountPendingContractLaborByWorkDate
   CreateContractLaborLineItem
   DeleteContractLaborById
   EnqueueContractLaborCodingSuggestions
   ReadContractLaborCodingIdfCorpus
+  ReadContractLaborCodingSuggestionsByProjectAndDate
+  DeleteContractLaborReviewHold
+  PruneContractLaborReviewHolds
+  ReadContractLaborReviewHold
+  ReadContractLaborReviewHoldsDue
+  RecordContractLaborReviewHoldFire
+  UpsertContractLaborReviewHold
   ReadContractLaborCodingScorecardRows
   ReadContractLaborCodingShadowInputs
   ReleaseContractLaborCodingSuggestion

@@ -42,6 +42,21 @@ class FakeRepo:
     release_attempts: list = field(default_factory=list)
     enqueued: list = field(default_factory=list)
 
+    def read_suggestions_for_project_day(self, project_id, work_date):
+        # U-797b1: the re-fire check reads the crew day; these tests have no other suggestion rows.
+        return [], {}
+
+    def prune_review_holds(self):
+        # U-797b1: the sweep prunes markers each tick; none exist in these tests.
+        return None
+
+    def count_pending_review(self, work_date):
+        return 0
+
+    def read_review_holds_due(self, days=7):
+        # U-797b1: the sweep reads due markers; none exist in these tests.
+        return []
+
     def enqueue_for_contract_labor(self, contract_labor_id: int) -> int:
         self.enqueued.append(contract_labor_id)
         if self.enqueue_error is not None:
@@ -178,7 +193,8 @@ def test_enqueue_never_raises_when_settings_cannot_load():
 def test_tick_disabled_returns_skipped_and_touches_nothing():
     repo = FakeRepo(claims=[_claim()])
     result = _run(limit=3, settings=_settings(enabled=False), repo=repo, budget_stopped=_never_called)
-    assert result == {"skipped": "disabled"}
+    # U-797b1 F2: the sweep runs on every tick, so the disabled tick reports the skip plus zero claims.
+    assert result["skipped"] == "disabled" and result["claimed"] == 0
     assert repo.completed == [] and repo.released == []
 
 
@@ -428,7 +444,9 @@ def test_policy_deferral_releases_without_counting_an_attempt():
 
 def test_sync_wrapper_returns_the_same_shape():
     result = svc.run_cl_coding_tick_sync(limit=1, settings=_settings(enabled=False), repo=FakeRepo())
-    assert result == {"skipped": "disabled"}
+    # U-797b1 F2: the disabled tick still sweeps; the shape is the skip plus the counters.
+    assert result["skipped"] == "disabled"
+    assert set(result) >= {"claimed", "completed", "refired", "swept"}
 
 
 # --- hook placement -------------------------------------------------------
@@ -440,9 +458,10 @@ def test_review_hook_runs_after_enqueue_drafts_and_is_failure_isolated():
     text = (REPO_ROOT / "entities" / "review" / "business" / "service.py").read_text(encoding="utf-8")
     drafts = text.index("ContractLaborReviewNotificationService().enqueue_drafts(")
     shadow = text.index("ContractLaborCodingShadowService().enqueue_for_contract_labor(")
-    assert drafts < shadow
+    # U-797b1: the shadow row is enqueued BEFORE the drafts, so the email's suggestion wait finds it.
+    assert shadow < drafts
     head = text[:shadow].rsplit("try:", 1)[1]
-    assert "enqueue_for_contract_labor" not in head
+    assert "enqueue_drafts" not in head
     tail = text[shadow:].split("except Exception", 1)[1][:300]
     assert "raise" not in tail.split("\n\n", 1)[0]
 
@@ -471,4 +490,5 @@ def test_shadow_hook_sits_outside_the_drafts_try_block():
     ]
     assert len(shadow_calls) == 1
     shadow_line = shadow_calls[0].lineno
-    assert shadow_line > drafts_try.end_lineno, "shadow enqueue must run after the drafts try block, not inside it"
+    # U-797b1: the shadow enqueue runs before the drafts try block (and never inside it).
+    assert shadow_line < drafts_try.lineno, "shadow enqueue must run before the drafts try block (U-797b1)"

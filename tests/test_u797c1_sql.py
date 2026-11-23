@@ -18,6 +18,7 @@ EXPECTED_SPROCS = {
     "StampReviewNotificationById",  # U-797c2a
     "DeleteReviewNotification",
     "FindReviewNotificationForReply",
+    "ReadReviewNotificationTargetSnapshots",  # U-797b1
 }
 
 

@@ -1,7 +1,7 @@
 -- Contract: dbo.ContractLaborCodingSuggestion
 -- Owns: dbo.ContractLaborCodingSuggestion (U-797a shadow predictions, one row per crew-member day per project); ids, codes and numbers only.
 -- Invariants: unique (ContractLaborId, ProjectId); no note or reply text is stored; mutation sprocs SET NOCOUNT ON and take no in-proc transaction control (pyodbc autocommit-off); Enqueue/Claim/Complete/Release are the only writers; the 24 h stale sweep in Claim guards staleness only; the leak guard is the tick's own_cl_coded skip (a row whose own ContractLabor is labelled is never predicted).
--- Sprocs: EnqueueContractLaborCodingSuggestions, ClaimNextContractLaborCodingSuggestion, ReadContractLaborCodingShadowInputs, CompleteContractLaborCodingSuggestion, ReleaseContractLaborCodingSuggestion, CountContractLaborCodingCallsToday, ReadContractLaborCodingScorecardRows, ReadContractLaborCodingIdfCorpus
+-- Sprocs: EnqueueContractLaborCodingSuggestions, ClaimNextContractLaborCodingSuggestion, ReadContractLaborCodingShadowInputs, CompleteContractLaborCodingSuggestion, ReleaseContractLaborCodingSuggestion, CountContractLaborCodingCallsToday, ReadContractLaborCodingScorecardRows, ReadContractLaborCodingIdfCorpus, ReadContractLaborCodingSuggestionsByProjectAndDate
 -- ─────────────────────────────────────────────────────────────────────
 -- U-797a: Contract Labor coding suggestion (shadow). Stores one suggested SubCostCode
 -- (or an abstain) and a split flag per (ContractLabor, Project), then the scorecard reads
@@ -429,5 +429,56 @@ BEGIN
     INNER JOIN dbo.[ContractLabor] cl ON cl.[Id] = s.[ContractLaborId]
     WHERE s.[Status] = N'done'
       AND (@Since IS NULL OR s.[WorkDate] >= @Since);
+END
+GO
+
+-- ─────────────────────────────────────────────────────────────────────
+-- U-797b1: the CL review email reads each crew member's suggestion for one (project, work date) to show it,
+-- and to hold the email while a row is pending. Read-only. Result set 1: the rows (the suggested code's label,
+-- its holding flag, the split flag and the candidate ids). Result set 2: the labels of the split candidates.
+-- ─────────────────────────────────────────────────────────────────────
+CREATE OR ALTER PROCEDURE dbo.ReadContractLaborCodingSuggestionsByProjectAndDate
+(
+    @ProjectId BIGINT,
+    @WorkDate  DATE
+)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT
+        s.[Id],
+        s.[ContractLaborId],
+        s.[Status],
+        s.[DecisionSource],
+        s.[SubCostCodeId],
+        scc.[Number]                                AS [SubCostCodeNumber],
+        scc.[Name]                                  AS [SubCostCodeName],
+        CAST(ISNULL(scc.[IsHoldingCode], 0) AS BIT) AS [IsHoldingCode],
+        s.[MaySplit],
+        s.[ModelSplitCodes],
+        cl.[ModifiedDatetime]                       AS [ContractLaborModifiedDatetime],
+        cl.[Status]                                 AS [ContractLaborStatus],
+        CAST(CASE WHEN EXISTS (
+            SELECT 1 FROM dbo.[ContractLaborLineItem] li
+            WHERE li.[ContractLaborId] = cl.[Id] AND li.[ProjectId] = s.[ProjectId]) THEN 1 ELSE 0 END AS BIT)
+                                                    AS [HasSubmittedProjectLine]
+    FROM dbo.[ContractLaborCodingSuggestion] s
+    INNER JOIN dbo.[ContractLabor] cl ON cl.[Id] = s.[ContractLaborId]
+    LEFT JOIN dbo.[SubCostCode] scc ON scc.[Id] = s.[SubCostCodeId]
+    WHERE s.[ProjectId] = @ProjectId
+      AND s.[WorkDate] = @WorkDate
+    ORDER BY s.[ContractLaborId];
+
+    SELECT DISTINCT scc.[Id], scc.[Number], scc.[Name]
+    FROM dbo.[SubCostCode] scc
+    WHERE scc.[Id] IN (
+        SELECT TRY_CAST(v.[value] AS BIGINT)
+        FROM dbo.[ContractLaborCodingSuggestion] s
+        CROSS APPLY STRING_SPLIT(s.[ModelSplitCodes], N',') v
+        WHERE s.[ProjectId] = @ProjectId
+          AND s.[WorkDate] = @WorkDate
+          AND s.[ModelSplitCodes] IS NOT NULL
+    );
 END
 GO

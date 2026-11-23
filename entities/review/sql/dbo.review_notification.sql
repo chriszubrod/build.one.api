@@ -1,7 +1,8 @@
 -- Contract: dbo.ReviewNotification / dbo.ReviewNotificationTarget — one row per outbound review email, and the records it covers.
 -- Owns: the record of every review-submit email (Bill, Expense, BillCredit, ContractLabor): its outbox row, its Graph conversation identity (stamped by the MS worker on draft create), and the exact documents its reply may approve.
 -- Invariants: Kind is one of bill/expense/bill_credit/contract_labor. A ContractLabor claim is one row per (ProjectId, WorkDate) (CreateReviewNotification returns an empty set on a duplicate). Every target row names exactly one document. ConversationId / InternetMessageId / DraftGraphMessageId compare case-sensitively (BIN). Stamping only fills NULLs.
--- Sprocs: CreateReviewNotification, AddReviewNotificationTarget, SetReviewNotificationOutbox, StampReviewNotificationFromOutbox, StampReviewNotificationById, DeleteReviewNotification, FindReviewNotificationForReply
+-- U-797b1: a Contract Labor target's snapshot columns (the suggestion the email showed and its lines fingerprint) are written only by the CL crew claim; Bill, Expense and BillCredit targets leave them NULL.
+-- Sprocs: CreateReviewNotification, AddReviewNotificationTarget, SetReviewNotificationOutbox, StampReviewNotificationFromOutbox, StampReviewNotificationById, DeleteReviewNotification, FindReviewNotificationForReply, ReadReviewNotificationTargetSnapshots
 -- =============================================================================
 -- U-797c1: ReviewNotification is the one record a reply binds through (design
 -- docs/design/u797c-review-reply-binding.md, section 1). Writers: the Bill /
@@ -97,6 +98,18 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_ReviewNotificationTarg
     CREATE INDEX IX_ReviewNotificationTarget_ContractLaborId ON [dbo].[ReviewNotificationTarget] ([ContractLaborId]) WHERE [ContractLaborId] IS NOT NULL;
 GO
 
+-- U-797b1: the snapshot of what each Contract Labor target's email showed (the suggested code, its row, the
+-- split note as shown) and a fingerprint of that crew member's lines. Nullable: other kinds leave them NULL.
+-- One guarded ALTER, GO-terminated, so it cannot be swallowed into the next CREATE PROCEDURE.
+IF COL_LENGTH('dbo.ReviewNotificationTarget', 'SuggestedSubCostCodeId') IS NULL
+    ALTER TABLE [dbo].[ReviewNotificationTarget] ADD
+        [SuggestedSubCostCodeId] BIGINT NULL,
+        [SuggestionId]           BIGINT NULL,
+        [SuggestionSource]       NVARCHAR(50) NULL,
+        [SuggestionMaySplit]     BIT NULL,
+        [LinesFingerprint]       NVARCHAR(64) NULL;
+GO
+
 -- -----------------------------------------------------------------------------
 -- CreateReviewNotification: insert one notification and return it. For
 -- contract_labor the insert is the (ProjectId, WorkDate) claim: when a row already
@@ -138,11 +151,16 @@ GO
 -- one of the four id params is non-null (the table CHECK enforces it).
 -- -----------------------------------------------------------------------------
 CREATE OR ALTER PROCEDURE dbo.AddReviewNotificationTarget
-    @ReviewNotificationId BIGINT,
-    @BillId               BIGINT = NULL,
-    @ExpenseId            BIGINT = NULL,
-    @BillCreditId         BIGINT = NULL,
-    @ContractLaborId      BIGINT = NULL
+    @ReviewNotificationId   BIGINT,
+    @BillId                 BIGINT = NULL,
+    @ExpenseId              BIGINT = NULL,
+    @BillCreditId           BIGINT = NULL,
+    @ContractLaborId        BIGINT = NULL,
+    @SuggestedSubCostCodeId BIGINT = NULL,
+    @SuggestionId           BIGINT = NULL,
+    @SuggestionSource       NVARCHAR(50) = NULL,
+    @SuggestionMaySplit     BIT = NULL,
+    @LinesFingerprint       NVARCHAR(64) = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -150,9 +168,11 @@ BEGIN
     DECLARE @NewId BIGINT = NULL;
 
     INSERT INTO dbo.[ReviewNotificationTarget]
-        ([ReviewNotificationId], [BillId], [ExpenseId], [BillCreditId], [ContractLaborId])
+        ([ReviewNotificationId], [BillId], [ExpenseId], [BillCreditId], [ContractLaborId],
+         [SuggestedSubCostCodeId], [SuggestionId], [SuggestionSource], [SuggestionMaySplit], [LinesFingerprint])
     VALUES
-        (@ReviewNotificationId, @BillId, @ExpenseId, @BillCreditId, @ContractLaborId);
+        (@ReviewNotificationId, @BillId, @ExpenseId, @BillCreditId, @ContractLaborId,
+         @SuggestedSubCostCodeId, @SuggestionId, @SuggestionSource, @SuggestionMaySplit, @LinesFingerprint);
 
     SET @NewId = SCOPE_IDENTITY();
 
@@ -283,5 +303,23 @@ BEGIN
     WHERE t.[ReviewNotificationId] IN (
         SELECT n.[Id] FROM dbo.[ReviewNotification] n
         WHERE n.[ConversationId] = @ConversationId COLLATE Latin1_General_BIN);
+END
+GO
+
+-- -----------------------------------------------------------------------------
+-- U-797b1: the Contract Labor targets of one notification with their snapshot columns (what each crew member's
+-- email showed). Read-only. The reply path and U-797b2 read it to know what was approved.
+-- -----------------------------------------------------------------------------
+CREATE OR ALTER PROCEDURE dbo.ReadReviewNotificationTargetSnapshots
+    @ReviewNotificationId BIGINT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT [ContractLaborId], [SuggestedSubCostCodeId], [SuggestionId], [SuggestionSource],
+           [SuggestionMaySplit], [LinesFingerprint]
+    FROM dbo.[ReviewNotificationTarget]
+    WHERE [ReviewNotificationId] = @ReviewNotificationId
+      AND [ContractLaborId] IS NOT NULL;
 END
 GO

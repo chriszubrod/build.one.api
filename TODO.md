@@ -249,6 +249,30 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
 
 - [ ] [P3, U-798, DECISION] **Retire the legacy `Contract Labor - ` subject form once every pre-U-798 thread is closed.** U-798 makes the reply binding accept both `[Review] Contract Labor - ` and the legacy `Contract Labor - ` with no end date (`is_cl_notification_subject` in `entities/review/business/cl_notification_service.py`; the OR in `FindContractLaborForReviewerReply`). The legacy form is no riskier than before U-798, because the exact `ContractLaborNotification.OutboundSubject` join still bounds it. Dropping it shrinks the accepted set again (Pass 3 note). Decision for Chris: when, say about 30 days after deploy, once no `submitted`/`pending_review` CL has a legacy-subject notification. Check with `SELECT COUNT(*) FROM dbo.ContractLaborNotification WHERE OutboundSubject LIKE 'Contract Labor - %'` joined to not-ready CL lines on (project, date).
 
+## U-797b1 follow-ups - CL suggestions in the review email (booked 2026-11-23)
+
+- [ ] **Existing CL email gaps (trunk, not b1): decide.** Trunk never emails a crew day when its last `pending_review`
+  ContractLabor is deleted (the gate clears but nothing calls `enqueue_drafts`), or when a send fails and releases its
+  claims (outbox refused, recipients read failed). b1's marker sweep deliberately does NOT pick these up. Option: a
+  bounded daily "unclaimed submitted crew days" report or re-fire, opt-in.
+- [ ] **Throughput.** The shadow tick claims 1 row every 2 minutes from one shared queue; a date with more than ~15 crew
+  rows will often send at the 30-minute timeout with "suggestion pending when sent". Measure after enabling; raise
+  `limit` or the cadence if it bites.
+- [ ] **T1 [U-797d] Kind-neutral target snapshot:** rename `CrewTargetSnapshot` -> `TargetSnapshot` keyed by
+  (kind, target_id); `read_target_snapshots(notification_id, kind)`; `lines_fingerprint(pairs)` (Expense pairs
+  lineItemId:amount with Decimal(str())); add `SuggestedProjectId BIGINT NULL`; document that SuggestionId's keyspace
+  follows ReviewNotification.Kind. CL call sites byte-identical.
+- [ ] **T2 [U-797d] One review-email table helper** `ReviewEmailComposer.table(header_cells, rows_html)` used by the
+  Bill/Expense and CL tables (goldens byte-identical).
+- [ ] **T3 [U-797d] Suggestion display module:** move SuggestionDisplay / suggestion_display / suggestion_label and the
+  cell/note helpers to `entities/review/business/suggestion_display.py` (pure move); keep suggestion_hold in the shadow
+  service.
+- [ ] **T4 [perf] One per-date suggestion read + index** `IX_ContractLaborCodingSuggestion_ProjectId_WorkDate`; a
+  lightweight settled check without the labels set.
+- [ ] **T5 One repo snapshot parameter** on `ReviewNotificationRepository.add_target` (an Optional snapshot) instead of
+  `with_snapshot` + 5 loose params, keeping "send the extra params only when a snapshot is given".
+- [ ] **Bill email SCC label** renders "None" when only one of number/name is null; `suggestion_label` is None-safe.
+  Switch the Bill email to it (behaviour change; goldens).
 ## U-797c5a follow-ups - BillCredit create push (booked 2026-11-23)
 
 - [ ] **[reuse] Lift the per-line identity stamp loop** into `base/line_push.py::stamp_lines_by_line_num(created_lines,

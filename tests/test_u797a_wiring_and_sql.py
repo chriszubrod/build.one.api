@@ -18,6 +18,7 @@ EXPECTED_SPROCS = {
     "CountContractLaborCodingCallsToday",
     "ReadContractLaborCodingScorecardRows",
     "ReadContractLaborCodingIdfCorpus",
+    "ReadContractLaborCodingSuggestionsByProjectAndDate",  # U-797b1
 }
 
 

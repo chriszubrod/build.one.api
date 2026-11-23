@@ -59,7 +59,15 @@ class ReviewNotificationRepository:
         expense_id: Optional[int],
         bill_credit_id: Optional[int],
         contract_labor_id: Optional[int],
+        suggested_sub_cost_code_id: Optional[int] = None,
+        suggestion_id: Optional[int] = None,
+        suggestion_source: Optional[str] = None,
+        suggestion_may_split: Optional[bool] = None,
+        lines_fingerprint: Optional[str] = None,
+        with_snapshot: bool = False,
     ):
+        """The five snapshot params are sent only when with_snapshot is True (a CL snapshot exists). Any other
+        write sends the trunk parameter list, so it keeps working if the api deploys before the SQL."""
         params = {
             "ReviewNotificationId": review_notification_id,
             "BillId": bill_id,
@@ -67,6 +75,14 @@ class ReviewNotificationRepository:
             "BillCreditId": bill_credit_id,
             "ContractLaborId": contract_labor_id,
         }
+        if with_snapshot:
+            params.update({
+                "SuggestedSubCostCodeId": suggested_sub_cost_code_id,
+                "SuggestionId": suggestion_id,
+                "SuggestionSource": suggestion_source,
+                "SuggestionMaySplit": suggestion_may_split,
+                "LinesFingerprint": lines_fingerprint,
+            })
         try:
             with get_connection() as conn:
                 cursor = conn.cursor()
@@ -151,6 +167,21 @@ class ReviewNotificationRepository:
                 conn.commit()
         except Exception as error:
             logger.error("Error during DeleteReviewNotification: %s", type(error).__name__)
+            raise map_database_error(error)
+
+    def read_target_snapshots(self, *, review_notification_id: int) -> list:
+        """U-797b1: the Contract Labor targets of one notification with their snapshot columns."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadReviewNotificationTargetSnapshots",
+                    params={"ReviewNotificationId": review_notification_id},
+                )
+                return cursor.fetchall()
+        except Exception as error:
+            logger.error("Error during ReadReviewNotificationTargetSnapshots: %s", type(error).__name__)
             raise map_database_error(error)
 
     def find_for_reply(self, *, conversation_id: str):

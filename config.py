@@ -263,6 +263,9 @@ class Settings(BaseSettings):
     # model calls per UTC day (strong-history answers make no call).
     cl_coding_shadow_enabled: bool = False
     cl_coding_shadow_daily_call_cap: int = 60
+    # U-797b1: the CL review email shows suggestions, waits for them and records a snapshot. Its own flag,
+    # because the shadow flag is already on in prod. Default off: the email is today's email and nothing waits.
+    cl_suggestions_in_review_enabled: bool = False
     # U-797c3: reviewer-reply ingest. Default off: the timers are no-ops until enabled.
     # Copies inbox replies on open review threads into dbo.EmailMessage (never applied).
     review_reply_ingest_enabled: bool = False

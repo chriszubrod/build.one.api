@@ -910,11 +910,8 @@ class QboOutboxWorker:
         from integrations.intuit.qbo.vendorcredit.external.client import QboVendorCreditClient
 
         bill_credit_service = BillCreditService()
-        by_public = bill_credit_service.read_by_public_id(row.entity_public_id)
-        if not by_public:
-            return
-        # The public-id read does not return QboId/RealmId; gate on the by-id read.
-        bill_credit = bill_credit_service.read_by_id(by_public.id)
+        # The public-id read selects QboId/RealmId (U-690); one read is enough.
+        bill_credit = bill_credit_service.read_by_public_id(row.entity_public_id)
         if not bill_credit or not bill_credit.qbo_id:
             return
 

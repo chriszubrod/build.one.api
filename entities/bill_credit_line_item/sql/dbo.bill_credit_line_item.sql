@@ -275,7 +275,9 @@ BEGIN
         [IsBillable],
         [IsBilled],
         [BillableAmount],
-        [IsDraft]
+        [IsDraft],
+        [QboId],
+        [RealmId]
     FROM dbo.[BillCreditLineItem]
     WHERE [BillCreditId] = @BillCreditId
     ORDER BY [CreatedDatetime] DESC;

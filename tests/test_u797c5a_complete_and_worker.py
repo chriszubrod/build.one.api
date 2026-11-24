@@ -68,9 +68,9 @@ def outbox_and_auth(monkeypatch):
     return _Outbox
 
 
-def _complete_service(monkeypatch, public_read, by_id_read):
-    """public_read: what ReadBillCreditByPublicId maps to (no QboId in that proc).
-    by_id_read: what ReadBillCreditById maps to (carries QboId)."""
+def _complete_service(monkeypatch, public_read):
+    """public_read: what ReadBillCreditByPublicId maps to (selects QboId/RealmId since U-690).
+    Any by-id read is a regression: completion no longer re-reads the credit by internal id."""
     svc = object.__new__(BillCreditCompleteService)
 
     class _BCS:
@@ -78,7 +78,7 @@ def _complete_service(monkeypatch, public_read, by_id_read):
             return public_read
 
         def read_by_id(self, id):
-            return by_id_read
+            raise AssertionError("completion must not re-read by internal id (U-690)")
 
         def update_by_public_id(self, **kwargs):
             return public_read
@@ -105,7 +105,7 @@ def _complete_service(monkeypatch, public_read, by_id_read):
 
 
 def test_completion_enqueues_for_credit_with_no_qbo_identity(monkeypatch, outbox_and_auth):
-    svc = _complete_service(monkeypatch, _credit(), _credit())
+    svc = _complete_service(monkeypatch, _credit())
     result = svc.complete_bill_credit("bc-7")
     assert outbox_and_auth.calls == [{
         "kind": "sync_bill_credit_to_qbo",
@@ -117,9 +117,9 @@ def test_completion_enqueues_for_credit_with_no_qbo_identity(monkeypatch, outbox
     assert result["status_code"] == 200
 
 
-def test_completion_does_not_enqueue_when_by_id_read_shows_qbo_identity(monkeypatch, outbox_and_auth):
-    """P1-3: the public-id read is blind to QboId; the guard must use the by-id read."""
-    svc = _complete_service(monkeypatch, public_read=_credit(qbo_id=None), by_id_read=_credit(qbo_id="880"))
+def test_completion_does_not_enqueue_when_public_read_shows_qbo_identity(monkeypatch, outbox_and_auth):
+    """P1-3 (U-690): the public-id read selects QboId, so the guard reads it directly (no by-id read)."""
+    svc = _complete_service(monkeypatch, public_read=_credit(qbo_id="880"))
     result = svc.complete_bill_credit("bc-7")
     assert outbox_and_auth.calls == []
     assert result["qbo_sync"]["qbo_sync_queued"] is False
@@ -128,7 +128,7 @@ def test_completion_does_not_enqueue_when_by_id_read_shows_qbo_identity(monkeypa
 
 def test_enqueue_failure_is_reported_not_raised(monkeypatch, outbox_and_auth):
     outbox_and_auth.error = RuntimeError("outbox down")
-    svc = _complete_service(monkeypatch, _credit(), _credit())
+    svc = _complete_service(monkeypatch, _credit())
     result = svc.complete_bill_credit("bc-7")
     assert result["bill_credit_finalized"] is True
     assert result["status_code"] == 207
@@ -146,13 +146,13 @@ def test_enqueue_without_qbo_auth_record_is_reported(monkeypatch, outbox_and_aut
             return []
 
     monkeypatch.setattr(auth_svc, "QboAuthService", _NoAuth)
-    svc = _complete_service(monkeypatch, _credit(), _credit())
+    svc = _complete_service(monkeypatch, _credit())
     result = svc.complete_bill_credit("bc-7")
     assert outbox_and_auth.calls == []
     assert result["errors"] == [{"step": "qbo_enqueue", "error": "No QBO auth record configured"}]
 
 
-# ------------------------------------------------------------------ by-id vs public-id repo mapping (P1-3)
+# ------------------------------------------------------------------ public-id repo mapping (P1-3, U-690)
 
 class _Cursor:
     def __init__(self, rows):
@@ -201,16 +201,15 @@ def _db_row(**extra):
     return SimpleNamespace(**base)
 
 
-def test_public_id_read_mapping_is_blind_to_qbo_id_and_by_id_read_is_not(monkeypatch):
+def test_public_id_read_maps_qbo_id_and_realm_id(monkeypatch):
+    """U-690: ReadBillCreditByPublicId now selects QboId/RealmId, so the public-id read carries identity."""
     rows = {
-        "ReadBillCreditByPublicId": _db_row(),                        # proc returns no QboId/RealmId
-        "ReadBillCreditById": _db_row(QboId="880", RealmId="realm-1"),
+        "ReadBillCreditByPublicId": _db_row(QboId="880", RealmId="realm-1"),
     }
     repo = _repo_with_rows(monkeypatch, rows)
-    assert repo.read_by_public_id("bc-7").qbo_id is None
-    by_id = repo.read_by_id(7)
-    assert by_id.qbo_id == "880"
-    assert by_id.realm_id == "realm-1"
+    public = repo.read_by_public_id("bc-7")
+    assert public.qbo_id == "880"
+    assert public.realm_id == "realm-1"
 
 
 # ------------------------------------------------------------------ worker
@@ -319,8 +318,8 @@ def test_refresh_dispatches_bill_credit_entity(monkeypatch):
     assert seen == ["BillCredit"]
 
 
-def test_refresh_gate_reads_qbo_id_by_internal_id_not_the_public_id_read(monkeypatch):
-    """P1-3: a public-id read is blind to QboId; the no-op gate must see the by-id qbo_id."""
+def test_refresh_gate_reads_qbo_id_from_the_public_id_read(monkeypatch):
+    """P1-3 (U-690): the public-id read carries QboId; the no-op gate uses it with no by-id read."""
     import entities.bill_credit.business.service as bc_service_mod
 
     class _BCS:
@@ -328,10 +327,10 @@ def test_refresh_gate_reads_qbo_id_by_internal_id_not_the_public_id_read(monkeyp
             pass
 
         def read_by_public_id(self, public_id):
-            return _credit(qbo_id=None)
+            return _credit(qbo_id="880")
 
         def read_by_id(self, id):
-            return _credit(qbo_id="880")
+            raise AssertionError("refresh must not re-read by internal id (U-690)")
 
         def read_by_qbo_identity(self, qbo_id, realm_id=None):
             return _credit(qbo_id="880") if qbo_id == "880" else None

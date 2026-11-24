@@ -288,7 +288,7 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
 - [ ] **[watch] `reviewed_coding_not_in_qbo` issues.** Each one is a pulled Bill or credit whose reviewed coding never
   reached QBO. Fix it in QBO by hand and resolve the issue. If they come more than occasionally, bring the full
   surgical update path (docs/design/u797c5-bill-credit-qbo-push.md, c5b design) back to Gate 1 with the real cases.
-- [ ] **[altitude] `ReadBillCreditLineItemsByBillCreditId` should select `[QboId], [RealmId]`.** Its Bill twin does.
+- [x] **DONE in U-690 (2026-11-24; also fixed a latent credit-pull re-adopt of live sibling lines).** **[altitude] `ReadBillCreditLineItemsByBillCreditId` should select `[QboId], [RealmId]`.** Its Bill twin does.
   Then drop the per-line by-id re-read in `complete_service._record_qbo_coding_drift`. Needs a scoped prod apply:
   diff live against base first.
 - [ ] **[reuse, behaviour change] Resolve expected refs through the push resolvers.** These are
@@ -305,7 +305,7 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
   line_num_to_id, line_repo, realm_id, on_not_landed, on_raised)`; each connector keeps its literal-drift
   `record_mapping_issue` in the callbacks; Bill keeps log-only-on-raise via `on_raised`. Pin with the line golden + the
   u797c5a stamp tests.
-- [ ] **[efficiency] `ReadBillCreditByPublicId` should return `[QboId], [RealmId]`** (diff the LIVE sproc against the base
+- [x] **DONE in U-690 (2026-11-24).** **[efficiency] `ReadBillCreditByPublicId` should return `[QboId], [RealmId]`** (diff the LIVE sproc against the base
   file first). Then drop the by-id re-reads in `complete_service._enqueue_qbo_sync` and `worker._refresh_bill_credit`.
 - [ ] **[efficiency] Memoise item/customer ref resolution per push** (dict keyed by sub_cost_code_id / project_id around
   the callables passed to `build_item_expense_line_plan`) for Bill + BillCredit create and the c5b coding diff; and use

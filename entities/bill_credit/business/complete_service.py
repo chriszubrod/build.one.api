@@ -339,22 +339,12 @@ class BillCreditCompleteService:
         Kind `sync_bill_credit_to_qbo`; the enqueue is the shared one used by Bill
         (shared/completion/qbo_enqueue.py) and is not gated (drain and HTTP are). A credit with a
         qbo_id is not enqueued here: its coding-drift check runs at completion (U-797c5b, record
-        only). The by-id read is inside the try, so a failure is reported and never raised.
+        only). The guard reads `bill_credit.qbo_id` directly: the credit object comes from
+        read_by_public_id, which selects QboId/RealmId since U-690, so no by-id re-read is needed.
         """
         from shared.completion.qbo_enqueue import enqueue_qbo_push
 
-        try:
-            # The public-id read is blind to QboId; the guard reads the credit by internal id.
-            current = self.bill_credit_service.read_by_id(bill_credit.id) or bill_credit
-        except Exception as error:
-            logger.exception(f"Failed to read BillCredit {bill_credit.public_id} for QBO enqueue")
-            return {
-                "success": False,
-                "message": f"Failed to enqueue QBO sync: {error}",
-                "qbo_sync_queued": False,
-                "errors": [{"step": "qbo_enqueue", "error": str(error)}],
-            }
-        if current.qbo_id:
+        if bill_credit.qbo_id:
             return {
                 "success": True,
                 "message": "Already in QBO; no create queued",
@@ -373,35 +363,28 @@ class BillCreditCompleteService:
     def _record_qbo_coding_drift(self, bill_credit, line_items) -> None:
         """
         U-797c5b: record-only coding-drift check for a pulled (qbo_id) credit against its
-        VendorCredit staging. Does its own by-id read for QboId (the public-id read lacks it),
-        re-reads each line by id (the list read lacks QboId), and never raises.
+        VendorCredit staging, using the credit and line items the completion flow already read
+        (both carry QboId/RealmId since U-690). Never raises.
         """
         try:
             from shared.completion.qbo_coding_drift import record_coding_drift_for
             from integrations.intuit.qbo.vendorcredit.persistence.repo import QboVendorCreditRepository
 
-            current = self.bill_credit_service.read_by_id(bill_credit.id) or bill_credit
-            if not current.qbo_id:
+            if not bill_credit.qbo_id:
                 return
-            # ReadBillCreditLineItemsByBillCreditId does not select QboId; ReadBillCreditLineItemById does.
-            fresh_lines = []
-            for line in line_items or []:
-                fresh = self.bill_credit_line_item_service.read_by_id(line.id)
-                if fresh is not None:
-                    fresh_lines.append(fresh)
 
             vc_repo = QboVendorCreditRepository()
 
             def _read_staged_lines():
-                header = vc_repo.read_by_qbo_id_and_realm_id(current.qbo_id, current.realm_id)
+                header = vc_repo.read_by_qbo_id_and_realm_id(bill_credit.qbo_id, bill_credit.realm_id)
                 if header is None:
                     return None
                 return vc_repo.read_lines_by_vendor_credit_id(header.id)
 
             record_coding_drift_for(
                 entity_type="BillCredit",
-                doc=current,
-                local_lines=fresh_lines,
+                doc=bill_credit,
+                local_lines=line_items or [],
                 read_staged_lines=_read_staged_lines,
                 logger=logger,
             )

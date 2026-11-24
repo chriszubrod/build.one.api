@@ -280,8 +280,12 @@ def _credit_service(current):
     from entities.bill_credit.business.complete_service import BillCreditCompleteService
 
     svc = object.__new__(BillCreditCompleteService)
-    svc.bill_credit_service = SimpleNamespace(read_by_id=lambda id: current)
+    svc.bill_credit_service = SimpleNamespace(read_by_id=_no_by_id_read)
     return svc
+
+
+def _no_by_id_read(id):
+    raise AssertionError("drift/enqueue must not re-read by internal id (U-690)")
 
 
 def test_enqueue_signature_reverted_and_pulled_credit_result_unchanged():
@@ -322,21 +326,20 @@ CS_SCC = "entities.sub_cost_code.business.service.SubCostCodeService"
 CS_PROJECT = "entities.project.business.service.ProjectService"
 
 
-def _credit_with_line_service(current, by_id_lines):
+def _credit_with_line_service(current):
     svc = _credit_service(current)
     svc.bill_credit_line_item_service = SimpleNamespace(
-        read_by_id=lambda id: by_id_lines.get(id),
+        read_by_id=_no_by_id_read,
         read_by_bill_credit_id=lambda bill_credit_id: [],
     )
     return svc
 
 
-def test_f1_drift_detected_via_by_id_reread_when_list_lines_lack_qbo_id():
-    """F1: list-read lines carry no QboId; by-id re-read does. Real method must detect and record."""
+def test_f1_drift_detected_from_list_lines_that_carry_qbo_id():
+    """F1 (U-690): the list read selects QboId, so the lines passed in are checked directly (no re-read)."""
     current = _credit(qbo_id="880")
-    list_lines = [SimpleNamespace(id=1, qbo_id=None, sub_cost_code_id=10, project_id=20, description="SECRET")]
-    by_id = {1: SimpleNamespace(id=1, qbo_id="5", sub_cost_code_id=10, project_id=20, description="SECRET")}
-    svc = _credit_with_line_service(current, by_id)
+    list_lines = [SimpleNamespace(id=1, qbo_id="5", sub_cost_code_id=10, project_id=20, description="SECRET")]
+    svc = _credit_with_line_service(current)
     header_repo = MagicMock()
     header_repo.return_value.read_by_qbo_id_and_realm_id.return_value = SimpleNamespace(id=9)
     header_repo.return_value.read_lines_by_vendor_credit_id.return_value = [
@@ -358,10 +361,10 @@ def test_f1_drift_detected_via_by_id_reread_when_list_lines_lack_qbo_id():
     assert "SECRET" not in kwargs["details"]
 
 
-def test_f1_line_whose_reread_is_none_is_skipped():
+def test_f1_line_without_qbo_id_is_skipped():
     current = _credit(qbo_id="880")
     list_lines = [SimpleNamespace(id=1, qbo_id=None, sub_cost_code_id=10, project_id=20)]
-    svc = _credit_with_line_service(current, {})
+    svc = _credit_with_line_service(current)
     header_repo = MagicMock()
     header_repo.return_value.read_by_qbo_id_and_realm_id.return_value = SimpleNamespace(id=9)
     header_repo.return_value.read_lines_by_vendor_credit_id.return_value = [
@@ -375,8 +378,8 @@ def test_f1_line_whose_reread_is_none_is_skipped():
 
 def test_f3_staging_read_failure_never_breaks_enqueue_result(monkeypatch):
     current = _credit(qbo_id="880")
-    list_lines = [SimpleNamespace(id=1, qbo_id=None, sub_cost_code_id=10, project_id=20)]
-    svc = _credit_with_line_service(current, {1: SimpleNamespace(id=1, qbo_id="5", sub_cost_code_id=10, project_id=20)})
+    list_lines = [SimpleNamespace(id=1, qbo_id="5", sub_cost_code_id=10, project_id=20)]
+    svc = _credit_with_line_service(current)
     header_repo = MagicMock()
     header_repo.return_value.read_by_qbo_id_and_realm_id.side_effect = RuntimeError("staging down")
     with patch(VC_REPO, header_repo), patch(RECON_REPO), patch(CS_SCC), patch(CS_PROJECT):
@@ -394,10 +397,10 @@ def test_f3_staging_read_failure_never_breaks_enqueue_result(monkeypatch):
 
 # ------------------------------------------------------------------ F3 real complete_bill_credit path
 
-def _complete_path(monkeypatch, *, credit, list_lines, line_by_id, line_reread_raises=False):
+def _complete_path(monkeypatch, *, credit, list_lines):
     from entities.bill_credit.business.complete_service import BillCreditCompleteService
 
-    public = _credit()  # the public-id read lacks QboId, as in production
+    public = credit  # the public-id read selects QboId/RealmId since U-690
     svc = object.__new__(BillCreditCompleteService)
 
     class _BCS:
@@ -405,7 +408,7 @@ def _complete_path(monkeypatch, *, credit, list_lines, line_by_id, line_reread_r
             return public
 
         def read_by_id(self, id):
-            return credit
+            return _no_by_id_read(id)
 
         def update_by_public_id(self, **kwargs):
             return public
@@ -419,9 +422,7 @@ def _complete_path(monkeypatch, *, credit, list_lines, line_by_id, line_reread_r
             return list_lines
 
         def read_by_id(self, id):
-            if line_reread_raises:
-                raise RuntimeError("line reread down")
-            return line_by_id.get(id)
+            return _no_by_id_read(id)
 
     svc.bill_credit_service = _BCS()
     svc.vendor_service = _Vendors()
@@ -437,14 +438,17 @@ def _complete_path(monkeypatch, *, credit, list_lines, line_by_id, line_reread_r
     return svc
 
 
-def test_f3_real_complete_path_line_reread_raises_result_unchanged(monkeypatch):
+def test_f3_real_complete_path_drift_failure_leaves_result_unchanged(monkeypatch):
+    """F3 (U-690): the direct path replaces the per-line re-read; a drift-check failure still never changes the result."""
     credit = _credit(qbo_id="880")
     svc = _complete_path(
         monkeypatch, credit=credit,
-        list_lines=[SimpleNamespace(id=1, qbo_id=None, project_id=None, sub_cost_code_id=None, is_draft=False, public_id="bcli-1")],
-        line_by_id={}, line_reread_raises=True,
+        list_lines=[SimpleNamespace(id=1, qbo_id="5", project_id=None, sub_cost_code_id=None, is_draft=False, public_id="bcli-1")],
     )
+    boom = MagicMock(side_effect=RuntimeError("drift down"))
+    monkeypatch.setattr("shared.completion.qbo_coding_drift.record_coding_drift_for", boom)
     result = svc.complete_bill_credit("bc-7")
+    boom.assert_called_once()
     assert result["qbo_sync"] == {
         "success": True,
         "message": "Already in QBO; no create queued",
@@ -458,7 +462,7 @@ def test_f3_real_complete_path_line_reread_raises_result_unchanged(monkeypatch):
 def test_complete_path_invokes_drift_check_only_for_pulled_credit(monkeypatch):
     rec = MagicMock()
     monkeypatch.setattr("shared.completion.qbo_coding_drift.record_coding_drift_for", rec)
-    svc = _complete_path(monkeypatch, credit=_credit(qbo_id="880"), list_lines=[], line_by_id={})
+    svc = _complete_path(monkeypatch, credit=_credit(qbo_id="880"), list_lines=[])
     result = svc.complete_bill_credit("bc-7")
     rec.assert_called_once()
     assert rec.call_args.kwargs["entity_type"] == "BillCredit"
@@ -470,7 +474,7 @@ def test_complete_path_app_created_credit_runs_no_drift_check(monkeypatch):
     enqueue = MagicMock(return_value={"success": True, "qbo_sync_queued": True, "errors": []})
     monkeypatch.setattr("shared.completion.qbo_coding_drift.record_coding_drift_for", rec)
     monkeypatch.setattr("shared.completion.qbo_enqueue.enqueue_qbo_push", enqueue)
-    svc = _complete_path(monkeypatch, credit=_credit(), list_lines=[], line_by_id={})
+    svc = _complete_path(monkeypatch, credit=_credit(), list_lines=[])
     svc.complete_bill_credit("bc-7")
     enqueue.assert_called_once()
     rec.assert_not_called()
@@ -506,12 +510,11 @@ def test_holding_rule_is_honoured_through_the_recording_entry_point():
     dedupe.assert_not_called()
 
 
-def test_f1_none_reread_line_is_skipped_and_other_lines_still_checked():
-    """M19: a line whose by-id re-read is None is dropped; the remaining lines are still checked."""
+def test_f1_unpulled_lines_are_skipped_and_pulled_lines_still_checked():
+    """M19 (U-690): a line with no qbo_id is dropped; the remaining lines are still checked."""
     current = _credit(qbo_id="880")
-    list_lines = [SimpleNamespace(id=1, qbo_id=None), SimpleNamespace(id=2, qbo_id=None)]
-    by_id = {2: SimpleNamespace(id=2, qbo_id="6", sub_cost_code_id=10, project_id=20)}
-    svc = _credit_with_line_service(current, by_id)
+    list_lines = [SimpleNamespace(id=1, qbo_id=None), SimpleNamespace(id=2, qbo_id="6", sub_cost_code_id=10, project_id=20)]
+    svc = _credit_with_line_service(current)
     header_repo = MagicMock()
     header_repo.return_value.read_by_qbo_id_and_realm_id.return_value = SimpleNamespace(id=9)
     header_repo.return_value.read_lines_by_vendor_credit_id.return_value = [

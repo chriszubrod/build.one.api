@@ -196,7 +196,9 @@ BEGIN
         [CreditNumber],
         [TotalAmount],
         [Memo],
-        [IsDraft]
+        [IsDraft],
+        [QboId],
+        [RealmId]
     FROM dbo.[BillCredit]
     WHERE [PublicId] = @PublicId;
 

@@ -158,3 +158,25 @@ Each runs the full pipeline (Pass 1 x2, Pass 3, mutation, suite) and its own Gat
 - **Not shared (kept as mirrors):** the line-id stamp loop in the Bill connector (the R5 lift, booked by EM); the stamp detail text
   (per-connector, kept so each record_mapping_issue stays a string literal at its call site).
 - **Runbook (F4):** after a manual stamp the row is re-queued (the create is skipped; the attachments are pushed).
+
+## c5b as built (U-797c5b, re-scoped at Gate 1, 2026-11-24)
+
+**Chris chose option B: detect and record, no QBO write.** A read-only prod map found almost no traffic for the gap:
+in 90 days only 1 pulled Bill was reviewed, no credit with a QboId has ever been reviewed, and no completed Bill or
+credit has coding that differs from its staged QBO lines. It also found a trap: 5 credits from the Aug 16 backfill
+have a NULL local project where QBO has one, so "push local coding" would have cleared QBO's project.
+
+- **Detector:** `shared/completion/qbo_coding_drift.py`. `find_coding_drift` matches local lines to staged QBO lines
+  by line QboId and compares item (the SCC's QboId vs ItemRefValue) and customer (the Project's QboId vs
+  CustomerRefValue). A local None, a holding code, or a local value whose resolved QBO id is None never counts, so
+  nothing implies clearing a QBO value. Description is not compared. `record_coding_drift_for` holds the shared
+  wiring and one try. It never raises and never touches the completion result.
+- **Record:** ReconciliationIssue `reviewed_coding_not_in_qbo`, deduped per (realm, entity_type, qbo_id). The
+  details carry ids and field names only. The log line is `qbo.coding_drift.detected`.
+- **Call sites:** `BillService.complete_bill` passes the FinalizeBillById result, which carries QboId and RealmId.
+  `BillCreditCompleteService.complete_bill_credit` reads the credit by internal id. Each credit line is re-read by
+  id, because `ReadBillCreditLineItemsByBillCreditId` does not select QboId.
+- **Dead code removed:** `update_has_been_billed_in_qbo` and `_sync_billed_status_to_qbo`.
+- **Recovery when it fires:** open the document in QBO, set the line's item or customer to the local coding, then
+  resolve the issue. If it fires more than occasionally, the full surgical update path (design above) comes back
+  to Gate 1 with real cases.

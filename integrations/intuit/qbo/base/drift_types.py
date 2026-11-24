@@ -134,6 +134,10 @@ DRIFT_ELI_LINE_CREATE_FAILED = "eli_line_create_failed"
 # [DriftType] NVARCHAR(32) width).
 DRIFT_CHARGE_UNINVOICED_LOCALLY_BILLED = "charge_uninvoiced_locally_billed"
 
+# U-797c5b: a pulled document completed in the app whose line coding (item / customer)
+# differs from its QBO line. Record-only: a human fixes QBO by hand; we never write to QBO.
+DRIFT_REVIEWED_CODING_NOT_IN_QBO = "reviewed_coding_not_in_qbo"
+
 # U-784a: report-only orphaned-applock watchdog (shared/applock_watchdog.py).
 DRIFT_APPLOCK_ORPHAN_SUSPECTED = "applock_orphan_suspected"
 # U-797c5a: BillCredit create push (sync_bill_credit_to_qbo) -- identity conflict on
@@ -180,4 +184,5 @@ KNOWN_DRIFT_TYPES: FrozenSet[str] = frozenset({
     DRIFT_HOLDING_CODE_ON_COMPLETED,
     DRIFT_HOLDING_CODE_ON_APPROVED,
     DRIFT_QBO_DELETED,
+    DRIFT_REVIEWED_CODING_NOT_IN_QBO,
 })

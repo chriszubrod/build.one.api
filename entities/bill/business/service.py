@@ -1541,6 +1541,8 @@ class BillService:
         qbo_sync_result = self._enqueue_qbo_sync(bill=finalized_bill)
         if qbo_sync_result.get("errors"):
             all_errors.extend(qbo_sync_result["errors"])
+        # U-797c5b: observational only (record, never write to QBO); never changes status.
+        self._record_qbo_coding_drift(bill=finalized_bill, line_items=line_items)
 
         # Step 6: Box mirror — enqueue line-item attachments to each mapped
         # project's Box folder. Additive + failure-isolated: never affects
@@ -1584,6 +1586,29 @@ class BillService:
             read_auths=lambda: self.qbo_auth_service.read_all(),
             logger=logger,
             label="Bill",
+        )
+
+    def _record_qbo_coding_drift(self, *, bill, line_items) -> None:
+        """
+        U-797c5b: record-only coding-drift check for a pulled bill. `bill` is the FinalizeBillById
+        result (its SELECT carries QboId/RealmId), so no extra re-read. Never writes to QBO and
+        never raises (the shared helper owns the try). Result is not added to completion errors.
+        """
+        from shared.completion.qbo_coding_drift import record_coding_drift_for
+
+        def _read_staged_lines():
+            from integrations.intuit.qbo.bill.persistence.repo import QboBillLineRepository, QboBillRepository
+            header = QboBillRepository().read_by_qbo_id_and_realm_id(bill.qbo_id, bill.realm_id)
+            if header is None:
+                return None
+            return QboBillLineRepository().read_by_qbo_bill_id(header.id)
+
+        record_coding_drift_for(
+            entity_type="Bill",
+            doc=bill,
+            local_lines=line_items or [],
+            read_staged_lines=_read_staged_lines,
+            logger=logger,
         )
 
     def _enqueue_box_uploads(self, bill, line_items: List) -> None:

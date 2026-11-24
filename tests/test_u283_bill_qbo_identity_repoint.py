@@ -311,68 +311,6 @@ def test_bill_dbo_only_no_qbo_id_hits_backstop_raise():
     bill_service.create.assert_not_called()
 
 
-# --- Section 2b: BillBillConnector.update_has_been_billed_in_qbo (U-355) ---
-#
-# No prior test coverage existed for this method at all (grepped tests/ before
-# writing this section) despite it being live-exercised on every invoice
-# completion that bills a QBO-synced Bill. Resolves the target QboBill via
-# dbo.Bill's own QboId (verified via verify_identity_dbo_only), not the retired
-# qbo.BillBill mapping hop.
-
-
-def _build_bill_connector_for_hbb():
-    bill_service = Mock()
-    connector = BillBillConnector(bill_service=bill_service)
-    return connector, bill_service
-
-
-def test_update_has_been_billed_no_qbo_identity_is_a_noop():
-    connector, bill_service = _build_bill_connector_for_hbb()
-    bill_service.read_by_id.return_value = SimpleNamespace(id=7, qbo_id=None, realm_id="realm-1")
-
-    connector.update_has_been_billed_in_qbo(7, "realm-1")
-
-    bill_service.read_by_qbo_identity.assert_not_called()
-
-
-def test_update_has_been_billed_refuses_when_identity_no_longer_verifies():
-    """A fresh dbo-only re-read resolves to a DIFFERENT Bill -- refuse (log,
-    return) rather than push a HasBeenBilled update under disputed identity."""
-    connector, bill_service = _build_bill_connector_for_hbb()
-    bill = SimpleNamespace(id=7, qbo_id="BILL-99", realm_id="realm-1")
-    bill_service.read_by_id.return_value = bill
-    bill_service.read_by_qbo_identity.return_value = SimpleNamespace(id=999)
-    connector.qbo_bill_repo = Mock()
-
-    connector.update_has_been_billed_in_qbo(7, "realm-1")
-
-    connector.qbo_bill_repo.read_by_qbo_id_and_realm_id.assert_not_called()
-
-
-def test_update_has_been_billed_uses_bills_own_realm_id_for_staging_lookup():
-    """Review fix: the staging-cache lookup must use bill.realm_id -- the SAME
-    realm source verify_identity_dbo_only just checked against -- not the bare
-    `realm_id` parameter, so the two can never silently diverge (single-realm
-    today, so they're always equal in practice, but the parameter and the
-    bill's own stamped realm are conceptually different sources)."""
-    connector, bill_service = _build_bill_connector_for_hbb()
-    bill = SimpleNamespace(id=7, qbo_id="BILL-99", realm_id="bills-own-realm")
-    bill_service.read_by_id.return_value = bill
-    bill_service.read_by_qbo_identity.return_value = SimpleNamespace(id=7)
-    connector.qbo_bill_repo = Mock()
-    connector.qbo_bill_repo.read_by_qbo_id_and_realm_id.return_value = None
-
-    # Called with a DIFFERENT realm_id than the bill's own -- if the lookup used
-    # this parameter instead of bill.realm_id, this test's mock would still be
-    # consistent (both None) and hide the bug; asserting the CALL ARGS below is
-    # what actually pins the fix.
-    connector.update_has_been_billed_in_qbo(7, "caller-supplied-realm")
-
-    connector.qbo_bill_repo.read_by_qbo_id_and_realm_id.assert_called_once_with(
-        "BILL-99", "bills-own-realm"
-    )
-
-
 # --- Section 3: BillLineItemConnector._get_project_public_id resolver fold-in ---
 
 

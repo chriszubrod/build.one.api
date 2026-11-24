@@ -14,12 +14,10 @@ from integrations.intuit.qbo.bill.external.schemas import (
     QboBillLine as QboBillLineSchema,
     QboReferenceType,
     QboItemBasedExpenseLineDetail,
-    QboAccountBasedExpenseLineDetail,
 )
 from integrations.intuit.qbo.vendor.persistence.repo import QboVendorRepository
 from integrations.intuit.qbo.customer.persistence.repo import QboCustomerRepository
 from integrations.intuit.qbo.account.persistence.repo import QboAccountRepository
-from integrations.intuit.qbo.account.business.service import AP_ACCOUNT_TYPE, select_ap_account
 from entities.bill.business.service import BillService
 from entities.bill.business.model import Bill
 from entities.bill_line_item.business.service import BillLineItemService
@@ -72,8 +70,7 @@ class BillBillConnector:
     Unlike Expense/VendorCredit/PhysicalAddress/Term/CompanyInfo, Bill's PUSH path
     (`sync_to_qbo_bill`, dispatched by the outbox worker's live `sync_bill_to_qbo`
     Kind) is real, high-volume traffic (918 live rows as of this unit) -- it is
-    repointed onto dbo-native identity below (see `sync_to_qbo_bill` and
-    `update_has_been_billed_in_qbo`), not deleted the way Expense's dead
+    repointed onto dbo-native identity below (see `sync_to_qbo_bill`), not deleted the way Expense's dead
     `sync_expense_to_qbo` push was in U-354.
     """
 
@@ -795,134 +792,6 @@ class BillBillConnector:
             severity="critical",
         )
         raise error
-
-    def update_has_been_billed_in_qbo(self, bill_id: int, realm_id: str) -> None:
-        """
-        Re-push a QBO Bill with updated BillableStatus = HasBeenBilled on billed line items.
-        Called after invoice completion to reflect the billed state in QBO.
-
-        U-355: resolves the target QboBill via dbo.Bill's own QboId (verified via
-        verify_identity_dbo_only against a fresh dbo-only read), not the retired
-        qbo.BillBill mapping hop — mirrors this connector's own sync_to_qbo_bill
-        short-circuit.
-        """
-        from integrations.intuit.qbo.bill.external.schemas import QboBillUpdate
-
-        bill = self.bill_service.read_by_id(bill_id)
-        if not bill or not bill.qbo_id:
-            logger.debug(f"No QBO identity for bill_id={bill_id}, skipping HasBeenBilled update")
-            return
-
-        verified_qbo_id = verify_identity_dbo_only(
-            bill, read_direct_by_qbo_identity=self.bill_service.read_by_qbo_identity,
-        )
-        if not verified_qbo_id:
-            logger.error(
-                f"Bill {bill_id}'s dbo QboId no longer resolves back to it on a fresh "
-                f"dbo-only read — refusing to push a HasBeenBilled update with a possibly "
-                f"stolen/reassigned identity."
-            )
-            return
-
-        # U-355 review fix: scope the staging lookup to bill.realm_id (the SAME realm
-        # source verify_identity_dbo_only just checked against), not the bare `realm_id`
-        # param — the two must agree, or a caller-supplied realm_id that ever diverges
-        # from the bill's own stamped realm (single-realm today, so always equal, but
-        # multi-realm activation is an already-booked future change) would let the verify
-        # step pass while this lookup silently misses and returns early, looking like
-        # "nothing to do" instead of a real mismatch.
-        local_qbo_bill = self.qbo_bill_repo.read_by_qbo_id_and_realm_id(verified_qbo_id, bill.realm_id)
-        if not local_qbo_bill or not local_qbo_bill.qbo_id:
-            return
-
-        # Auth is resolved lazily inside QboHttpClient when the bill client makes a request.
-        # Rebuild all bill lines — _build_qbo_line reads is_billed from local DB,
-        # so billed items will now get BillableStatus = "HasBeenBilled".
-        # Use sequential line_nums with no gaps to match QBO's numbering.
-        bill_line_items = self.bill_line_item_service.read_by_bill_id(bill_id=bill_id)
-        qbo_lines = []
-        seq = 0
-        for line_item in bill_line_items:
-            qbo_line = self._build_qbo_line(line_item, seq + 1, realm_id)
-            if qbo_line:
-                seq += 1
-                qbo_lines.append(qbo_line)
-
-        if not qbo_lines:
-            logger.warning(f"No QBO lines could be built for bill_id={bill_id}, skipping update")
-            return
-
-        vendor_ref = QboReferenceType(
-            value=local_qbo_bill.vendor_ref_value,
-            name=local_qbo_bill.vendor_ref_name,
-        )
-
-        # QBO Bill updates are full-replace — any field not included is cleared.
-        # Re-send all header fields from the locally stored QboBill to preserve them.
-        ap_account_ref = (
-            QboReferenceType(value=local_qbo_bill.ap_account_ref_value, name=local_qbo_bill.ap_account_ref_name)
-            if local_qbo_bill.ap_account_ref_value else None
-        )
-        sales_term_ref = (
-            QboReferenceType(value=local_qbo_bill.sales_term_ref_value, name=local_qbo_bill.sales_term_ref_name)
-            if local_qbo_bill.sales_term_ref_value else None
-        )
-        currency_ref = (
-            QboReferenceType(value=local_qbo_bill.currency_ref_value, name=local_qbo_bill.currency_ref_name)
-            if local_qbo_bill.currency_ref_value else None
-        )
-        department_ref = (
-            QboReferenceType(value=local_qbo_bill.department_ref_value, name=local_qbo_bill.department_ref_name)
-            if local_qbo_bill.department_ref_value else None
-        )
-
-        with QboBillClient(realm_id=realm_id) as client:
-            fresh = client.get_bill(local_qbo_bill.qbo_id)
-            qbo_bill_update = QboBillUpdate(
-                id=local_qbo_bill.qbo_id,
-                sync_token=fresh.sync_token,
-                vendor_ref=vendor_ref,
-                ap_account_ref=ap_account_ref,
-                sales_term_ref=sales_term_ref,
-                currency_ref=currency_ref,
-                department_ref=department_ref,
-                txn_date=local_qbo_bill.txn_date,
-                due_date=local_qbo_bill.due_date,
-                doc_number=local_qbo_bill.doc_number,
-                private_note=local_qbo_bill.private_note,
-                exchange_rate=local_qbo_bill.exchange_rate,
-                global_tax_calculation=local_qbo_bill.global_tax_calculation,
-                line=qbo_lines,
-            )
-            updated = client.update_bill(qbo_bill_update)
-
-        logger.info(f"Updated QBO Bill {local_qbo_bill.qbo_id} — billed line items now HasBeenBilled")
-
-        # Persist the new SyncToken locally
-        self.qbo_bill_repo.update_by_qbo_id(
-            qbo_id=local_qbo_bill.qbo_id,
-            row_version=local_qbo_bill.row_version_bytes,
-            sync_token=updated.sync_token,
-            realm_id=realm_id,
-            vendor_ref_value=local_qbo_bill.vendor_ref_value,
-            vendor_ref_name=local_qbo_bill.vendor_ref_name,
-            txn_date=local_qbo_bill.txn_date,
-            due_date=local_qbo_bill.due_date,
-            doc_number=local_qbo_bill.doc_number,
-            private_note=local_qbo_bill.private_note,
-            total_amt=updated.total_amt,
-            balance=updated.balance,
-            ap_account_ref_value=local_qbo_bill.ap_account_ref_value,
-            ap_account_ref_name=local_qbo_bill.ap_account_ref_name,
-            sales_term_ref_value=local_qbo_bill.sales_term_ref_value,
-            sales_term_ref_name=local_qbo_bill.sales_term_ref_name,
-            currency_ref_value=local_qbo_bill.currency_ref_value,
-            currency_ref_name=local_qbo_bill.currency_ref_name,
-            exchange_rate=local_qbo_bill.exchange_rate,
-            department_ref_value=local_qbo_bill.department_ref_value,
-            department_ref_name=local_qbo_bill.department_ref_name,
-            global_tax_calculation=local_qbo_bill.global_tax_calculation,
-        )
 
     # One of FIVE near-identical dbo-first/legacy-fallback vendor-ref resolvers
     # (U-284v): this one (the only push-side one), this file's own

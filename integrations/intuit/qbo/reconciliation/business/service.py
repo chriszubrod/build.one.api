@@ -683,9 +683,8 @@ class ReconciliationService:
         ExpenseLineItem rows that are locally IsBilled=1 but whose mapped QBO
         line still carries BillableStatus='Billable'. We deliberately never
         push BillableStatus back to QBO on invoice completion
-        (entities/invoice/business/service.py::_sync_billed_status_to_qbo is
-        defined but has zero call sites — complete_invoice never calls it), so
-        QBO's Suggested Transactions tray keeps re-suggesting lines that are
+        (the billed-status push was removed in U-797c5b: it was never called),
+        so QBO's Suggested Transactions tray keeps re-suggesting lines that are
         already billed locally.
 
         Pure SQL, no QBO API calls — same shape as reconcile_invoice_draws.

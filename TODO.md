@@ -283,6 +283,22 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
   `with_snapshot` + 5 loose params, keeping "send the extra params only when a snapshot is given".
 - [ ] **Bill email SCC label** renders "None" when only one of number/name is null; `suggestion_label` is None-safe.
   Switch the Bill email to it (behaviour change; goldens).
+## U-797c5b follow-ups - pulled-document coding drift detector (booked 2026-11-24)
+
+- [ ] **[watch] `reviewed_coding_not_in_qbo` issues.** Each one is a pulled Bill or credit whose reviewed coding never
+  reached QBO. Fix it in QBO by hand and resolve the issue. If they come more than occasionally, bring the full
+  surgical update path (docs/design/u797c5-bill-credit-qbo-push.md, c5b design) back to Gate 1 with the real cases.
+- [ ] **[altitude] `ReadBillCreditLineItemsByBillCreditId` should select `[QboId], [RealmId]`.** Its Bill twin does.
+  Then drop the per-line by-id re-read in `complete_service._record_qbo_coding_drift`. Needs a scoped prod apply:
+  diff live against base first.
+- [ ] **[reuse, behaviour change] Resolve expected refs through the push resolvers.** These are
+  `push_refs.resolve_item_ref` / `resolve_verified_dbo_ref`, which check the realm and verify identity. Doing so
+  would retire the `is_holding` callable, but it skips more lines, so it needs an EM call.
+- [ ] **Dedupe is per document.** Once an unresolved issue exists for a document, later drift on the same document
+  is not recorded again. This matches the other deduped recorders.
+- [ ] **Stale prose.** TODO.md sections still cite `update_has_been_billed_in_qbo` / `_sync_billed_status_to_qbo`;
+  both were removed in U-797c5b. The U-778d2 billable-status write must build on a surgical helper instead.
+
 ## U-797c5a follow-ups - BillCredit create push (booked 2026-11-23)
 
 - [ ] **[reuse] Lift the per-line identity stamp loop** into `base/line_push.py::stamp_lines_by_line_num(created_lines,

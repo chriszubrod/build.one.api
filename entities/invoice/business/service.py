@@ -1909,37 +1909,6 @@ class InvoiceService:
             logger.exception("Error uploading invoice attachments to SharePoint")
             return {"success": False, "message": str(e), "synced_count": 0, "skipped_count": 0, "errors": [{"error": str(e)}]}
 
-    def _sync_billed_status_to_qbo(self, line_items: list, realm_id: str) -> None:
-        """
-        After invoice completion, re-push each affected QBO Bill/Purchase with
-        BillableStatus = HasBeenBilled so they no longer appear as unbilled in QBO.
-        Deduplicates by parent bill/expense — one QBO API call per affected bill.
-        """
-        from integrations.intuit.qbo.bill.connector.bill.business.service import BillBillConnector
-        from entities.bill_line_item.business.service import BillLineItemService
-
-        bill_connector = BillBillConnector()
-        bill_li_svc = BillLineItemService()
-        updated_bill_ids: set = set()
-
-        for line_item in line_items:
-            if line_item.source_type == "BillLineItem" and line_item.bill_line_item_id:
-                source = bill_li_svc.read_by_id(line_item.bill_line_item_id)
-                if source and source.bill_id and source.bill_id not in updated_bill_ids:
-                    try:
-                        bill_connector.update_has_been_billed_in_qbo(source.bill_id, realm_id)
-                        updated_bill_ids.add(source.bill_id)
-                    except Exception as e:
-                        logger.warning(f"Failed to update HasBeenBilled for QBO Bill (bill_id={source.bill_id}): {e}")
-
-        # Expense/Purchase side: log for now — purchase connector update can be added if needed
-        for line_item in line_items:
-            if line_item.source_type == "ExpenseLineItem" and line_item.expense_line_item_id:
-                logger.info(
-                    f"ExpenseLineItem {line_item.expense_line_item_id} billed — "
-                    f"QBO Purchase HasBeenBilled update not yet implemented"
-                )
-
     def _refuse_holding_source(self, line_item, source) -> None:
         """U-746: never bill a source when the line or the source is on a holding SCC (00.02).
 

@@ -13,6 +13,7 @@ from typing import Any, Optional
 from integrations.intuit.qbo.base.drift_types import (
     DRIFT_HOLDING_CODE_ON_APPROVED,
     DRIFT_HOLDING_CODE_ON_COMPLETED,
+    DRIFT_REVIEWED_CODING_NOT_IN_QBO,
     KNOWN_DRIFT_TYPES,
 )
 from integrations.intuit.qbo.reconciliation.persistence.repo import ReconciliationIssueRepository
@@ -151,6 +152,27 @@ def record_holding_code_on_completed_deduped(
     _record_deduped(
         repo,
         drift_type=DRIFT_HOLDING_CODE_ON_COMPLETED,
+        entity_type=entity_type,
+        entity_public_id=entity_public_id,
+        qbo_id=qbo_id,
+        realm_id=realm_id,
+        details=details,
+    )
+
+
+def record_reviewed_coding_not_in_qbo_deduped(
+    repo: ReconciliationIssueRepository,
+    *,
+    entity_type: str,
+    entity_public_id: Optional[str],
+    qbo_id: Optional[str],
+    realm_id: str,
+    details: str,
+) -> None:
+    """U-797c5b: record reviewed_coding_not_in_qbo at most once per (realm, entity_type, qbo_id)."""
+    _record_deduped(
+        repo,
+        drift_type=DRIFT_REVIEWED_CODING_NOT_IN_QBO,
         entity_type=entity_type,
         entity_public_id=entity_public_id,
         qbo_id=qbo_id,

@@ -205,6 +205,24 @@ class ReviewNotificationRepository:
             logger.error("Error during FindReviewNotificationForReply: %s", type(error).__name__)
             raise map_database_error(error)
 
+    def read_contract_labor_record_id(self, *, project_id: int, work_date) -> Optional[int]:
+        """U-747: the Id of the day's contract_labor ReviewNotification for (project, work_date), or None.
+
+        Read-only. The apply path uses it to refuse an unbound reply that is not on the recorded crew email."""
+        try:
+            with get_connection() as conn:
+                cursor = conn.cursor()
+                call_procedure(
+                    cursor=cursor,
+                    name="ReadContractLaborReviewNotificationByProjectAndWorkDate",
+                    params={"ProjectId": project_id, "WorkDate": work_date},
+                )
+                row = cursor.fetchone()
+                return int(row.Id) if row is not None else None
+        except Exception as error:
+            logger.error("Error during ReadContractLaborReviewNotificationByProjectAndWorkDate: %s", type(error).__name__)
+            raise map_database_error(error)
+
     def read_open_reply_conversations(self, *, since_days: int = 45) -> list[str]:
         """U-797c3: Graph ConversationIds whose review thread still has an open
         document (see dbo.ReadOpenReviewReplyConversations for the rules)."""

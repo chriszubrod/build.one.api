@@ -312,6 +312,23 @@ class _ApplyReviewerDecisionArgs(BaseModel):
             "React review queue."
         ),
     )
+    contract_labor_public_ids: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Optional. The public_ids (UUIDs) of the workers the replied-to email covered, when you know them. "
+            "Pass them when the reply is on a follow-up email, so only the workers that email covered are applied. "
+            "Omit to apply the whole crew."
+        ),
+    )
+    contract_labor_worker_names: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Optional. The worker names exactly as the replied-to email's worker table shows them. Matched "
+            "exactly, after trimming, collapsing spaces and ignoring case. Use it when you have names but not "
+            "public_ids. A name that matches two workers, or none, comes back in `not_applied`. Never guess "
+            "the workers."
+        ),
+    )
     reviewer_email_message_public_id: str = Field(
         ...,
         description=(
@@ -335,6 +352,10 @@ async def _apply_contract_labor_reviewer_decision(args: dict, ctx: ToolContext) 
         body['description'] = parsed.description
     if parsed.raw_reply_text is not None:
         body['raw_reply_text'] = parsed.raw_reply_text
+    if parsed.contract_labor_public_ids is not None:
+        body['contract_labor_public_ids'] = parsed.contract_labor_public_ids
+    if parsed.contract_labor_worker_names is not None:
+        body['contract_labor_worker_names'] = parsed.contract_labor_worker_names
     body['reviewer_email_message_public_id'] = parsed.reviewer_email_message_public_id
     return await ctx.call_api(
         'POST',
@@ -401,6 +422,13 @@ apply_contract_labor_reviewer_decision = Tool(
         "if no member is applied the error starts 'applied none of the N crew member(s)' "
         "and lists each member's reason (not_applied) and failure (for example "
         "'not an authorized reviewer'). Report each reason; do not retry.\n"
+        "  - Listed workers (contract_labor_public_ids) not reviewable on this project and date → reported in not_applied with reason 'not reviewable on this project and date'. Report it; do not retry.\n"
+        "  - Worker names (contract_labor_worker_names) that match two workers come back in `not_applied` with reason "
+        "'ambiguous name — name the worker by id'; re-send with that worker's public_id if you have it, otherwise stop and report back.\n"
+        "  - 'This reply is not on the recorded crew review email for that day' → re-send the decision with "
+        "contract_labor_worker_names (the names exactly as the email's table shows them) or contract_labor_public_ids. "
+        "If you cannot tell which workers the email covered, stop and report back; never guess, and never pass the "
+        "whole crew. Do not retry the same call.\n"
         "  - 'SubCostCode with public_id X not found' → pass the SCC's "
         "public_id verbatim from find_sub_cost_code_for_reply (don't "
         "pass the human-readable name).\n\n"

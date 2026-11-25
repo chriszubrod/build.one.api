@@ -283,6 +283,13 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
   `with_snapshot` + 5 loose params, keeping "send the extra params only when a snapshot is given".
 - [ ] **Bill email SCC label** renders "None" when only one of number/name is null; `suggestion_label` is None-safe.
   Switch the Bill email to it (behaviour change; goldens).
+## U-747 follow-ups (booked 2026-11-24)
+
+- [ ] (a) One shared UUID canonicaliser under shared/ for the four copies that parse a public id with `uuid.UUID(str(...))`: entities/attachment_backfill/business/bulk.py:93, entities/coding_suggestion/business/service.py:60, shared/api/admin.py:957 and :1000, and contract_labor `_public_id_key` in entities/contract_labor/business/service.py:150. Each copy normalises differently at the edges; unify once and pin each caller's current behaviour first.
+- [ ] (b) A typo'd worker name currently reports "not reviewable on this project and date". Consider a distinct "name not found" reason so an agent can tell a typo from a worker who has advanced past review.
+- [ ] (c) Hand-sent follow-up emails remain unrecorded, so a reply to one is refused unless the caller lists the workers. If follow-up replies turn out to be frequent, consider option B: system-sent follow-ups that carry their own ReviewNotification record.
+- [ ] (d) A backfilled day with a NULL ConversationId now refuses an unlisted reply (safe). Recover by re-sending with contract_labor_worker_names or contract_labor_public_ids. Track how often this fires.
+
 ## U-797c5b follow-ups - pulled-document coding drift detector (booked 2026-11-24)
 
 - [ ] **[watch] `reviewed_coding_not_in_qbo` issues.** Each one is a pulled Bill or credit whose reviewed coding never

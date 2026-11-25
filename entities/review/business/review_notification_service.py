@@ -280,6 +280,10 @@ class ReviewNotificationRecordService:
         notifications, targets = self.repo.find_for_reply(conversation_id=conv)
         return [(n, target_pairs(targets, n.Id)) for n in notifications]
 
+    def contract_labor_record_exists(self, *, project_id: int, work_date) -> bool:
+        """U-747: True when the day's contract_labor ReviewNotification exists for this project and work date."""
+        return self.repo.read_contract_labor_record_id(project_id=project_id, work_date=work_date) is not None
+
     def read_crew_snapshots(self, notification_id: int) -> dict[int, CrewTargetSnapshot]:
         """U-797b1: the snapshot of each crew member's target on one CL notification, keyed by ContractLabor id."""
         rows = self.repo.read_target_snapshots(review_notification_id=notification_id)

@@ -309,6 +309,11 @@ def _binder_v2_enabled() -> bool:
     return bool(Settings().review_reply_binder_v2_enabled)
 
 
+def binder_v2_enabled() -> bool:
+    """U-747: the public name of the reply binder's flag. Same reading as _binder_v2_enabled, called at call time."""
+    return _binder_v2_enabled()
+
+
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 

@@ -52,6 +52,9 @@ def env(monkeypatch):
     monkeypatch.setattr(prov, "bind_reviewer_reply_to_thread", fake_legacy)
     from entities.review.business import review_notification_service as rns
     monkeypatch.setattr(rns.ReviewNotificationRecordService, "lookup_for_reply", fake_lookup)
+    # U-747: an unbound reply with no list consults the day's record. No record here: today's legacy path.
+    monkeypatch.setattr(rns.ReviewNotificationRecordService, "contract_labor_record_exists",
+                        lambda self, **kw: False)
     monkeypatch.setattr(cl_service_mod.ProjectService, "read_by_public_id",
                         lambda self, public_id: SimpleNamespace(id=1))
 

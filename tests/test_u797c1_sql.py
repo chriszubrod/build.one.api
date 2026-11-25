@@ -19,6 +19,7 @@ EXPECTED_SPROCS = {
     "DeleteReviewNotification",
     "FindReviewNotificationForReply",
     "ReadReviewNotificationTargetSnapshots",  # U-797b1
+    "ReadContractLaborReviewNotificationByProjectAndWorkDate",  # U-747
 }
 
 

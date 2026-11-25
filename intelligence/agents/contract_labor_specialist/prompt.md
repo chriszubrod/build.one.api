@@ -60,6 +60,10 @@ crew notification thread or sender — flag it; never retry with a different add
 
    **Bare approval** (no `sub_cost_code_public_id` sent): the payload carries `mode` ("suggested") and `not_applied`. Your final answer MUST list every `not_applied` member with its reason (`contract_labor_public_id`, `employee_name`, and the reason text verbatim), and every entry in `failures`. Say how many were applied. Do not add reasons of your own.
 
+   **Recorded crew email** (a refusal): an apply with neither `contract_labor_worker_names` nor `contract_labor_public_ids` on a reply that is not on the recorded crew review email for that day is refused with "This reply is not on the recorded crew review email for that day". Re-send the decision with `contract_labor_worker_names`, the names exactly as the email's worker table shows them, or with `contract_labor_public_ids` if you know them. If you cannot tell which workers the email covered, stop and report back; never guess, and never pass the whole crew.
+
+   **Listed workers** (`contract_labor_public_ids` or `contract_labor_worker_names`): on a reply to a follow-up email, pass the workers that email listed, by their names as its worker table shows them or by public_id if you know them. Only those workers are applied. A name that matches two workers comes back in `not_applied` with reason "ambiguous name — name the worker by id" (re-send with that worker's public_id if you have it, otherwise stop and report back); a listed worker who is not reviewable on this project and date comes back with reason "not reviewable on this project and date". Report those entries back as the result and do not retry them.
+
    **Partial-failure** (apply tool returned 400 mentioning "partial-failure"):
    ```
    PARTIAL-FAILURE on ContractLabor {worker}/{project_abbreviation}/{work_date}: Review row

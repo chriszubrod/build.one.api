@@ -2,7 +2,7 @@
 -- Owns: the record of every review-submit email (Bill, Expense, BillCredit, ContractLabor): its outbox row, its Graph conversation identity (stamped by the MS worker on draft create), and the exact documents its reply may approve.
 -- Invariants: Kind is one of bill/expense/bill_credit/contract_labor. A ContractLabor claim is one row per (ProjectId, WorkDate) (CreateReviewNotification returns an empty set on a duplicate). Every target row names exactly one document. ConversationId / InternetMessageId / DraftGraphMessageId compare case-sensitively (BIN). Stamping only fills NULLs.
 -- U-797b1: a Contract Labor target's snapshot columns (the suggestion the email showed and its lines fingerprint) are written only by the CL crew claim; Bill, Expense and BillCredit targets leave them NULL.
--- Sprocs: CreateReviewNotification, AddReviewNotificationTarget, SetReviewNotificationOutbox, StampReviewNotificationFromOutbox, StampReviewNotificationById, DeleteReviewNotification, FindReviewNotificationForReply, ReadReviewNotificationTargetSnapshots
+-- Sprocs: CreateReviewNotification, AddReviewNotificationTarget, SetReviewNotificationOutbox, StampReviewNotificationFromOutbox, StampReviewNotificationById, DeleteReviewNotification, FindReviewNotificationForReply, ReadReviewNotificationTargetSnapshots, ReadContractLaborReviewNotificationByProjectAndWorkDate
 -- =============================================================================
 -- U-797c1: ReviewNotification is the one record a reply binds through (design
 -- docs/design/u797c-review-reply-binding.md, section 1). Writers: the Bill /
@@ -303,6 +303,27 @@ BEGIN
     WHERE t.[ReviewNotificationId] IN (
         SELECT n.[Id] FROM dbo.[ReviewNotification] n
         WHERE n.[ConversationId] = @ConversationId COLLATE Latin1_General_BIN);
+END
+GO
+
+-- -----------------------------------------------------------------------------
+-- U-747: read-only. Does the day's contract_labor ReviewNotification (the crew claim) exist for this
+-- project and work date? The apply path refuses an unbound reply when it does, so a follow-up reply
+-- cannot code the whole crew. Returns the Id, or no row.
+-- -----------------------------------------------------------------------------
+CREATE OR ALTER PROCEDURE dbo.ReadContractLaborReviewNotificationByProjectAndWorkDate
+    @ProjectId BIGINT,
+    @WorkDate DATE
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT TOP 1 [Id]
+    FROM dbo.[ReviewNotification]
+    WHERE [Kind] = N'contract_labor'
+      AND [ProjectId] = @ProjectId
+      AND [WorkDate] = @WorkDate
+    ORDER BY [Id];
 END
 GO
 

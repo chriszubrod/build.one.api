@@ -63,6 +63,8 @@ Sprocs
 """
 # Python Standard Library Imports
 import logging
+import unicodedata
+import uuid
 from typing import TYPE_CHECKING, Optional, Tuple
 from decimal import Decimal
 
@@ -114,12 +116,109 @@ _NO_SNAPSHOTS_REFUSAL = (
     "The suggestions email for this crew recorded no per-member suggestions to apply; "
     "reply with a sub cost code instead."
 )
+_NOT_ON_RECORDED_CREW_EMAIL_REFUSAL = (
+    "This reply is not on the recorded crew review email for that day. Re-send the decision with "
+    "contract_labor_worker_names (the worker names exactly as the email's table shows them) or "
+    "contract_labor_public_ids, naming the workers that email covered."
+)
 _REASON_NOT_IN_EMAIL = "not in the email"
 _REASON_NO_SUGGESTION = "no suggestion shown"
 _REASON_SPLIT = "possible split — name a code"
 _REASON_CHANGED = "lines changed since the email"
 _REASON_ALREADY_CODED = "already coded — name a code to change it"
 _CLEAN_SUGGESTION_SOURCES = frozenset({"history", "model"})
+_REASON_NOT_REVIEWABLE = "not reviewable on this project and date"
+_REASON_AMBIGUOUS_NAME = "ambiguous name — name the worker by id"
+
+
+_IDS_NOT_A_LIST = "contract_labor_public_ids must be a list of ContractLabor public ids."
+_IDS_MALFORMED = "contract_labor_public_ids has a malformed id: {!r}"
+_NAMES_NOT_A_LIST = "contract_labor_worker_names must be a list of worker names."
+_NAMES_INVALID = "contract_labor_worker_names must hold non-empty worker names of at most 200 characters."
+
+
+def _norm_name(value) -> Optional[str]:
+    """U-747: the comparison form of a worker name: NFC, whitespace collapsed and trimmed, casefolded."""
+    if value is None:
+        return None
+    return " ".join(unicodedata.normalize("NFC", str(value)).split()).casefold()
+
+
+def _public_id_key(raw) -> Optional[str]:
+    """U-747: the canonical lowercase UUID of a ContractLabor public id, or None when it is not a UUID."""
+    try:
+        return str(uuid.UUID(str(raw)))
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _worker_name_key(raw) -> Optional[str]:
+    """U-747: the comparison key of a worker name, or None when it is not a non-empty string of at most 200 characters."""
+    if not isinstance(raw, str) or not raw.strip() or len(raw) > 200:
+        return None
+    return _norm_name(raw)
+
+
+def _normalize_listed(value, *, not_a_list: str, canonicalise, invalid) -> Optional[list[tuple[str, object]]]:
+    """U-747: validate and de-duplicate one selector list (public ids or worker names).
+
+    None when no list is given (absent or empty). Otherwise one (comparison key, value as sent) per distinct
+    key. `canonicalise(raw)` returns the key, or None when the item is invalid; `invalid(raw)` is the error text."""
+    if value is None or (isinstance(value, list) and not value):
+        return None
+    if not isinstance(value, list):
+        raise ValueError(not_a_list)
+    out: list[tuple[str, object]] = []
+    seen: set[str] = set()
+    for raw in value:
+        key = canonicalise(raw)
+        if key is None:
+            raise ValueError(invalid(raw))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((key, raw))
+    return out
+
+
+def _crew_key(member: dict) -> str:
+    return str(member.get("contract_labor_public_id")).lower()
+
+
+def _select_listed_workers(crew, listed, names):
+    """U-747: the crew the listed public ids and worker names select, with their not_applied entries. Pure.
+
+    `listed` and `names` are normalised lists (see _normalize_listed) or None. Returns the selected crew
+    members in crew order, and the not_applied entries for ids and names that select nothing or are
+    ambiguous. A name selects its worker only when exactly one crew member has that name."""
+    not_applied: list[dict] = []
+    selected: set[str] = set()
+    if listed is not None:
+        crew_keys = {_crew_key(m) for m in crew}
+        for canonical, raw in listed:
+            if canonical in crew_keys:
+                selected.add(canonical)
+            else:
+                not_applied.append(_not_applied_entry(
+                    {"contract_labor_public_id": raw, "employee_name": None}, _REASON_NOT_REVIEWABLE))
+    if names is not None:
+        for name_key, raw in names:
+            hits = [m for m in crew if _norm_name(m.get("employee_name")) == name_key]
+            if len(hits) == 1:
+                selected.add(_crew_key(hits[0]))
+            else:
+                reason = _REASON_AMBIGUOUS_NAME if hits else _REASON_NOT_REVIEWABLE
+                not_applied.append(_not_applied_entry(
+                    {"contract_labor_public_id": None, "employee_name": raw}, reason))
+    return [m for m in crew if _crew_key(m) in selected], not_applied
+
+
+def _applied_none_error(crew_size: int, project_public_id, work_date, reasons: list[str]) -> ValueError:
+    """U-747: the one refusal for a call that applies no crew member, listing every reason."""
+    return ValueError(
+        f"apply_reviewer_decision applied none of the {crew_size} crew member(s) on "
+        f"project {project_public_id} for {work_date}: {'; '.join(reasons)}"
+    )
 
 
 class _SuggestionNotApplied(ValueError):
@@ -158,7 +257,13 @@ def _not_applied_entry(member: dict, reason: str) -> dict:
 
 
 def _member_label(member: dict) -> str:
-    return f"{member.get('contract_labor_public_id')} ({member.get('employee_name')})"
+    public_id = member.get("contract_labor_public_id")
+    name = member.get("employee_name")
+    if public_id is None:
+        return str(name)
+    if name is None:
+        return str(public_id)
+    return f"{public_id} ({name})"
 
 
 class ContractLaborService:
@@ -574,6 +679,8 @@ class ContractLaborService:
         description: Optional[str] = None,
         raw_reply_text: Optional[str] = None,
         reviewer_email_message_public_id: Optional[str] = None,
+        contract_labor_public_ids: Optional[list[str]] = None,
+        contract_labor_worker_names: Optional[list[str]] = None,
     ) -> dict:
         """Apply a PM/Owner's emailed review decision to the WHOLE crew on
         a (project, work_date).
@@ -593,6 +700,19 @@ class ContractLaborService:
         error for the agent); a partial success returns normally with the
         failures listed for AP to reconcile.
 
+        U-747 LISTED WORKERS: contract_labor_public_ids and/or contract_labor_worker_names, when given (non-empty),
+        narrow the crew to the workers they select. An id selects its worker when that worker is reviewable on
+        this project and date. A name selects the worker whose name matches exactly after NFC normalisation,
+        trimming, collapsing spaces and casefolding. The selected set is the de-duplicated union. Crew members
+        neither list names are untouched and not reported. A listed id not in the reviewable crew is reported
+        in not_applied ('not reviewable on this project and date'), never written, and its record is not read.
+        A name that matches two or more workers is reported ('ambiguous name — name the worker by id') and
+        nothing is written for it. A name that matches none is reported as not reviewable. Malformed ids or
+        names refuse before any read. If nothing is selected, the call refuses before any write. The lists never
+        change provenance. Without either list, an unbound reply (no recorded notification for it) on a day that
+        has a recorded crew review email is refused before any write (cl_decision.unbound_reply_refused). With the
+        binder flag off, or no record for the day, the whole live crew is applied as before.
+
         U-797b2 SUGGESTION MODE: decision 'approved' with no sub_cost_code_public_id, flag
         CL_SUGGESTIONS_IN_REVIEW_ENABLED on. The reply must bind to the suggestions notification,
         or the call refuses before any write. Each member is applied with the snapshot code the
@@ -606,6 +726,15 @@ class ContractLaborService:
             raise ValueError(
                 f"decision must be 'approved' or 'rejected'; got '{decision}'"
             )
+
+        listed = _normalize_listed(
+            contract_labor_public_ids, not_a_list=_IDS_NOT_A_LIST,
+            canonicalise=_public_id_key, invalid=_IDS_MALFORMED.format,
+        )
+        names = _normalize_listed(
+            contract_labor_worker_names, not_a_list=_NAMES_NOT_A_LIST,
+            canonicalise=_worker_name_key, invalid=lambda _raw: _NAMES_INVALID,
+        )
 
         project = ProjectService().read_by_public_id(public_id=project_public_id)
         if project is None or project.id is None:
@@ -636,7 +765,7 @@ class ContractLaborService:
         from entities.review.business.cl_notification_service import (
             cl_suggestions_in_review_enabled,
         )
-        from shared.authz.provenance import resolve_reply_notification_once, resolve_reply_once
+        from shared.authz.provenance import binder_v2_enabled, resolve_reply_notification_once, resolve_reply_once
 
         # U-797b2: flag read through the notification service's strict reader (not copied here).
         suggestion_mode = (
@@ -646,6 +775,15 @@ class ContractLaborService:
         )
         mode = 'suggested' if suggestion_mode else 'named_code'
         not_applied: list[dict] = []
+        decision_crew = crew
+        if listed is not None or names is not None:
+            decision_crew, selection_not_applied = _select_listed_workers(crew, listed, names)
+            not_applied.extend(selection_not_applied)
+            if not decision_crew:
+                raise _applied_none_error(
+                    len(crew), project_public_id, work_date,
+                    [f"{_member_label(n)}: {n['reason']}" for n in not_applied],
+                )
 
         # Each target: (member, the member's CrewTargetSnapshot in suggestion mode, else None).
         targets: list[tuple[dict, Optional["CrewTargetSnapshot"]]]
@@ -670,7 +808,7 @@ class ContractLaborService:
             if not snapshots:
                 raise ValueError(_NO_SNAPSHOTS_REFUSAL)
             targets = []
-            for member in crew:
+            for member in decision_crew:
                 snap = snapshots.get(member.get("contract_labor_id"))
                 reason = _suggestion_ineligibility(snap)
                 if reason is not None:
@@ -688,7 +826,30 @@ class ContractLaborService:
                 work_date=work_date,
             )
             if bound_once is None:
-                for member in crew:
+                # U-747: with no list and the binder on, a day's recorded crew email refuses an unbound reply.
+                # A read failure fails closed. With the binder off, or a list, nothing here changes.
+                if listed is None and names is None and binder_v2_enabled():
+                    from entities.review.business.review_notification_service import (
+                        ReviewNotificationRecordService,
+                    )
+                    try:
+                        record_exists = ReviewNotificationRecordService().contract_labor_record_exists(
+                            project_id=int(project.id), work_date=work_date,
+                        )
+                    except Exception as read_error:
+                        logger.warning(
+                            "cl_decision.record_exists_read_failed project=%s date=%s error=%s",
+                            project_public_id, work_date, type(read_error).__name__,
+                        )
+                        record_exists = True
+                    if record_exists:
+                        logger.warning("cl_decision.unbound_reply_refused project=%s date=%s", project_public_id, work_date)
+                        raise ValueError(_NOT_ON_RECORDED_CREW_EMAIL_REFUSAL)
+                    logger.warning(
+                        "cl_decision.legacy_whole_crew_no_record project=%s date=%s crew=%d",
+                        project_public_id, work_date, len(decision_crew),
+                    )
+                for member in decision_crew:
                     self._bind_cl_decision_reply(
                         reviewer_email=reviewer_email,
                         reviewer_email_message_public_id=reviewer_email_message_public_id,
@@ -699,7 +860,7 @@ class ContractLaborService:
                         work_date=work_date,
                         legacy_only=True,
                     )
-            targets = [(member, None) for member in crew]
+            targets = [(member, None) for member in decision_crew]
 
         applied: list[dict] = []
         failures: list[str] = []
@@ -749,10 +910,7 @@ class ContractLaborService:
                 f"{_member_label(n)}: {n['reason']}"
                 for n in not_applied
             ] + failures
-            raise ValueError(
-                f"apply_reviewer_decision applied none of the {len(crew)} crew member(s) on "
-                f"project {project_public_id} for {work_date}: {'; '.join(reasons)}"
-            )
+            raise _applied_none_error(len(crew), project_public_id, work_date, reasons)
 
         # All-failed → hard error the agent can act on (e.g. unauthorized
         # sender fails every member identically). Partial success returns

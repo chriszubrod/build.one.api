@@ -185,6 +185,11 @@ def apply_reviewer_decision_router(
       description:              string (optional; replaces line-item descriptions on approval)
       raw_reply_text:           string (the PM's reply body, persisted to Review.Comments)
       reviewer_email_message_public_id: string (FK to the source EmailMessage)
+      contract_labor_public_ids: list of strings (optional; the workers the replied-to email listed.
+                                 Only those reviewable on the project and date are applied)
+      contract_labor_worker_names: list of strings (optional; the worker names exactly as the email's
+                                 table shows them. Exact match after trimming, collapsing spaces and case.
+                                 Ambiguous or unknown names are reported in not_applied)
 
     Returns an aggregate (crew_size, applied_count, per-CL applied +
     failures). Hard errors (empty crew, all members failed) surface as
@@ -200,6 +205,8 @@ def apply_reviewer_decision_router(
             description=body.get("description"),
             raw_reply_text=body.get("raw_reply_text"),
             reviewer_email_message_public_id=body.get("reviewer_email_message_public_id"),
+            contract_labor_public_ids=body.get("contract_labor_public_ids"),
+            contract_labor_worker_names=body.get("contract_labor_worker_names"),
         )
         return item_response(result)
     except ValueError as error:

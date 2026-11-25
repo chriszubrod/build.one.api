@@ -128,7 +128,7 @@ def test_happy_path_gets_once_adopts_the_live_token_and_the_record_round_trips()
         svc, token="LIVE-7",
         locals_=[_local("L1", 101), _local("L2", 202, project=9), _local(None, 303), _local("L4", None)],
         live=[_live_line("L1", "item-101"), _live_line("L2", "item-202", customer="cust-1"), _live_line("L9", "x")])
-    assert out == {"status": "adopted", "lines": 2, "written_sync_token": "LIVE-7"}
+    assert out == {"status": "adopted", "lines": 2, "written_sync_token": "LIVE-7", "qbo_line_ids": ["L1", "L2"]}
     connector.get_purchase_raw.assert_called_once_with(realm_id="realm-1", qbo_purchase_qbo_id="purchase-1")
     args = svc.repo.adopt_written_record.call_args.args
     assert args[0] == PUBLIC_ID and args[1] == "LIVE-7" and args[3] == 4
@@ -209,7 +209,7 @@ def test_confirm_endpoint_null_coded_placeholder_line_pre_pull_is_adopted_with_t
     svc = _svc(_item(confirmation_source="confirm_endpoint", confirmed_sub_cost_code_id=303, confirmed_project_id=9))
     out, _ = _adopt(svc, locals_=[_local("L1", None, project=None)],
                     live=[_live_line("L1", "item-303", customer="cust-1")])
-    assert out == {"status": "adopted", "lines": 1, "written_sync_token": "LIVE-7"}
+    assert out == {"status": "adopted", "lines": 1, "written_sync_token": "LIVE-7", "qbo_line_ids": ["L1"]}
     args = svc.repo.adopt_written_record.call_args.args
     assert json.loads(args[2]) == [{"qbo_line_id": "L1", "item_ref_value": "item-303", "sub_cost_code_id": 303}]
 
@@ -436,7 +436,7 @@ def test_review_submit_confirmed_pair_on_one_of_two_linked_lines_adopts_only_tha
     svc = _svc(_item(confirmation_source="review_submit", confirmed_sub_cost_code_id=303))
     out, _ = _adopt(svc, locals_=[_local("L1", 303), _local("L2", 202)],
                     live=[_live_line("L1", "item-303"), _live_line("L2", "item-202")])
-    assert out == {"status": "adopted", "lines": 1, "written_sync_token": "LIVE-7"}
+    assert out == {"status": "adopted", "lines": 1, "written_sync_token": "LIVE-7", "qbo_line_ids": ["L1"]}
     assert json.loads(svc.repo.adopt_written_record.call_args.args[2]) == [
         {"qbo_line_id": "L1", "item_ref_value": "item-303", "sub_cost_code_id": 303}]
 

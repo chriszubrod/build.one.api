@@ -1489,7 +1489,9 @@ class QboOutboxWorker:
                 return None, "repoint_line_holding"
             if target_ref is None:
                 return None, "repoint_line_unmapped"
-            if target_ref.value == entry.get("repoint_from_item_ref_value"):
+            # U-743: a customer change on a line already carrying the target item is still a change.
+            customer_changed = entry.get("customer_changed") is True
+            if target_ref.value == entry.get("repoint_from_item_ref_value") and not customer_changed:
                 continue  # the approved target IS the item we wrote: nothing to change
             targets.append(
                 dict(
@@ -1503,6 +1505,7 @@ class QboOutboxWorker:
                         project_cache=project_cache,
                     ),
                     repoint_from_item_ref_value=entry.get("repoint_from_item_ref_value"),
+                    customer_changed=customer_changed,
                 )
             )
         return targets, None
@@ -1543,6 +1546,7 @@ class QboOutboxWorker:
         from integrations.intuit.qbo.purchase.connector.expense.business.errors import (
             PurchaseChangedInQboError,
             PurchaseRecodeMappingError,
+            RepointLineBilledError,
         )
         from integrations.intuit.qbo.base.errors import QboSyncTokenMismatchError
         from shared.lifecycle.completion_gate import HoldingCodeRefused
@@ -1616,6 +1620,9 @@ class QboOutboxWorker:
             return
         except PurchaseRecodeMappingError as exc:
             _terminal_mark("error", svc.mark_error, write_error=str(exc))
+            return
+        except RepointLineBilledError:
+            _terminal_mark("error", svc.mark_error, write_error=RepointLineBilledError.WRITE_ERROR)
             return
         except HoldingCodeRefused as exc:
             _terminal_mark(

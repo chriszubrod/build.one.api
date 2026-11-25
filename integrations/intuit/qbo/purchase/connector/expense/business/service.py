@@ -929,6 +929,7 @@ class PurchaseExpenseConnector:
         from integrations.intuit.qbo.purchase.connector.expense.business.errors import (
             PurchaseChangedInQboError,
             PurchaseRecodeMappingError,
+            RepointLineBilledError,
         )
         from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
 
@@ -987,16 +988,32 @@ class PurchaseExpenseConnector:
                 item_ref = _item_ref_for(sub_cost_code_id)
                 if not self._raw_line_is_categorize_placeholder(target):
                     is_item_based = target.get("DetailType") == "ItemBasedExpenseLineDetail"
-                    live_item_value = (
-                        (target.get("ItemBasedExpenseLineDetail") or {}).get("ItemRef", {}).get("value")
-                    )
+                    live_detail = target.get("ItemBasedExpenseLineDetail") or {}
+                    live_item_value = (live_detail.get("ItemRef") or {}).get("value")
+                    live_customer = (live_detail.get("CustomerRef") or {}).get("value")
+                    live_billed = live_detail.get("BillableStatus") == "HasBeenBilled"
+                    item_matches = is_item_based and item_ref is not None and live_item_value == item_ref.value
+                    # U-743: a repoint changes an item-equal line's customer ONLY when completion approved that
+                    # change (spec customer_changed is True), and never on a line QBO has already billed: a real
+                    # customer change there is refused; a same-customer request is verified as on base. The
+                    # customer lookup stays lazy (only a billed or item-equal line needs it). The up-front token
+                    # fence above still guards any write.
+                    customer_differs = False
+                    if (
+                        is_repoint_call
+                        and spec.get("customer_changed") is True
+                        and spec.get("project_id")
+                        and (live_billed or item_matches)
+                    ):
+                        repoint_customer = _customer_ref_for(spec["project_id"])
+                        customer_differs = repoint_customer is not None and live_customer != repoint_customer.value
+                        if customer_differs and live_billed:
+                            raise RepointLineBilledError(qbo_line_id=target_qbo_line_id)
+                        customer_differs = customer_differs and item_matches
                     # (a) already carries the target item: ours, unchanged.
-                    if is_item_based and item_ref is not None and live_item_value == item_ref.value:
+                    if item_matches and not customer_differs:
                         if token_one_ahead and spec.get("project_id"):
                             customer_ref = _customer_ref_for(spec["project_id"])
-                            live_customer = (
-                                (target.get("ItemBasedExpenseLineDetail") or {}).get("CustomerRef") or {}
-                            ).get("value")
                             if customer_ref is None or live_customer != customer_ref.value:
                                 first_write_provable = False
                         verified_lines.append(
@@ -1111,7 +1128,8 @@ class PurchaseExpenseConnector:
         item_detail: dict = {
             "ItemRef": {"value": item_ref.value, "name": item_ref.name},
         }
-        if customer_ref is not None:
+        # U-743 fix 1: a HasBeenBilled line keeps its old CustomerRef; the project's customer is never written to it.
+        if customer_ref is not None and old.get("BillableStatus") != "HasBeenBilled":
             item_detail["CustomerRef"] = {
                 "value": customer_ref.value,
                 "name": customer_ref.name,
@@ -1143,7 +1161,10 @@ class PurchaseExpenseConnector:
             item_detail["Qty"] = float(qty_dec)
             item_detail["UnitPrice"] = float(rate_dec)
 
-        if is_billable is True:
+        if old.get("BillableStatus") == "HasBeenBilled":
+            # U-743: a HasBeenBilled line is billed in QBO; no billable flag we derive may overwrite it.
+            item_detail["BillableStatus"] = "HasBeenBilled"
+        elif is_billable is True:
             # Billable only against the CONFIRMED project's own customer.
             # A CustomerRef carried forward from the placeholder line may
             # belong to someone else (Ramp imports, prior coding); stamping

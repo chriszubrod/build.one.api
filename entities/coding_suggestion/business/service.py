@@ -1009,6 +1009,11 @@ class CodingSuggestionService:
                 return {"status": "not_error"}
             if item.confirmation_source != REPOINT_CONFIRMATION_SOURCE:
                 return {"status": "not_a_repoint"}
+            from integrations.intuit.qbo.purchase.connector.expense.business.errors import RepointLineBilledError
+
+            if getattr(item, "write_error", None) == RepointLineBilledError.WRITE_ERROR:
+                # U-743 fix 3: a billed-line refusal needs a human decision; a blind re-drive would repeat it.
+                return {"status": "billed_needs_decision"}
             if not item.repoint_targets:
                 return {"status": "no_repoint_targets"}
             if self._has_recode_dead_letter(public_id):
@@ -1034,7 +1039,9 @@ class CodingSuggestionService:
             logger.warning("coding_suggestion.redrive_enqueued public_id=%s confirmation_seq=%s", public_id, new_seq)
             return {"status": "enqueued", "confirmation_seq": new_seq}
 
-    def adopt_written_record(self, public_id: str, *, record_required_since=None) -> dict:
+    def adopt_written_record(
+        self, public_id: str, *, record_required_since=None, allow_legacy: bool = False, apply: bool = False
+    ) -> dict:
         """U-551b-f1-f3b ADOPT: give a record-less ``written`` row (a first write that crashed between the QBO
         POST and the mark) the written record it lacks, after GET-verifying the live Purchase. System-admin
         action; NEVER writes to QBO (one read-only GET). Whole body under the suggestion lock; the external-write
@@ -1070,7 +1077,10 @@ class CodingSuggestionService:
                     written_at = datetime.fromisoformat(written_at)
                 except ValueError:
                     written_at = None
-            if written_at is None or record_required_since is None or written_at < record_required_since:
+            # U-743: allow_legacy (operator-only) waives this age refusal; every other refusal stays.
+            if not allow_legacy and (
+                written_at is None or record_required_since is None or written_at < record_required_since
+            ):
                 return {"status": "legacy"}  # unknown / pre-record age: cannot tell a crash gap from legacy
             if item.confirmation_seq is None:
                 return {"status": "moved"}  # nothing to fence the persist on: refuse here, never reach the sproc THROW
@@ -1106,11 +1116,27 @@ class CodingSuggestionService:
             live_sync_token = str(raw.get("SyncToken"))
             live_by_id = {str(line.get("Id")): line for line in (raw.get("Line") or [])}
 
+            def _holding_ref(scc):
+                # U-743 legacy mode: a holding code (00.02) is adopted by its OWN SubCostCode.qbo_id.
+                from entities.sub_cost_code.business.service import SubCostCodeService
+
+                sub = SubCostCodeService().read_by_id(id=scc)
+                # U-743 item 3: the holding code must sit in the purchase's realm, like resolve_qbo_item_ref.
+                sub_realm = getattr(sub, "realm_id", None) if sub is not None else None
+                if not sub_realm or sub_realm != item.realm_id:
+                    return None
+                qbo_id = getattr(sub, "qbo_id", None)
+                return SimpleNamespace(value=qbo_id, name=getattr(sub, "name", None)) if qbo_id else None
+
             def _resolve(scc):
                 try:
                     return resolve_qbo_item_ref(scc, item.realm_id), None
                 except HoldingCodeRefused:
-                    return None, {"status": "line_holding"}
+                    # U-743: a holding code is matched only under allow_legacy, which never reaches multi-line
+                    # mode (refused ``legacy_multi_line`` below), so only the confirmed branch can match one.
+                    if not allow_legacy:
+                        return None, {"status": "line_holding"}
+                    return _holding_ref(scc), None
 
             def _carries(live, ref, customer_ref):
                 detail = (live or {}).get("ItemBasedExpenseLineDetail") or {}
@@ -1154,6 +1180,10 @@ class CodingSuggestionService:
                     if any(str(local.qbo_id) not in live_by_id for local in locals_):
                         return {"status": "line_missing"}
                     return {"status": "line_not_recoded"}
+            if allow_legacy and not written_lines:
+                # U-743: no multi-line fallthrough under legacy. Also refuses a single-line legacy review_submit
+                # with no confirmed coding (nothing proves the line was ours), despite the status name.
+                return {"status": "legacy_multi_line"}
             if not written_lines:
                 # review_submit with no confirmed scc, or a MULTI-line review_submit none of whose lines
                 # carries the confirmed coding: multi-line mode. The per-line coding lives only in the local lines. RESIDUAL: after a
@@ -1186,6 +1216,10 @@ class CodingSuggestionService:
             if not written_lines:
                 return {"status": "line_not_recoded"}
 
+            qbo_line_ids = [line["qbo_line_id"] for line in written_lines]
+            if allow_legacy and not apply:
+                # U-743 item 4: a legacy dry run runs every check and persists nothing.
+                return {"status": "dry_run", "qbo_line_ids": qbo_line_ids, "written_sync_token": live_sync_token}
             record_json = json.dumps(written_lines)
             adopted = self.repo.adopt_written_record(
                 public_id, live_sync_token, record_json, item.confirmation_seq
@@ -1196,7 +1230,8 @@ class CodingSuggestionService:
             logger.warning(
                 "coding_suggestion.adopt_written_record public_id=%s lines=%s", public_id, len(written_lines)
             )
-            return {"status": "adopted", "lines": len(written_lines), "written_sync_token": live_sync_token}
+            return {"status": "adopted", "lines": len(written_lines), "written_sync_token": live_sync_token,
+                    "qbo_line_ids": qbo_line_ids}
 
     def mark_error(
         self,

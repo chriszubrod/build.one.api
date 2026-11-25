@@ -975,9 +975,49 @@ async def redrive_error_repoint_router(
     raise HTTPException(status_code=409, detail=result.get("status", "refused"))
 
 
+@router.post("/expenses/{public_id}/redrive-completion-repoint")
+async def redrive_completion_repoint_router(
+    public_id: str,
+    apply: bool = False,
+    current_user: dict = Depends(require_system_admin()),
+):
+    """U-743: system-admin re-run of completion's repoint for ONE completed expense. Dry-run by default: returns
+    each candidate's diverged targets with the staged BillableStatus and what the drain would derive, and confirms
+    nothing. `apply=true` delegates to the same `_repoint_on_complete` completion uses. Refusals: 404 `not_found`,
+    else 409 with `detail` = the refusal status (not_completed, not_qbo_linked, writes_disabled, ...)."""
+    try:
+        canonical = str(uuid.UUID(public_id))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=422, detail="public_id must be a UUID")
+
+    def _run() -> dict[str, Any]:
+        from entities.expense.business.service import ExpenseService
+
+        return ExpenseService().redrive_completion_repoint(canonical, apply=apply)
+
+    result = await asyncio.to_thread(_run)
+    logger.warning(
+        "admin.expense.redrive_completion_repoint public_id=%s apply=%s status=%s user_id=%s",
+        canonical, apply, result.get("status"), current_user.get("user_id"),
+    )
+    if result.get("status") == "skipped":
+        raise HTTPException(status_code=409, detail={
+            "status": "skipped",
+            "skip_reason": result.get("skip_reason"),
+            "skipped_candidates": result.get("skipped_candidates", []),
+        })
+    if result.get("status") in ("dry_run", "enqueued"):
+        return {"data": result}
+    if result.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="not_found")
+    raise HTTPException(status_code=409, detail=result.get("status", "refused"))
+
+
 @router.post("/expense-coding/suggestions/{public_id}/adopt-written-record")
 async def adopt_written_record_router(
     public_id: str,
+    allow_legacy: bool = False,
+    apply: bool = False,
     current_user: dict = Depends(require_system_admin()),
 ):
     """System-admin ADOPT of the written record of a first write that crashed between the QBO POST and the
@@ -1004,16 +1044,18 @@ async def adopt_written_record_router(
     def _run() -> dict[str, Any]:
         from entities.coding_suggestion.business.service import CodingSuggestionService
 
+        # U-743: the default call shape is unchanged; allow_legacy is passed only when the operator set it.
+        legacy_kwargs = {"allow_legacy": True, "apply": apply} if allow_legacy else {}
         return CodingSuggestionService().adopt_written_record(
-            canonical, record_required_since=RECORD_REQUIRED_SINCE_UTC
+            canonical, record_required_since=RECORD_REQUIRED_SINCE_UTC, **legacy_kwargs
         )
 
     result = await asyncio.to_thread(_run)
     logger.warning(
-        "admin.expense_coding.adopt_written_record public_id=%s status=%s user_id=%s",
-        canonical, result.get("status"), current_user.get("user_id"),
+        "admin.expense_coding.adopt_written_record public_id=%s status=%s allow_legacy=%s apply=%s user_id=%s",
+        canonical, result.get("status"), allow_legacy, apply, current_user.get("user_id"),
     )
-    if result.get("status") == "adopted":
+    if result.get("status") in ("adopted", "dry_run"):
         return {"data": result}
     if result.get("status") == "not_found":
         raise HTTPException(status_code=404, detail="not_found")

@@ -1081,6 +1081,148 @@ class ExpenseService:
             out["skipped_candidates"] = []  # r3: the same shape as every other envelope
             return out
 
+    def _read_staged_purchase_lines(self, qbo_id, realm_id) -> Optional[list]:
+        """U-743: the staged qbo.PurchaseLine rows of one Purchase, or None when nothing is staged for it."""
+        from integrations.intuit.qbo.purchase.persistence.repo import (
+            QboPurchaseLineRepository,
+            QboPurchaseRepository,
+        )
+
+        if not qbo_id or not realm_id:
+            return None
+        header = QboPurchaseRepository().read_by_qbo_id_and_realm_id(qbo_id, realm_id)
+        if header is None:
+            return None
+        return QboPurchaseLineRepository().read_by_qbo_purchase_id(header.id)
+
+    def _record_qbo_coding_drift(self, *, expense, line_items=None) -> None:
+        """U-743: record-only coding drift for a completed QBO-linked expense that has NO CodingSuggestion (a
+        suggestion's own completion path repoints instead). Never writes to QBO, never changes local coding, and
+        never raises: a failure here must not block completion."""
+        try:
+            if not (getattr(expense, "qbo_id", None) and getattr(expense, "realm_id", None)):
+                return
+            from entities.coding_suggestion.persistence.repo import CodingSuggestionRepository
+            from shared.completion.qbo_coding_drift import record_coding_drift_for
+
+            states = CodingSuggestionRepository().read_state_by_expense_ids([expense.id]).get(expense.id) or []
+            if states:
+                return
+            if line_items is None:
+                line_items = self.expense_line_item_service.read_by_expense_id(expense_id=expense.id)
+            record_coding_drift_for(
+                entity_type="expense",
+                doc=expense,
+                local_lines=line_items or [],
+                read_staged_lines=lambda: self._read_staged_purchase_lines(expense.qbo_id, expense.realm_id),
+                logger=logger,
+            )
+        except Exception:
+            logger.exception("expense.complete.coding_drift_failed expense_id=%s", getattr(expense, "id", None))
+
+    def redrive_completion_repoint(self, expense_public_id: str, *, apply: bool = False) -> dict:
+        """U-743: admin re-run of completion's repoint for ONE completed, QBO-linked expense.
+
+        Refusals: ``not_found``, ``not_completed``, ``not_qbo_linked``, ``writes_disabled``. ``apply=False`` (the
+        default) is a dry run: it confirms nothing and reports each candidate's targets with the staged
+        BillableStatus, what the drain would derive (``drain_is_billable``) and ``has_been_billed``. ``apply=True``
+        delegates to ``_repoint_on_complete`` - the same code completion runs."""
+        from integrations.intuit.qbo.base.client import recode_write_gate_reason
+
+        expense = self.read_by_public_id(expense_public_id)
+        if expense is None:
+            return {"status": "not_found"}
+        if expense.status != "completed":
+            return {"status": "not_completed"}
+        if not (expense.qbo_id and expense.realm_id):
+            return {"status": "not_qbo_linked"}
+        gate = recode_write_gate_reason()
+        if gate is not None:
+            return {"status": "writes_disabled", "reason": gate}
+        if not apply:
+            return self._repoint_dry_run(expense)
+        envelope = self._repoint_on_complete(expense_id=expense.id, expense=expense)
+        if envelope is None:
+            return {"status": "skipped", "skip_reason": "nothing_to_repoint"}
+        # U-743 fix 1: _recode_skipped_result is success=True with enqueued=0; only enqueued>0 is an enqueue.
+        enqueued = int(envelope.get("enqueued") or 0)
+        return dict(envelope, status="enqueued" if enqueued > 0 else "skipped")
+
+    def _repoint_dry_run(self, expense) -> dict:
+        """U-743: the repoint revision each candidate WOULD get, under the suggestion lock, confirming nothing."""
+        from entities.coding_suggestion.business.service import (
+            CONFIRM_SUGGESTION_LOCK_TIMEOUT_MS,
+            coding_suggestion_lock,
+        )
+        from entities.coding_suggestion.persistence.repo import CodingSuggestionRepository
+        from integrations.intuit.qbo.outbox.business.worker import QboOutboxWorker
+
+        repo = CodingSuggestionRepository()
+        states = repo.read_state_by_expense_ids([expense.id]).get(expense.id) or []
+        candidates = [
+            st for st in states if st.get("public_id") and st.get("status") in REPOINT_CANDIDATE_STATUSES
+        ]
+        staged = {
+            str(line.qbo_line_id): line
+            for line in (self._read_staged_purchase_lines(expense.qbo_id, expense.realm_id) or [])
+        }
+        local_by_qbo_id = {
+            str(li.qbo_id): li
+            for li in self.expense_line_item_service.read_by_expense_id(expense_id=expense.id)
+            if getattr(li, "qbo_id", None)
+        }
+        out: list[dict] = []
+        for st in candidates:
+            public_id = st["public_id"]
+            with coding_suggestion_lock(public_id, timeout_ms=CONFIRM_SUGGESTION_LOCK_TIMEOUT_MS) as acquired:
+                if not acquired:
+                    out.append({"public_id": public_id, "skip_reason": "busy"})
+                    continue
+                revision = self._repoint_revision_for_candidate(
+                    expense_id=expense.id, public_id=public_id, expense=expense, repo=repo
+                )
+                if revision is None:
+                    out.append({"public_id": public_id, "skip_reason": "nothing_to_repoint"})
+                    continue
+                if revision.get("skip_reason"):
+                    out.append({"public_id": public_id, "skip_reason": revision["skip_reason"]})
+                    continue
+                item = repo.read_by_public_id(public_id)
+                project_cache: dict = {}
+                targets: list[dict] = []
+                for target in revision.get("targets") or []:
+                    qbo_line_id = str(target["qbo_line_id"])
+                    staged_line = staged.get(qbo_line_id)
+                    local = local_by_qbo_id.get(qbo_line_id)
+                    staged_billable = getattr(staged_line, "billable_status", None)
+                    drain_billable = (
+                        QboOutboxWorker._recode_is_billable(
+                            item, local, project_id=target.get("project_id"), project_cache=project_cache
+                        )
+                        if local is not None
+                        else None
+                    )
+                    targets.append(
+                        dict(
+                            target,
+                            staged_billable_status=staged_billable,
+                            drain_is_billable=drain_billable,
+                            has_been_billed=staged_billable == "HasBeenBilled",
+                        )
+                    )
+                out.append(
+                    {
+                        "public_id": public_id,
+                        "pending": bool(revision.get("pending")),
+                        "lines": revision.get("lines") or [],
+                        "targets": targets,
+                        "dominant": revision.get("dominant"),
+                        "revision_seq": revision.get("revision_seq"),
+                        "confirmed_mixed_codes": bool(revision.get("confirmed_mixed_codes")),
+                    }
+                )
+        return {"status": "dry_run", "expense_public_id": expense.public_id, "candidates": out}
+
     @staticmethod
     def _written_record_is_malformed(full) -> bool:
         """True when ``WrittenLinesJson`` is present but unparseable, not a list, or a non-empty list the
@@ -1180,7 +1322,48 @@ class ExpenseService:
         (``repoint_line_missing_local``), a local line with no sub cost code (``repoint_line_uncoded``), or
         a sub cost code that resolves to no QBO item (``repoint_line_unmapped``): "cannot judge" is a
         skip, never an empty revision."""
-        diverged: list[tuple[str, Any, Any]] = []
+        from integrations.intuit.qbo.purchase.connector.expense.business.service import PurchaseExpenseConnector
+
+        # U-743: a failing staged read or customer lookup never fails the candidate; the customer judgement is
+        # skipped and the item judgement proceeds as on base. The staged read is lazy: only a line with a local
+        # project needs it, and it is read at most once per candidate.
+        def _customer_check_unavailable(exc):
+            logger.warning(
+                "expense.complete.repoint_customer_check_unavailable public_id=%s error=%s",
+                public_id, type(exc).__name__,
+            )
+
+        staged_by_line: Optional[dict] = None
+
+        def _staged_line(qbo_line_id):
+            nonlocal staged_by_line
+            if staged_by_line is None:
+                staged_by_line = {}
+                try:
+                    staged_by_line = {
+                        str(line.qbo_line_id): line
+                        for line in (
+                            self._read_staged_purchase_lines(getattr(full, "qbo_purchase_qbo_id", None), realm_id)
+                            or []
+                        )
+                    }
+                except Exception as exc:
+                    _customer_check_unavailable(exc)
+            return staged_by_line.get(qbo_line_id)
+
+        expense_id = getattr(full, "expense_id", None)
+        connector = None
+        customer_ref_memo: dict = {}
+
+        def _customer_ref_of(project_id):
+            nonlocal connector
+            if project_id not in customer_ref_memo:
+                if connector is None:
+                    connector = PurchaseExpenseConnector()
+                customer_ref_memo[project_id] = connector._get_qbo_customer_ref(project_id)
+            return customer_ref_memo[project_id]
+
+        diverged: list[tuple[str, Any, Any, bool]] = []
         codings: set[tuple] = set()
         scc_svc = SubCostCodeService()
         refs: dict[int, Any] = {}
@@ -1207,15 +1390,36 @@ class ExpenseService:
             if ref is None:
                 # I5: a written line whose local coding maps to no item cannot be judged "unchanged".
                 raise RepointUnresolvable("repoint_line_unmapped")
-            if ref.value != entry.get("item_ref_value"):
-                diverged.append((qbo_line_id, local, entry.get("item_ref_value")))
+            item_changed = ref.value != entry.get("item_ref_value")
+            # U-743: a local project whose QBO customer differs from the STAGED line's CustomerRef diverges too.
+            # A local project with no QBO customer (None) is not a customer divergence.
+            customer_changed = False
+            local_project_id = getattr(local, "project_id", None)
+            staged_line = _staged_line(qbo_line_id) if local_project_id else None
+            if staged_line is not None:
+                try:
+                    customer_ref = _customer_ref_of(local_project_id)
+                except Exception as exc:
+                    _customer_check_unavailable(exc)
+                    customer_ref = None
+                if customer_ref is not None and staged_line.customer_ref_value != customer_ref.value:
+                    if getattr(staged_line, "billable_status", None) == "HasBeenBilled":
+                        # U-743 item 2a: a billed line's customer is not repointed; the item change still emits.
+                        logger.warning(
+                            "expense.complete.repoint_customer_on_billed_line expense_id=%s qbo_line_id=%s",
+                            expense_id, qbo_line_id,
+                        )
+                    else:
+                        customer_changed = True
+            if item_changed or customer_changed:
+                diverged.append((qbo_line_id, local, entry.get("item_ref_value"), customer_changed))
         if not diverged:
             return None
         diverged.sort(key=lambda pair: self._repoint_line_sort_key(*pair))
         lead = diverged[0][1]
         return {
             "public_id": public_id,
-            "lines": [qbo_line_id for qbo_line_id, _, _ in diverged],
+            "lines": [qbo_line_id for qbo_line_id, *_ in diverged],
             "targets_token": full.written_sync_token,
             "targets": [
                 {
@@ -1224,8 +1428,10 @@ class ExpenseService:
                     "project_id": getattr(local, "project_id", None),
                     "description": getattr(local, "description", None),
                     "repoint_from_item_ref_value": written_item,
+                    # U-743: optional key, present only for a customer change (item-only targets keep their shape).
+                    **({"customer_changed": True} if customer_changed else {}),
                 }
-                for qbo_line_id, local, written_item in diverged
+                for qbo_line_id, local, written_item, customer_changed in diverged
             ],
             "dominant": {
                 "project_id": getattr(lead, "project_id", None),
@@ -1690,6 +1896,12 @@ class ExpenseService:
                     "errors": [{"step": "finalize_expense", "error": "Expense deleted during finalization"}],
                 }
             logger.info(f"Expense {public_id} finalized (Status=completed)")
+            # U-743: record-only drift for a QBO-linked expense with no suggestion. Isolated here (not left to
+            # the finalize except, which would report a 500) so a drift failure can never fail completion.
+            try:
+                self._record_qbo_coding_drift(expense=expense)
+            except Exception:
+                logger.exception("expense.complete.coding_drift_failed expense_id=%s", expense.id)
         except HoldingCodeRefused:
             raise
         except Exception as e:

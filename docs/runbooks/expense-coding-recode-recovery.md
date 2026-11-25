@@ -184,6 +184,37 @@ WHERE PublicId = '<uuid>' AND Status = 'written'
 Repeat the GET first to be sure the token has not moved. A wrong record makes the next repoint
 write or fence against the wrong lines.
 
+## 6b. Legacy written rows and the completion re-drive (U-743)
+
+**Symptom.** A completed expense whose local coding (reviewed) differs from its QBO Purchase line, with a
+`written` CodingSuggestion that has NO written record (`WrittenSyncToken` and `WrittenLinesJson` NULL). These are
+first writes from before written records existed (pre 2026-11-07), so the completion repoint skips them.
+Severity: P2 (QBO cost coding wrong; no money moved).
+
+**Diagnosis.** Section 8's read-only SQL: suggestion status `written`, record NULL, `WrittenAt` before
+`RECORD_REQUIRED_SINCE_UTC`. Compare the staged `qbo.PurchaseLine.ItemRefValue` with the local line's sub cost code `QboId`.
+
+**Recovery (one expense at a time, operator approves each step):**
+1. Adopt, dry run: `POST /api/v1/admin/expense-coding/suggestions/{public_id}/adopt-written-record?allow_legacy=true`.
+   Returns `dry_run` + `qbo_line_ids`. It claims ONLY the single line carrying the suggestion's CONFIRMED coding (a
+   confirmed holding code such as 00.02 Suspense matches by its own QboId, same realm only). Anything that would need
+   multi-line mode is refused `legacy_multi_line` (also a single-line row with no confirmed coding). Verify in QBO
+   that each listed line carries what our drain wrote, then repeat with `&apply=true`.
+2. Re-drive, dry run: `POST /api/v1/admin/expenses/{expense_public_id}/redrive-completion-repoint`. Review each
+   target: the item, `staged_billable_status` vs `drain_is_billable` (billable is NOT fixed by U-743, see U-743b;
+   a differing value would be written), and `has_been_billed`.
+3. Apply: same route with `?apply=true`. `enqueued` -> drain within a minute; a skip is a 409 whose detail names
+   `skip_reason` / `skipped_candidates`.
+
+**Verification.** After the drain, the suggestion is `written` with a new `WrittenSyncToken`; the next purchase pull
+shows the staged item equal to the local code; amount and sibling lines unchanged.
+
+**Billed lines.** A repoint never changes CustomerRef or BillableStatus on a line QBO shows `HasBeenBilled` (an item
+change still goes through, with the old customer kept). A repoint that was approved to MOVE the customer of a billed
+line is refused before any write and the row is marked `error` with `write_error = repoint_line_billed`;
+`redrive-repoint` refuses it (`billed_needs_decision`). Recovery is manual: decide in QBO (credit/re-invoice), then
+clear the row by hand. Prevention: completion does not propose a customer-only change on a staged billed line.
+
 ## 7. Gates
 
 `recode_write_gate_reason()` (`integrations/intuit/qbo/base/client.py`): `ALLOW_QBO_WRITES`

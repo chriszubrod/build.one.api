@@ -129,6 +129,10 @@ class CodingSuggestion:
                 desc = entry.get("description")
                 if desc is not None and not isinstance(desc, str):
                     return None
+                # U-743: optional; present means a real bool (a customer change on an item-equal line).
+                cust_changed = entry.get("customer_changed")
+                if cust_changed is not None and not isinstance(cust_changed, bool):
+                    return None
             return parsed
         except Exception:  # incl. RecursionError on hostile depth
             return None

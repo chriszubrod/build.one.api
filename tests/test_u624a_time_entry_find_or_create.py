@@ -85,23 +85,14 @@ def test_create_legacy_sproc_status_user_falls_back_to_worker():
     status_repo_cls.return_value.create.assert_called_once_with(time_entry_id=7, status="draft", user_id=42)
 
 
-def test_create_found_header_hidden_from_view_team_actor_raises_not_accessible():
+@pytest.mark.parametrize("created", [True, False])
+def test_create_or_find_teammates_day_with_view_team_refused(created):
+    # U-766: can_view_team is read + approve/reject only, never standing to create or find
+    # another worker's day (U-624a had allowed it; it was dormant until U-766).
     repo = MagicMock()
-    repo.read_by_public_id.return_value = None
     with pytest.raises(EntityNotAccessibleError):
-        _create(_entry(user_id=40, created=False), scope=(41, False, True), target_user_id=40, repo=repo)
-    repo.read_by_public_id.assert_called_once_with(
-        public_id=PUBLIC_ID, actor_user_id=41, actor_is_system_admin=False, actor_can_view_team=True
-    )
-
-
-def test_create_found_header_visible_to_view_team_actor_is_returned():
-    found = _entry(user_id=40, created=False)
-    repo = MagicMock()
-    repo.read_by_public_id.return_value = found
-    result, _repo, _ = _create(found, scope=(41, False, True), target_user_id=40, repo=repo)
-    assert result is found
-    repo.read_by_public_id.assert_called_once()
+        _create(_entry(user_id=40, created=created), scope=(41, False, True), target_user_id=40, repo=repo)
+    repo.create.assert_not_called()
 
 
 def test_create_found_header_own_day_skips_scoped_reread():
@@ -158,12 +149,6 @@ def test_create_for_another_worker_without_standing_never_reaches_repo():
         with pytest.raises(EntityNotAccessibleError):
             TimeEntryService(repo=repo).create(user_public_id="u", work_date="2026-11-05")
     repo.create.assert_not_called()
-
-
-def test_create_for_another_worker_with_view_team_allowed():
-    result, repo, _ = _create(_entry(user_id=40), scope=(41, False, True), target_user_id=40)
-    assert result.user_id == 40
-    repo.create.assert_called_once()
 
 
 def test_create_for_another_worker_as_system_admin_allowed():

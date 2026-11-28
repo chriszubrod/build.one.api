@@ -11,7 +11,7 @@ from entities.time_entry.business.model import TimeLog
 from entities.time_entry.persistence.repo import TimeEntryRepository
 from entities.time_entry.persistence.time_log_repo import TimeLogRepository
 from entities.time_entry.persistence.time_entry_status_repo import TimeEntryStatusRepository
-from entities.time_entry.business.actor_scope import actor_scope as _actor_scope
+from entities.time_entry.business.actor_scope import actor_scope as _actor_scope, assert_actor_owns_entry
 from shared.api.responses import entry_lock_prefix
 from shared.database import RecordNotFoundError
 
@@ -60,6 +60,11 @@ class TimeLogService:
         )
         if not time_entry:
             raise ValueError(f"TimeEntry with public_id '{time_entry_public_id}' not found.")
+        assert_actor_owns_entry(  # U-766
+            time_entry.user_id,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
 
         self._validate_parent_is_draft(time_entry.id)
 
@@ -140,6 +145,11 @@ class TimeLogService:
         )
         if not existing:
             raise RecordNotFoundError(f"TimeLog with public_id '{public_id}' not found.")
+        self._assert_parent_owned_by_actor(  # U-766
+            existing.time_entry_id,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
 
         self._validate_parent_is_draft(existing.time_entry_id)
 
@@ -186,6 +196,11 @@ class TimeLogService:
         )
         if not existing:
             raise ValueError(f"TimeLog with public_id '{public_id}' not found.")
+        self._assert_parent_owned_by_actor(  # U-766
+            existing.time_entry_id,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
 
         self._validate_parent_is_draft(existing.time_entry_id)
 
@@ -194,6 +209,27 @@ class TimeLogService:
             actor_user_id=actor_user_id,
             actor_is_system_admin=actor_is_system_admin,
             actor_can_view_team=actor_can_view_team,
+        )
+
+    @staticmethod
+    def _assert_parent_owned_by_actor(
+        time_entry_id: int,
+        *,
+        actor_user_id: Optional[int],
+        actor_is_system_admin: Optional[bool],
+    ) -> None:
+        """
+        U-766. Resolve the parent day's CURRENT owner with an admin-bypass read
+        (the scoped log read already proved access) and require the actor to be
+        that worker. Teammates with CanViewTeam may read logs but not write them.
+        """
+        parent = TimeEntryRepository().read_by_id(id=time_entry_id, actor_is_system_admin=True)
+        if parent is None:
+            raise ValueError(f"TimeEntry with id '{time_entry_id}' not found.")
+        assert_actor_owns_entry(
+            parent.user_id,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
         )
 
     def _validate_parent_is_draft(self, time_entry_id: int) -> None:

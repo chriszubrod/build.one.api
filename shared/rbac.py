@@ -41,6 +41,7 @@ import time
 from typing import Optional
 
 from fastapi import Depends, HTTPException
+from starlette.concurrency import run_in_threadpool
 
 from types import SimpleNamespace
 
@@ -384,6 +385,19 @@ def _enforce_module_permission(
 # Public dependency factories
 # ---------------------------------------------------------------------------
 
+def _enforce_and_read_can_view_team(current_user: dict, module_name: str, permission: str) -> frozenset:
+    """Sync worker for `require_module_api`: run the check, then read the
+    `can_view_team` set it just published, in the same (worker) context."""
+    from shared.authz import current_can_view_team_modules  # local import — avoid cycle at module load
+
+    _enforce_module_permission(
+        current_user=current_user,
+        module_name=module_name,
+        permission=permission,
+    )
+    return current_can_view_team_modules.get()
+
+
 def require_module_api(module_name: str, permission: str = "can_read"):
     """
     FastAPI dependency for API routes.
@@ -392,12 +406,19 @@ def require_module_api(module_name: str, permission: str = "can_read"):
     Usage:
         current_user=Depends(require_module_api(Modules.BILLS, "can_create"))
     """
-    def _dependency(current_user=Depends(get_current_user_api)):
-        _enforce_module_permission(
-            current_user=current_user,
-            module_name=module_name,
-            permission=permission,
+    # U-766: this must be `async def`. A sync dependency runs in a threadpool
+    # with a COPIED context, so the `current_can_view_team_modules` ContextVar
+    # the permission check publishes was discarded before the route handler
+    # read it, and every handler saw can_view_team as False. The check still
+    # runs off the event loop (run_in_threadpool) because it does DB/cache work;
+    # the publish is carried back and re-set in this request's own context.
+    async def _dependency(current_user=Depends(get_current_user_api)):
+        from shared.authz import current_can_view_team_modules  # local import — avoid cycle at module load
+
+        view_team = await run_in_threadpool(
+            _enforce_and_read_can_view_team, current_user, module_name, permission
         )
+        current_can_view_team_modules.set(view_team)
         return current_user
     return _dependency
 

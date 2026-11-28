@@ -78,6 +78,8 @@ STATUS_LOCKED_PREFIX = "This document is completed and can no longer be edited: 
 # U-663 — time-tracking edit locks (iOS classifies 422 + these codes; not 409).
 ENTRY_APPROVED_PREFIX = "This day's entry has been approved: "
 ENTRY_LOCKED_PREFIX = "This day's entry is no longer a draft: "
+# U-766: CanViewTeam lets a PM read and approve a teammate's day, not edit it. 403.
+ENTRY_NOT_OWNER_PREFIX = "Only this day's worker can change this entry: "
 
 CONCURRENCY_CONFLICT_MESSAGE = (
     "The record was modified by someone else; reload and retry."
@@ -100,6 +102,7 @@ ATTACHMENT_LINK_CONFLICT_PREFIX = "This line already has a different attachment 
 _WORKFLOW_STATUS_BY_PREFIX: tuple[tuple[str, int, str | None], ...] = (
     (ENTRY_APPROVED_PREFIX, status.HTTP_422_UNPROCESSABLE_CONTENT, ErrorCode.ENTRY_APPROVED),
     (ENTRY_LOCKED_PREFIX, status.HTTP_422_UNPROCESSABLE_CONTENT, ErrorCode.ENTRY_LOCKED),
+    (ENTRY_NOT_OWNER_PREFIX, status.HTTP_403_FORBIDDEN, ErrorCode.ENTRY_NOT_OWNER),
     (REVIEW_STATUS_SHAPE_PREFIX, status.HTTP_422_UNPROCESSABLE_CONTENT, ErrorCode.REVIEW_STATUS_SHAPE),
     (STATUS_LOCKED_PREFIX, status.HTTP_422_UNPROCESSABLE_CONTENT, ErrorCode.STATUS_LOCKED),
     (ATTACHMENT_LINK_CONFLICT_PREFIX, status.HTTP_409_CONFLICT, None),

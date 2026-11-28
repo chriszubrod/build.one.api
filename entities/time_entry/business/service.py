@@ -7,6 +7,7 @@ Invariants
   Money: AggregateTimeEntryOnSubmit applies two-shot labor rounding in SQL.
   One header per (UserId, WorkDate) — CreateTimeEntry is find-or-create under an applock; filtered unique index UX_TimeEntry_UserId_WorkDate (WorkDate ≥ 2026-07-01) is the backstop.
   Concurrency: UpdateTimeEntryById and UpdateTimeLogById take @RowVersion.
+  U-766 — CanViewTeam opens teammates' entries for read + approve/reject only; update/delete/submit and time-log writes require the entry's own worker (system admin / system context exempt).
 External writes
   review_submitted_time_entry via intelligence outbox on submit (best-effort).
 Sprocs
@@ -45,13 +46,14 @@ from typing import Optional, Tuple
 # Third-party Imports
 
 # Local Imports
+from entities.time_entry.business.actor_scope import assert_actor_owns_entry
 from entities.time_entry.business.model import TimeEntry
 from entities.time_entry.persistence.repo import TimeEntryRepository
 from entities.time_entry.persistence.time_entry_status_repo import TimeEntryStatusRepository
 from entities.time_entry.persistence.time_log_repo import TimeLogRepository
 from entities.user.business.service import UserService
 from shared.access import EntityNotAccessibleError
-from shared.api.responses import entry_lock_prefix
+from shared.api.responses import ENTRY_NOT_OWNER_PREFIX, entry_lock_prefix
 from shared.authz import current_user_id, current_is_system_admin, current_is_system_context, current_can_view_team
 
 logger = logging.getLogger(__name__)
@@ -122,12 +124,12 @@ class TimeEntryService:
         U-624a (no [Created] column -> `created is None`).
 
         A caller creating (or finding) another worker's day needs standing: system admin or
-        can_view_team. No standing -> EntityNotAccessibleError (404 by house rule), and an
-        unknown worker is the same 404 for a non-admin (no user-existence oracle). A found
-        header is returned only if the actor can read it through the scoped read path.
+        system context. can_view_team is NOT standing (U-766: a teammate's day is read +
+        approve/reject only). No standing -> EntityNotAccessibleError (404 by house rule), and
+        an unknown worker is the same 404 for a non-admin (no user-existence oracle).
         System/CLI context is identified by the positive `current_is_system_context` marker.
         """
-        scope_user_id, scope_is_system_admin, scope_can_view_team = _actor_scope()
+        scope_user_id, scope_is_system_admin, _ = _actor_scope()
         is_system_context = current_is_system_context.get()
 
         # Validate and resolve user
@@ -143,7 +145,6 @@ class TimeEntryService:
             scope_user_id == user_id
             or scope_is_system_admin
             or is_system_context
-            or scope_can_view_team
         ):
             raise EntityNotAccessibleError("TimeEntry", 0)
 
@@ -173,17 +174,6 @@ class TimeEntryService:
                 "time_entry.create.found_existing",
                 extra={"user_id": user_id, "work_date": work_date, "id": time_entry.id},
             )
-            # A can_view_team actor with no shared project must not receive the worker's
-            # PublicId/RowVersion/Note: re-read through the scoped path.
-            if scope_user_id != user_id and not scope_is_system_admin and not is_system_context:
-                visible = self.repo.read_by_public_id(
-                    public_id=time_entry.public_id,
-                    actor_user_id=scope_user_id,
-                    actor_is_system_admin=scope_is_system_admin,
-                    actor_can_view_team=scope_can_view_team,
-                )
-                if not visible:
-                    raise EntityNotAccessibleError("TimeEntry", 0)
         return time_entry
 
     def read_all(self) -> list[TimeEntry]:
@@ -310,6 +300,12 @@ class TimeEntryService:
         )
         if not existing:
             raise ValueError(f"TimeEntry with public_id '{public_id}' not found.")
+        # U-766: edits are the entry's own worker only (checked before any reassignment).
+        assert_actor_owns_entry(  # U-766
+            existing.user_id,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
 
         # Status read uses admin bypass — scope is already enforced via
         # the read above. We just need the status itself.
@@ -336,6 +332,14 @@ class TimeEntryService:
 
         if user_public_id is not None:
             user = UserService().read_by_public_id(public_id=user_public_id)
+            # U-766: only a system admin / system context may move a day to another worker.
+            # Anyone else may only re-send their own id; an unknown and a different user
+            # get the same refusal, so this is no user-existence oracle.
+            exempt = actor_is_system_admin or current_is_system_context.get()
+            if not exempt and (not user or user.id != actor_user_id):
+                raise ValueError(
+                    ENTRY_NOT_OWNER_PREFIX + "only an administrator can move a day to another worker."
+                )
             if not user:
                 raise ValueError(f"User with public_id '{user_public_id}' not found.")
             existing.user_id = user.id
@@ -374,6 +378,11 @@ class TimeEntryService:
         )
         if not existing:
             raise ValueError(f"TimeEntry with public_id '{public_id}' not found.")
+        assert_actor_owns_entry(  # U-766
+            existing.user_id,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
 
         current_status = TimeEntryStatusRepository().read_current(
             time_entry_id=existing.id,
@@ -407,6 +416,11 @@ class TimeEntryService:
         )
         if not existing:
             raise ValueError(f"TimeEntry with public_id '{public_id}' not found.")
+        assert_actor_owns_entry(  # U-766
+            existing.user_id,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+        )
 
         self._validate_transition(existing.id, "submitted")
 

@@ -172,7 +172,7 @@ def _time_entry_service_with_status(entry_status):
     from entities.time_entry.business.service import TimeEntryService
 
     service = TimeEntryService(repo=MagicMock())
-    service.repo.read_by_public_id.return_value = SimpleNamespace(id=7)
+    service.repo.read_by_public_id.return_value = SimpleNamespace(id=7, user_id=17)
     status_patch = patch("entities.time_entry.business.service.TimeEntryStatusRepository")
     scope_patch = patch(
         "entities.time_entry.business.service._actor_scope", return_value=(17, False, True)

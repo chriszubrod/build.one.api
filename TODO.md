@@ -28,16 +28,36 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 > worktrees after this was flagged; `6c5084b4` is now a dangling commit on no ref, so nothing can build `:latest`
 > from it. The ACR tag `6c5084b4` is deliberately KEPT — it is the rollback image for this deploy.
 >
-> ⚠️ **The same hazard survives on TEN other hotfix refs**, every one off-trunk and every one pointing at a commit
-> that was once `:latest`: `hotfix/u-669a` (`ce15c756`), `hotfix/u-743` (`d6ab7796`), `hotfix/u-747` (`36302ec2`),
-> `hotfix/u-797b` (`bbe913fb`) locally, plus `origin/hotfix/{u-669a,u-690,u-797b,u-797c4,u-797c5a,u-797c5b}`.
-> A `:latest` build from any of them silently reverts everything newer. **All ten are content-merged and safe to
-> delete** — verified, with one trap worth recording: `git cherry origin/master <branch>` flags `6220a7d5` as `+`
-> ("not upstream") on seven of them, which is a **patch-id artifact**, not lost work. Its rebased twin `de40e612` is
-> on master, same unit, identical file set, byte-identical content. ⛔ Do not read `git cherry`'s `+` as unique work
-> after a rebase, and do not read "N files differ from master" as unique work either — that counts master's NEWER
-> commits missing from the stale branch, which is the opposite. Deleting them is unasked cleanup, so it is left for
-> Chris's go.
+> ✅ **All ten sibling hotfix refs DELETED 2026-11-28 on Chris's go.** Every one was off-trunk and pointed at a
+> commit that had been `:latest` at some point, so each was a silent-revert risk for anything newer.
+>
+> **Recovery shas — this is the only way back for the six remote refs.** Restore with
+> `git push origin <sha>:refs/heads/<name>` (local objects also survive in reflog until gc):
+>
+> | ref (deleted) | tip |
+> |---|---|
+> | `hotfix/u-669a` (local + remote) | `ce15c756` |
+> | `hotfix/u-743` (local) | `d6ab7796` |
+> | `hotfix/u-747` (local) | `36302ec2` |
+> | `hotfix/u-797b` (local + remote) | `bbe913fb` |
+> | `origin/hotfix/u-690` | `24da7b4d` |
+> | `origin/hotfix/u-797c4` | `4229a4f2` |
+> | `origin/hotfix/u-797c5a` | `6220a7d5` |
+> | `origin/hotfix/u-797c5b` | `9329fba8` |
+>
+> Proof taken before deleting: each ref checked individually with `git cherry origin/master <ref>`; the ONLY
+> patch-id-unique commit across all ten was `6220a7d5` (U-797c5a), whose rebased twin `de40e612` is on master —
+> same unit, identical 20-file set, byte-identical content over those paths. Every other commit was patch-id
+> identical to an upstream one. No ref was checked out in a worktree.
+>
+> ⛔ **Two measures that lie about staleness, both of which nearly produced the wrong call.** (1) `git cherry`'s `+`
+> is patch-id equality, so a rebase that shifts context lines defeats it — it is for FINDING candidate twins, never
+> the verdict. (2) "N files differ from master" counts master's NEWER commits missing from the stale branch, not
+> unique work on it (`hotfix/u-669a` read as "1053 files differ"). What settles it: diff the branch tip against its
+> upstream twin over ONLY the paths the branch commit touched. ⛔ And a third, from this same cleanup: the Bash tool
+> runs **zsh**, which does not word-split an unquoted `$REFS` — a `for b in $REFS` guard ran once on the whole
+> string and printed "all clear" having checked nothing. Use a real array and assert the checked count.
+>
 >
 >
 > Evidence chain. **No behavioural sentinel exists for this delta** — U-801 and U-799 are both internal and U-743b was

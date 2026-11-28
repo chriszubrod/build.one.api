@@ -11,6 +11,35 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 
 ### 🚪 U-801 SHIPPED `73d7f7b2` — Bill completion no longer acks an unlogged QBO write (atomic finalize + enqueue)
 
+> ⛔ **DEPLOY GATE (2026-11-28).** `73d7f7b2` is pushed and **NOT DEPLOYED**, and it cannot ship alone — it sits on
+> trunk above two units that are not deployable. U-801 is unblocked only when BOTH clear.
+>
+> 1. **U-799** (`459be983`, an *ancestor* of this unit, so no build from trunk can exclude it) — Chris's deploy hold
+>    of 2026-11-22, still open. Its stated condition is to confirm the Ramp-digest backlog stamping is wanted.
+>    Sized 2026-11-28 by read-only prod query: **46** outstanding digests
+>    (`DraftMessageId IS NOT NULL AND LastNotifiedAt IS NULL`), weeks 2026-10-06 … 2026-11-17, **all**
+>    `Outcome IS NULL` — 0 of 60 digests has ever been stamped, consistent with `_conversation_in_folder` having
+>    400'd since it was written. Stamping lands on the weekly tick `0 3 12 * * 2` (Tue 12:03 UTC), **not** at deploy
+>    time, so a deploy buys ~3 days. Nothing on that path puts mail on the wire by itself: at `draft` each message is
+>    an Outlook draft a human sends. (The live `RAMP_CHASER_MODE` value was NOT read — `az webapp config appsettings
+>    list` returns the Ramp secret and is correctly blocked; the above is from the code gate, not a live reading.)
+> 2. **U-743b** (`c3919d5e`) — pushed to trunk 2026-11-28 *while this deploy was in preflight*. Its BOARD row still
+>    reads "Building", its TODO checkbox is open, and its Gate-1 plan has a backfill gated on Chris's OK at each
+>    write (32450, 32406/77976). Another session's in-flight work, not ours to ship.
+>
+> **Chris's call 2026-11-28: hold the deploy.** Ship all three together once U-799 is released and U-743b is booked.
+> An off-trunk "U-801 only" build (revert both; the U-799 revert was tested and applies clean, touching only its own
+> files) was costed and declined — the live image is ALREADY off-trunk, and compounding that is what made this
+> preflight expensive.
+>
+> Preflight facts that DID clear — good until trunk or the live image moves again:
+> - Live `:latest` = `d6ab7796` (2026-11-25 13:13 UTC) and it is **off-trunk** (a pre-rebase unit-branch tip), so
+>   size any delta from `merge-base(live, master)`, never `live..master`. See
+>   umbrella memory `feedback_live_image_may_be_off_trunk`.
+> - **Zero `.sql` differences** between that image and trunk ⇒ no sproc-drift check and no code-ahead-of-SQL hazard.
+>   U-801, U-799 and U-743b each carry no SQL at all.
+> - `DOCKER_CUSTOM_IMAGE_NAME` → `buildone:latest` (NOT tag-pinned), so stop/start will pull.
+
 `BillRepository.finalize_by_id` committed the `completed` flip on its OWN connection; `_enqueue_qbo_sync` then ran
 four steps later on a FRESH one, and `enqueue_qbo_push` swallowed every exception. A failed enqueue therefore left a
 Bill durably `completed` with no outbox row — nothing to retry, nothing to dead-letter, and (unlike the

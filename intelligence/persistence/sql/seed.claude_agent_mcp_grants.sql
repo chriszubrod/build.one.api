@@ -24,6 +24,11 @@
 --                            which lets the agent SEE crew drafts via the
 --                            row-scoped list — are defined in
 --                            seed.time_tracking_agent.sql. Run that first.
+--                            U-802: review-flag now requires Time Tracking
+--                            can_approve (system admins bypass), not can_update.
+--                            The role's CanApprove is 0 in
+--                            seed.time_tracking_agent.sql, so this stack alone
+--                            does not grant review-flag.
 --                            This seed only STACKS the role onto claude_agent.
 --
 -- Additive grant (UserModule row, read-only by definition):

@@ -96,11 +96,11 @@ class TimeEntryService:
     to the repository. Sprocs filter to rows whose UserId matches
     (system admins bypass).
 
-    The submit/approve/reject transition methods bypass UserId scope
-    via `actor_is_system_admin=True`. The API surface gates these on
-    the Time Tracking module's can_submit / can_approve permissions
-    (RBAC), so the service can trust that the caller is authorized
-    to act on entries they don't own.
+    The submit transition bypasses UserId scope via
+    `actor_is_system_admin=True`. The API surface gates it on the Time
+    Tracking module's can_submit permission (RBAC). Approve, reject and
+    stamp_review read the entry scoped to the actor (U-802): reviewers
+    act only on entries in their scope.
     """
 
     def __init__(self, repo: Optional[TimeEntryRepository] = None):
@@ -483,18 +483,27 @@ class TimeEntryService:
 
         return existing
 
-    def approve(self, public_id: str, *, user_id: int, note: Optional[str] = None) -> TimeEntry:
-        """
-        Approve a submitted time entry. Transitions from 'submitted' to 'approved'.
-        The API surface gates this on Time Tracking can_approve — reviewers act
-        on entries they don't own, so this method bypasses UserId row-scope.
-        """
+    def _read_scoped_or_raise(self, public_id: str) -> TimeEntry:
+        """U-802. Read the entry through the actor's scope (own entries, plus teammates'
+        on shared projects via CanViewTeam; system admins bypass). A miss raises the
+        same not-found error as a missing entry, so scope is not an existence oracle."""
+        actor_user_id, actor_is_system_admin, actor_can_view_team = _actor_scope()
         existing = self.repo.read_by_public_id(
             public_id=public_id,
-            actor_is_system_admin=True,
+            actor_user_id=actor_user_id,
+            actor_is_system_admin=actor_is_system_admin,
+            actor_can_view_team=actor_can_view_team,
         )
         if not existing:
             raise ValueError(f"TimeEntry with public_id '{public_id}' not found.")
+        return existing
+
+    def approve(self, public_id: str, *, user_id: int, note: Optional[str] = None) -> TimeEntry:
+        """
+        Approve a submitted time entry. Transitions from 'submitted' to 'approved'.
+        Gated on Time Tracking can_approve; the read is actor-scoped (U-802).
+        """
+        existing = self._read_scoped_or_raise(public_id)
 
         self._validate_transition(existing.id, "approved")
 
@@ -510,15 +519,9 @@ class TimeEntryService:
     def reject(self, public_id: str, *, user_id: int, note: Optional[str] = None) -> TimeEntry:
         """
         Reject a submitted time entry. Transitions from 'submitted' back to 'draft'.
-        The API surface gates this on Time Tracking can_approve — reviewers act
-        on entries they don't own, so this method bypasses UserId row-scope.
+        Gated on Time Tracking can_approve; the read is actor-scoped (U-802).
         """
-        existing = self.repo.read_by_public_id(
-            public_id=public_id,
-            actor_is_system_admin=True,
-        )
-        if not existing:
-            raise ValueError(f"TimeEntry with public_id '{public_id}' not found.")
+        existing = self._read_scoped_or_raise(public_id)
 
         self._validate_transition(existing.id, "rejected")
 
@@ -600,6 +603,8 @@ class TimeEntryService:
 
         import json
         reasons_json = json.dumps(reasons)
+
+        self._read_scoped_or_raise(public_id)  # U-802: out-of-scope = not found, never stamped
 
         affected = self.repo.stamp_review(
             public_id=public_id,

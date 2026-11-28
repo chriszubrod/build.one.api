@@ -346,12 +346,17 @@ def read_time_entry(
 def flag_time_entry_for_human_review(
     public_id: str,
     body: TimeEntryReviewFlag,
-    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_update")),
+    current_user: dict = Depends(require_module_api(Modules.TIME_TRACKING, "can_approve")),
 ):
     """
     Stamp ReviewPriority + ReviewReasons on a TimeEntry. Used by the
     time_tracking_specialist agent to record its bucketing decision after
     running validate-completeness. Does NOT transition CurrentStatus.
+
+    Requires a reviewer (Time Tracking can_approve; system admins bypass).
+    Acts only on entries in the reviewer's scope: their own, plus teammates'
+    on shared projects via CanViewTeam. Out-of-scope entries return not-found
+    and are not stamped (U-802).
 
     Returns the stamped state for confirmation.
     """

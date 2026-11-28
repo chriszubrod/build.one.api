@@ -590,9 +590,9 @@ class TimeEntryRepository:
         observability metadata. Returns the affected row count (0 means
         no row matched the PublicId).
 
-        No actor scope: authorization is enforced at the endpoint layer
-        (Modules.TIME_TRACKING can_update). The agent runs with its own
-        JWT which carries that grant.
+        No actor scope here: TimeEntryService.stamp_review reads the entry through
+        the actor's scope first (U-802), and the endpoint requires Time Tracking
+        can_approve. Call it only through the service.
         """
         try:
             with get_connection() as conn:

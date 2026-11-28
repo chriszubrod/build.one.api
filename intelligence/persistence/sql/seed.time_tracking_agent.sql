@@ -8,7 +8,9 @@
 -- Grants:
 --   Time Tracking — Create + Read + Update + ViewTeam (no Delete/Submit/Approve/Complete).
 --                   `validate_time_entry_completeness` needs can_read;
---                   `flag_time_entry_for_human_review` needs can_update.
+--                   `flag_time_entry_for_human_review` needs can_approve since U-802
+--                   (2026-11-28), which this role does not grant: a non-admin agent
+--                   user can no longer stamp flags (system admins bypass).
 --                   CanCreate=1 is a forward-compat hedge — v1 doesn't use it,
 --                   but matches the bill_agent shape so v2 doesn't need a
 --                   migration if the agent ever needs to create a TimeEntry.

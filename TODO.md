@@ -316,9 +316,14 @@ purchase 76918, charge 77463 un-invoiced 2026-10-30). Its deferred items:
   while QBO says `Billable`, no `InvoiceLineItem` uses them, all set billed in one batch on 2026-08-14 (looks deliberate).
   U-778b does not touch them (staged `Billable`, not a reverse candidate).
 
-## U-799 follow-ups - MS Graph mail client query shapes (booked 2026-11-22, shipped 459be983, NOT deployed)
+## U-799 follow-ups - MS Graph mail client query shapes (booked 2026-11-22, shipped 459be983, DEPLOYED 2026-11-28 in 889c036e)
 
-- [ ] ⚠️ **DEPLOY HELD by Chris 2026-11-22 — do not deploy U-799 until he releases it.** **DEPLOY DECISION (Chris):** the Ramp chaser digest's conversation lookup (`_conversation_in_folder`) had 400'd on every call since it was written (non-date `$filter` + default `$orderby`), so every vanished digest stayed "inconclusive". After deploy it works: the first run will stamp the backlog of outstanding digests `sent` (Sent Items hit) or `discarded_unsent` (a still-DRAFT Deleted Items hit). Confirm that backlog stamping is wanted before deploying.
+- [x] ✅ **HOLD RELEASED by Chris 2026-11-28; deployed same day in `889c036e`.** (Was: DEPLOY HELD 2026-11-22.)
+      Backlog sized before release: **46** outstanding digests, weeks 2026-10-06 … 2026-11-17, **all**
+      `Outcome IS NULL` (0 of 60 ever stamped). First stamping run is the weekly tick **Tue 2026-12-01
+      12:03 UTC** — check `SELECT Outcome, COUNT(*) FROM dbo.RampChaserDigest GROUP BY Outcome` after it.
+      ⚠️ The live `RAMP_CHASER_MODE` was never read (`az webapp config appsettings list` returns the Ramp
+      secret and is correctly blocked); "no mail sent by itself" rests on the code gate, not a live reading. **DEPLOY DECISION (Chris):** the Ramp chaser digest's conversation lookup (`_conversation_in_folder`) had 400'd on every call since it was written (non-date `$filter` + default `$orderby`), so every vanished digest stayed "inconclusive". After deploy it works: the first run will stamp the backlog of outstanding digests `sent` (Sent Items hit) or `discarded_unsent` (a still-DRAFT Deleted Items hit). Confirm that backlog stamping is wanted before deploying.
 - [ ] Remove the now-redundant hand-coded floors: `entities/email_message/business/service.py` (~L745, "Graph requires the $orderby property…") and `review_reply_ingest_service.py` `ORDERBY_FLOOR` (+ exact-string asserts in `test_u669b_review_reply_copy.py`, `test_u797c3_review_reply_ingest.py`). `list_messages` owns the rule now.
 - [ ] Structured `conversation_id=` parameter on `list_messages` that owns OData escaping (callers hand-escape `'`; `search_all_messages` phase 1 does not escape at all).
 - [ ] One shared Graph page iterator in `integrations/ms/base/` for the 3 hand-written `@odata.nextLink` loops in the mail client (+ the repeated-nextLink guard the SharePoint helper has).

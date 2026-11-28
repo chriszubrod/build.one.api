@@ -24,9 +24,21 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 > trunk's rebased U-743b is **byte-identical to the live hotfix across all 24 of its files**, so nothing regressed —
 > and the live image is back ON-TRUNK for the first time in days.
 >
-> ⚠️ **`hotfix/u-743b` can still silently revert this.** Its tip `6c5084b4` contains NO U-801 and NO U-799. If its
-> owner rebuilds `:latest` from that branch, both units leave production with no signal. Delete the branch, or rebase
-> it onto trunk, before any further build from it.
+> ✅ **`hotfix/u-743b` is gone (2026-11-28).** Its owner deleted the branch (local + remote) and both of its
+> worktrees after this was flagged; `6c5084b4` is now a dangling commit on no ref, so nothing can build `:latest`
+> from it. The ACR tag `6c5084b4` is deliberately KEPT — it is the rollback image for this deploy.
+>
+> ⚠️ **The same hazard survives on TEN other hotfix refs**, every one off-trunk and every one pointing at a commit
+> that was once `:latest`: `hotfix/u-669a` (`ce15c756`), `hotfix/u-743` (`d6ab7796`), `hotfix/u-747` (`36302ec2`),
+> `hotfix/u-797b` (`bbe913fb`) locally, plus `origin/hotfix/{u-669a,u-690,u-797b,u-797c4,u-797c5a,u-797c5b}`.
+> A `:latest` build from any of them silently reverts everything newer. **All ten are content-merged and safe to
+> delete** — verified, with one trap worth recording: `git cherry origin/master <branch>` flags `6220a7d5` as `+`
+> ("not upstream") on seven of them, which is a **patch-id artifact**, not lost work. Its rebased twin `de40e612` is
+> on master, same unit, identical file set, byte-identical content. ⛔ Do not read `git cherry`'s `+` as unique work
+> after a rebase, and do not read "N files differ from master" as unique work either — that counts master's NEWER
+> commits missing from the stale branch, which is the opposite. Deleting them is unasked cleanup, so it is left for
+> Chris's go.
+>
 >
 > Evidence chain. **No behavioural sentinel exists for this delta** — U-801 and U-799 are both internal and U-743b was
 > already live, so no read-only request distinguishes the two images. This is platform-level proof:

@@ -384,25 +384,25 @@ def validate_time_entry_completeness(
     Used by the time_tracking_specialist agent to inform its
     ReviewPriority decision; also safe to call from human review UI.
 
-    Row-scope bypass: this endpoint reviews TimeEntries the caller did NOT
-    submit (the agent / Approver acts on other users' entries). Mirrors the
-    submit/approve/reject pattern which also bypasses UserId scope at the
-    service layer. Authorization is the endpoint's `can_read` gate above.
+    The entry and its logs are read through the caller's scope (U-803): own
+    entries, plus teammates' entries on shared projects via CanViewTeam;
+    system admins bypass. Out-of-scope reads 404, the same as a missing entry,
+    so the URL cannot confirm existence.
     """
+    from entities.time_entry.business.service import _actor_scope
     from entities.time_entry.business.validation import validate_completeness
-    from entities.time_entry.persistence.repo import TimeEntryRepository
     from entities.time_entry.persistence.time_log_repo import TimeLogRepository
 
-    entry = TimeEntryRepository().read_by_public_id(
-        public_id=public_id,
-        actor_is_system_admin=True,
-    )
+    entry = TimeEntryService().read_by_public_id(public_id=public_id)
     if not entry:
         raise_not_found("Time entry")
 
+    actor_user_id, actor_is_system_admin, actor_can_view_team = _actor_scope()
     logs = TimeLogRepository().read_by_time_entry_id(
         time_entry_id=entry.id,
-        actor_is_system_admin=True,
+        actor_user_id=actor_user_id,
+        actor_is_system_admin=actor_is_system_admin,
+        actor_can_view_team=actor_can_view_team,
     )
     report = validate_completeness(entry=entry, logs=logs)
     return item_response(report)

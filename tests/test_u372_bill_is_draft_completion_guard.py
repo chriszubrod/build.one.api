@@ -19,7 +19,7 @@ These tests exercise `update_by_public_id`'s guard directly, then confirm
 `complete_bill()` passes the escape hatch.
 """
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -102,7 +102,7 @@ def _make_bill() -> SimpleNamespace:
     )
 
 
-def test_complete_bill_finalizes_without_the_escape_hatch_at_all():
+def test_complete_bill_finalizes_without_the_escape_hatch_at_all(bill_completion_conn):
     """U-434 REPLACES this test's original assertion, deliberately.
 
     It used to prove that `complete_bill` passed `_via_completion_pipeline=True`
@@ -141,7 +141,7 @@ def test_complete_bill_finalizes_without_the_escape_hatch_at_all():
     with patch.object(BillService, "update_by_public_id") as mock_update:
         result = service.complete_bill(public_id="pub-55")
 
-    repo.finalize_by_id.assert_called_once_with(id=55)
+    repo.finalize_by_id.assert_called_once_with(id=55, conn=ANY)
     assert mock_update.call_count == 0, (
         "completion must not route through update_by_public_id any more — that "
         "reintroduces the @RowVersion race U-434 removed"

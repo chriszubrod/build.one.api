@@ -341,6 +341,18 @@ class BillCreditCompleteService:
         qbo_id is not enqueued here: its coding-drift check runs at completion (U-797c5b, record
         only). The guard reads `bill_credit.qbo_id` directly: the credit object comes from
         read_by_public_id, which selects QboId/RealmId since U-690, so no by-id re-read is needed.
+
+        U-801 — deliberately still failure-isolated here, unlike Bill. U-801 made
+        `enqueue_qbo_push` propagate a genuine write failure so the caller's
+        transaction rolls back, which is only safe where the transition and the
+        enqueue actually share one transaction. Bill qualifies: one idempotent
+        `FinalizeBillById` flip, threaded with `conn`. BillCredit does not — it
+        finalizes through the generic `update_by_public_id` inside a ROWVERSION
+        retry loop, and this call sits outside any handler. Letting the new
+        exception escape would answer 500 on a credit that IS already finalized
+        and committed: strictly worse than the reported 207 it gives today. So
+        the pre-U-801 shape is held locally until the transition can take a
+        connection. Booked as the U-801 follow-on (see TODO.md).
         """
         from shared.completion.qbo_enqueue import enqueue_qbo_push
 
@@ -351,14 +363,25 @@ class BillCreditCompleteService:
                 "qbo_sync_queued": False,
                 "errors": [],
             }
-        return enqueue_qbo_push(
-            kind="sync_bill_credit_to_qbo",
-            entity_type="BillCredit",
-            entity_public_id=str(bill_credit.public_id),
-            read_auths=lambda: self.qbo_auth_service.read_all(),
-            logger=logger,
-            label="BillCredit",
-        )
+        try:
+            return enqueue_qbo_push(
+                kind="sync_bill_credit_to_qbo",
+                entity_type="BillCredit",
+                entity_public_id=str(bill_credit.public_id),
+                read_auths=lambda: self.qbo_auth_service.read_all(),
+                logger=logger,
+                label="BillCredit",
+            )
+        except Exception as error:
+            logger.exception(
+                f"Failed to enqueue QBO sync for BillCredit {bill_credit.public_id}"
+            )
+            return {
+                "success": False,
+                "message": f"Failed to enqueue QBO sync: {error}",
+                "qbo_sync_queued": False,
+                "errors": [{"step": "qbo_enqueue", "error": str(error)}],
+            }
 
     def _record_qbo_coding_drift(self, bill_credit, line_items) -> None:
         """

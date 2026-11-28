@@ -1093,6 +1093,10 @@ def test_enqueue_qbo_sync_still_enqueues_when_token_unusable():
         entity_type="Bill",
         entity_public_id=str(bill.public_id),
         realm_id=REALM_ID,
+        conn=None,
+        # U-801: completion widens the Policy C window because the row is now
+        # written before the SharePoint / Excel / Box tail of completion.
+        debounce_seconds=60,
     )
     assert result["qbo_sync_queued"] is True
     svc._qbo_auth_service.ensure_valid_token.assert_not_called()

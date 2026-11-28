@@ -438,7 +438,7 @@ def _complete_bill_fixture(*, intake: MagicMock) -> BillService:
     return svc
 
 
-def test_final_recorded_once_on_draft_to_completed_not_on_recomplete():
+def test_final_recorded_once_on_draft_to_completed_not_on_recomplete(bill_completion_conn):
     intake = MagicMock()
     intake.read_by_bill_id.return_value = _prediction()
     svc = _complete_bill_fixture(intake=intake)

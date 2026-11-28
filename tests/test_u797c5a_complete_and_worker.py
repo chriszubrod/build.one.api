@@ -112,6 +112,7 @@ def test_completion_enqueues_for_credit_with_no_qbo_identity(monkeypatch, outbox
         "entity_type": "BillCredit",
         "entity_public_id": "bc-7",
         "realm_id": "realm-1",
+        "conn": None,
     }]
     assert result["qbo_sync"]["qbo_sync_queued"] is True
     assert result["status_code"] == 200

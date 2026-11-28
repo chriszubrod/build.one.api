@@ -24,7 +24,7 @@ purpose.
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -619,7 +619,7 @@ def test_a_draft_bill_is_deletable_by_anyone_who_can_reach_it():
 # ---------------------------------------------------------------------------
 
 
-def test_completion_forwards_the_exemption_to_its_OWN_line_finalize():
+def test_completion_forwards_the_exemption_to_its_OWN_line_finalize(bill_completion_conn):
     """Codex P0, and the sharpest test in this file.
 
     `complete_bill` sets the header to `completed` in Step 1, then marks each
@@ -680,7 +680,7 @@ def test_the_exemption_flag_cannot_travel_inside_a_pydantic_model():
     )
 
 
-def test_recompleting_an_already_completed_bill_is_not_blocked_by_the_lock():
+def test_recompleting_an_already_completed_bill_is_not_blocked_by_the_lock(bill_completion_conn):
     """The other half of the misplaced-guard P0. The stray guard landed in
     `complete_bill`, so re-completion — which the reclaim watchdog does on
     purpose with force=True — raised `status_locked` instead of being the
@@ -706,7 +706,7 @@ def test_recompleting_an_already_completed_bill_is_not_blocked_by_the_lock():
         pytest.fail(f"re-completion must stay an idempotent no-op, got: {err}")
     except Exception:
         pass
-    repo.finalize_by_id.assert_called_once_with(id=55)
+    repo.finalize_by_id.assert_called_once_with(id=55, conn=ANY)
 
 
 # ---------------------------------------------------------------------------

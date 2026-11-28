@@ -34,7 +34,7 @@ separate unit touching the shared MS drain worker, and is booked.
 """
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -79,22 +79,25 @@ def _service(*, finalize_returns=..., duplicate=None):
 # ---------------------------------------------------------------------------
 
 
-def test_finalize_goes_through_the_idempotent_sproc_not_a_rowversion_update():
+def test_finalize_goes_through_the_idempotent_sproc_not_a_rowversion_update(bill_completion_conn):
     svc, repo = _service()
     with patch.object(BillService, "update_by_public_id") as mock_update:
         result = svc.complete_bill(public_id="pub-55")
-    repo.finalize_by_id.assert_called_once_with(id=55)
+    repo.finalize_by_id.assert_called_once_with(id=55, conn=ANY)
     assert mock_update.call_count == 0
     assert result["bill_finalized"] is True
 
 
-def test_finalize_carries_no_row_version():
+def test_finalize_carries_no_row_version(bill_completion_conn):
     """The whole point: an unrelated concurrent field edit must not block it."""
     svc, repo = _service()
     svc.complete_bill(public_id="pub-55")
     kwargs = repo.finalize_by_id.call_args.kwargs
     assert "row_version" not in kwargs and "RowVersion" not in kwargs
-    assert set(kwargs) == {"id"}
+    # U-801 added `conn` (the completion transaction). The invariant this test
+    # exists for is unchanged and still asserted explicitly: no RowVersion.
+    assert "row_version" not in kwargs
+    assert set(kwargs) == {"id", "conn"}
 
 
 def test_no_sleep_and_no_retry_remain_on_the_finalize_path():
@@ -111,7 +114,7 @@ def test_no_sleep_and_no_retry_remain_on_the_finalize_path():
     )
 
 
-def test_bill_deleted_mid_finalize_is_a_404_not_a_silent_success():
+def test_bill_deleted_mid_finalize_is_a_404_not_a_silent_success(bill_completion_conn):
     """finalize_by_id returns None ONLY when the Bill is gone.
 
     The sproc re-SELECTs unconditionally, so an already-finalized bill still
@@ -156,7 +159,7 @@ def test_duplicate_check_still_runs_on_the_completion_path():
     repo.finalize_by_id.assert_not_called()
 
 
-def test_duplicate_check_ignores_the_bill_itself():
+def test_duplicate_check_ignores_the_bill_itself(bill_completion_conn):
     svc, repo = _service(duplicate=SimpleNamespace(public_id="PUB-55"))  # case-insensitive
     result = svc.complete_bill(public_id="pub-55")
     assert result["bill_finalized"] is True

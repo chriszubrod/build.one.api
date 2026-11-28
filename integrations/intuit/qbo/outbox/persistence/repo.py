@@ -11,6 +11,7 @@ import pyodbc
 from integrations.intuit.qbo.outbox.business.model import QboOutbox
 from shared.database import (
     call_procedure,
+    conn_ctx,
     get_connection,
     map_database_error,
 )
@@ -75,11 +76,12 @@ class QboOutboxRepository:
         request_id: str,
         ready_after: Optional[datetime] = None,
         correlation_id: Optional[str] = None,
+        conn: Optional[pyodbc.Connection] = None,
     ) -> QboOutbox:
         """Insert a pending outbox row."""
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            with conn_ctx(conn) as c:
+                cursor = c.cursor()
                 try:
                     call_procedure(
                         cursor=cursor,
@@ -148,14 +150,15 @@ class QboOutboxRepository:
         entity_type: str,
         entity_public_id: str,
         kind: str,
+        conn: Optional[pyodbc.Connection] = None,
     ) -> Optional[QboOutbox]:
         """
         Find the most recent pending/failed outbox row for this entity+kind.
         Used by the service layer for Policy C coalesce decisions.
         """
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            with conn_ctx(conn) as c:
+                cursor = c.cursor()
                 try:
                     call_procedure(
                         cursor=cursor,
@@ -181,6 +184,7 @@ class QboOutboxRepository:
         entity_type: str,
         entity_public_id: str,
         kind: str,
+        conn: Optional[pyodbc.Connection] = None,
     ) -> Optional[QboOutbox]:
         """
         Find the most recent dead-lettered outbox row for this entity+kind.
@@ -190,8 +194,8 @@ class QboOutboxRepository:
         one exists.
         """
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            with conn_ctx(conn) as c:
+                cursor = c.cursor()
                 try:
                     call_procedure(
                         cursor=cursor,
@@ -216,11 +220,17 @@ class QboOutboxRepository:
     # Update
     # ------------------------------------------------------------------ #
 
-    def update_ready_after(self, id: int, row_version: str, ready_after: datetime) -> Optional[QboOutbox]:
+    def update_ready_after(
+        self,
+        id: int,
+        row_version: str,
+        ready_after: datetime,
+        conn: Optional[pyodbc.Connection] = None,
+    ) -> Optional[QboOutbox]:
         """Extend the Policy C debounce window on an existing row."""
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            with conn_ctx(conn) as c:
+                cursor = c.cursor()
                 try:
                     call_procedure(
                         cursor=cursor,

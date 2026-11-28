@@ -19,6 +19,8 @@ from tests.test_u551bf1f2_confirm_status_guard import (
 
 
 KEY = dict(entity_type="CodingSuggestion", entity_public_id=PUBLIC_ID, kind="recode_purchase_line")
+# U-801: the probes now carry the caller's connection (None when standing alone).
+PROBED = {**KEY, "conn": None}
 
 
 def _repo(pending=None, dead_letter=None):
@@ -62,8 +64,8 @@ def test_router_keeps_a_claim_the_caller_already_held_when_confirm_raises_a_db_e
 
 def _assert_refused_unrecorded(svc, repo):
     # kills: a wrong-key pre-check (kind/entity_type/entity_public_id) reading a different target
-    repo.read_pending_by_entity.assert_called_once_with(**KEY)
-    repo.read_dead_letter_by_entity.assert_called_once_with(**KEY)
+    repo.read_pending_by_entity.assert_called_once_with(**PROBED)
+    repo.read_dead_letter_by_entity.assert_called_once_with(**PROBED)
     svc.record_confirmation.assert_not_called()
     svc.mark_enqueued.assert_not_called()
     repo.create.assert_not_called()
@@ -253,8 +255,8 @@ def test_happy_path_each_probe_reads_pending_and_dead_letter_exactly_once(_gate)
         _confirm(svc)
     assert repo.read_pending_by_entity.call_count == 2
     assert repo.read_dead_letter_by_entity.call_count == 2
-    repo.read_pending_by_entity.assert_called_with(**KEY)
-    repo.read_dead_letter_by_entity.assert_called_with(**KEY)
+    repo.read_pending_by_entity.assert_called_with(**PROBED)
+    repo.read_dead_letter_by_entity.assert_called_with(**PROBED)
     repo.create.assert_called_once()
     # enqueue() alone: one read of each
     solo = _repo()

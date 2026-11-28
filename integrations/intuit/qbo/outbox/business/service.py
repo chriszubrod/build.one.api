@@ -2,7 +2,7 @@
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Any, Optional
 
 # Local Imports
 from integrations.intuit.qbo.base.correlation import get_correlation_id
@@ -68,8 +68,17 @@ class QboOutboxService:
             realm_id=realm_id,
         )
 
-    Callers invoke this from inside the same local transaction that mutates
-    the entity. The worker (task #14d) drains and dispatches later.
+    The worker (task #14d) drains and dispatches later.
+
+    ⚠️ `conn` makes "enqueue inside the transaction that mutates the entity" a
+    real guarantee rather than a convention, but it is OPTIONAL and most callers
+    still omit it. As of U-801 only `BillService.complete_bill` passes one, via
+    `shared/completion/qbo_enqueue.enqueue_qbo_push`. Everything else — the
+    coding-suggestion confirm paths, the manual push router, and
+    `BillCreditCompleteService` — still enqueues on its own connection, so for
+    those the entity mutation and this row can still commit separately. Do not
+    read the presence of `conn` in this signature as a claim that every caller
+    is atomic; check the caller.
     """
 
     def __init__(self, repo: Optional[QboOutboxRepository] = None):
@@ -82,6 +91,7 @@ class QboOutboxService:
         entity_type: str,
         entity_public_id: str,
         realm_id: Optional[str] = None,
+        conn: Optional[Any] = None,
     ) -> Optional[QboOutbox]:
         """Single source of ``enqueue()``'s refusal contract, usable as a zero-write pre-check.
 
@@ -95,6 +105,7 @@ class QboOutboxService:
             entity_type=entity_type,
             entity_public_id=entity_public_id,
             kind=kind,
+            conn=conn,
         )
         if existing:
             return existing
@@ -103,6 +114,7 @@ class QboOutboxService:
             entity_type=entity_type,
             entity_public_id=entity_public_id,
             kind=kind,
+            conn=conn,
         )
         if dead_letter:
             logger.warning(
@@ -133,6 +145,7 @@ class QboOutboxService:
         entity_public_id: str,
         realm_id: str,
         debounce_seconds: int = DEFAULT_DEBOUNCE_SECONDS,
+        conn: Optional[Any] = None,
     ) -> QboOutbox:
         """
         Enqueue a QBO write operation.
@@ -149,6 +162,10 @@ class QboOutboxService:
             entity_public_id: public_id of the local entity.
             realm_id: QBO realm the operation targets.
             debounce_seconds: Policy C window; default 5s.
+            conn: optional caller connection. Supplied when the row must commit
+                in the SAME transaction as the state change that warranted it
+                (U-801), so a completion can never be acknowledged without its
+                outbox row. Omitted, the enqueue stands alone as before.
 
         Returns:
             The outbox row (either newly created or the coalesced existing one).
@@ -166,6 +183,7 @@ class QboOutboxService:
             entity_type=entity_type,
             entity_public_id=entity_public_id,
             realm_id=realm_id,
+            conn=conn,
         )
 
         if existing:
@@ -177,6 +195,7 @@ class QboOutboxService:
                 id=existing.id,
                 row_version=existing.row_version,
                 ready_after=ready_after,
+                conn=conn,
             )
             logger.info(
                 "qbo.outbox.row.coalesced",
@@ -203,6 +222,7 @@ class QboOutboxService:
             request_id=request_id,
             ready_after=ready_after,
             correlation_id=correlation_id,
+            conn=conn,
         )
         logger.info(
             "qbo.outbox.row.enqueued",

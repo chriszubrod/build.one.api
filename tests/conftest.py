@@ -227,3 +227,23 @@ def u797c4b_vc_parent_lifecycle_offline():
         return_value=(None, None),
     ):
         yield
+
+
+@pytest.fixture
+def bill_completion_conn():
+    """U-801 — hand `BillService.complete_bill` a fake transaction connection.
+
+    Completion now owns the transaction that spans the `FinalizeBillById` flip and
+    the QBO outbox INSERT, so it checks out a connection of its own: mocking the
+    repo is no longer sufficient on that path. This harness is pure-logic /
+    no-live-DB (see `_blocked_live_pyodbc_connect`), so tests that drive
+    `complete_bill` request this fixture by name.
+
+    Deliberately NOT autouse. Patching `get_connection` for a whole module would
+    let an unrelated test that genuinely reaches for a connection pass against a
+    mock instead of being blocked — a vacuous green.
+    """
+    with patch("entities.bill.business.service.get_connection") as gc:
+        gc.return_value.__enter__.return_value = MagicMock(name="completion-conn")
+        gc.return_value.__exit__.return_value = False
+        yield gc

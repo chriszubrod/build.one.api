@@ -569,10 +569,16 @@ class TestRecordOnSave:
                     svc.create(review_status_id=10, user_id=1, bill_id=5)
                     record.assert_not_called()
 
-    def test_complete_bill_finalization_records_coding_suggestion(self):
+    def test_complete_bill_finalization_records_coding_suggestion(self, bill_completion_conn):
         svc = BillService()
         draft = _bill(id=1, vendor_id=2, public_id="550e8400-e29b-41d4-a716-446655440099")
         finalized = _bill(id=1, vendor_id=2, is_draft=False, status="completed")
+        # U-801: the QBO enqueue now runs inside the finalize transaction, i.e.
+        # BEFORE this recording. Stubbed because this test is about the coding
+        # suggestion, not QBO — left real it reaches for a live connection.
+        svc._enqueue_qbo_sync = MagicMock(return_value={"errors": []})
+        # U-801 resolves the QBO realm before opening the transaction.
+        svc._qbo_auth_service = MagicMock(read_all=MagicMock(return_value=[]))
         with patch.object(svc, "read_by_public_id", return_value=draft):
             with patch.object(
                 svc.vendor_service,
@@ -633,7 +639,7 @@ class TestRound2:
                 pass  # later completion steps are not under test here
             rec.assert_not_called()
 
-    def test_complete_bill_records_on_draft_to_completed_flip(self):
+    def test_complete_bill_records_on_draft_to_completed_flip(self, bill_completion_conn):
         from entities.bill.business.service import BillService
 
         svc = BillService.__new__(BillService)
@@ -646,6 +652,12 @@ class TestRound2:
         svc.vendor_service = MagicMock()
         svc.repo = MagicMock()
         svc.repo.finalize_by_id.return_value = finalized
+        # U-801: the QBO enqueue now runs inside the finalize transaction, i.e.
+        # BEFORE this recording. Stubbed because this test is about the coding
+        # suggestion, not QBO — left real it reaches for a live connection.
+        svc._enqueue_qbo_sync = MagicMock(return_value={"errors": []})
+        # U-801 resolves the QBO realm before opening the transaction.
+        svc._qbo_auth_service = MagicMock(read_all=MagicMock(return_value=[]))
         with patch(
             "entities.coding_suggestion.business.bill_suggestion_service.record_bill_coding_suggestion_on_save"
         ) as rec:

@@ -471,7 +471,7 @@ class BillRepository:
             logger.error(f"Error during update bill by ID: {error}")
             raise map_database_error(error)
 
-    def finalize_by_id(self, id: int) -> Optional[Bill]:
+    def finalize_by_id(self, id: int, conn: Optional[pyodbc.Connection] = None) -> Optional[Bill]:
         """Idempotently flip IsDraft 1 -> 0. The only sanctioned finalize path.
 
         Returns the Bill when it exists — whether this call flipped it or it was
@@ -484,10 +484,41 @@ class BillRepository:
         no-op. Finalization is a state transition; an unrelated concurrent field
         edit (the 300ms BillEdit auto-save) must not be able to fail it. See the
         sproc's header for the full rationale (U-434).
+
+        `conn` (U-801) lets the caller hold this flip in its own transaction so
+        the QBO outbox row commits with it. This is the canonical explanation of
+        why that works; other sites point here.
+
+        `FinalizeBillById` carries its own BEGIN/COMMIT TRANSACTION, but pyodbc
+        is autocommit-off, so an outer transaction is already open and the
+        sproc's pair is NESTED: its COMMIT only decrements @@TRANCOUNT, and the
+        durable commit is the connection's, at the exit of `get_connection()`.
+        Sharing one connection is therefore sufficient to make the flip and the
+        outbox INSERT atomic.
+
+        MEASURED, not inferred (read-only probe against prod, 2026-11-27),
+        inside one `get_connection()` block:
+
+            SELECT @@TRANCOUNT                                        -> 1
+            BEGIN TRANSACTION; COMMIT TRANSACTION; SELECT @@TRANCOUNT -> 1
+            SELECT @@TRANCOUNT                                        -> 1
+
+        Corroborated by this repo's own incident: an in-sproc ROLLBACK raises
+        SQL 266, which can only arise with an outer transaction open (CLAUDE.md,
+        2026-06-11).
+
+        ⚠️ The Python tests CANNOT see this. They assert that one connection
+        object reaches both writes, which stays green even if the sproc's COMMIT
+        were durable. If the driver or its autocommit setting changes, re-run the
+        probe above — not the suite.
+
+        Note also that this sproc locks the row WITH (UPDLOCK, HOLDLOCK), and
+        because the COMMIT is nested those locks are held until the caller's
+        outer commit. Keep the caller's transaction short.
         """
         try:
-            with get_connection() as conn:
-                cursor = conn.cursor()
+            with _conn_ctx(conn) as c:
+                cursor = c.cursor()
                 call_procedure(
                     cursor=cursor,
                     name="FinalizeBillById",

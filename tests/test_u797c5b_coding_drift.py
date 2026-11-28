@@ -532,7 +532,7 @@ def test_f1_unpulled_lines_are_skipped_and_pulled_lines_still_checked():
     assert "line 2 (qbo line 6) item" in dedupe.call_args.kwargs["details"]
 
 
-def test_complete_bill_runs_the_drift_check_on_the_finalized_bill_without_changing_the_result():
+def test_complete_bill_runs_the_drift_check_on_the_finalized_bill_without_changing_the_result(bill_completion_conn):
     """M21: complete_bill calls the drift check with the FinalizeBillById result and its lines."""
     from entities.bill.business.service import BillService
 

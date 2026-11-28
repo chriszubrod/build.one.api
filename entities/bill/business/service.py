@@ -95,7 +95,7 @@ from integrations.ms.sharepoint.external.client import (
 )
 
 from shared.storage import AzureBlobStorage
-from shared.database import get_connection
+from shared.database import get_connection, map_database_error
 
 from entities.review.business.decision_errors import (
     ReviewDecisionApplyError as BillReviewDecisionApplyError,
@@ -109,6 +109,14 @@ from entities.review.business.reviewer_decision import (
 from shared.authz.delegation import assert_may_act_as
 
 logger = logging.getLogger(__name__)
+
+
+# U-801: Policy C debounce for the completion-time QBO enqueue. The row is now
+# written inside the finalize transaction, i.e. BEFORE completion's remaining
+# SharePoint / Excel / Box steps run, so the drain must not become eligible to
+# claim it until those have had time to finish. 60s matches the drain's own
+# timer, so in practice this costs at most one extra tick.
+_COMPLETION_ENQUEUE_DEBOUNCE_SECONDS = 60
 
 
 def _record_project_mapping_missing_ms_issue(
@@ -1349,7 +1357,44 @@ class BillService:
             self._assert_no_duplicate_on_complete(bill, public_id)
             self._assert_completable_lines(bill.id, check_prefill=bool(bill.is_draft))
 
-            finalized_bill = self.repo.finalize_by_id(id=bill.id)
+            # U-801: the flip and the QBO outbox row commit in ONE transaction.
+            # They used to be two transactions several steps apart, so a failed
+            # enqueue left the Bill durably `completed` with no row to drain —
+            # the push lost, and (unlike the coding-suggestion path) no sweeper
+            # covers this one. A genuine enqueue failure now propagates to the
+            # handler below, rolling the flip back: 500 / bill_finalized: False,
+            # and the CompletionJob reclaim re-drives it. Why one connection is
+            # sufficient is in `BillRepository.finalize_by_id`'s docstring.
+            #
+            # Only the enqueue rides inside the transaction. The SharePoint/Box
+            # uploads and the Excel sync stay outside and still run after it:
+            # they are slow external work, and holding the Bill row for their
+            # duration would block the 300ms BillEdit auto-save. The reordering
+            # is safe because the drain re-reads the entity at drain time.
+            #
+            # Resolve the QBO realm FIRST, outside the transaction: the finalize
+            # locks the Bill row WITH (UPDLOCK, HOLDLOCK) until the outer commit,
+            # so an auth read inside would hold it across a second pooled
+            # checkout and a token decryption. Nothing here needs transactional
+            # consistency with the flip, and a failure still fails the
+            # completion — just before anything has been written.
+            #
+            # ⛔ Do NOT "optimize" the enqueue's own coalesce/dead-letter reads
+            # out of this block. The Bill UPDLOCK is what serializes two
+            # concurrent completions of the same bill; read outside it, both
+            # callers see no pending row and both INSERT, and IX_Outbox_Entity
+            # is non-unique — two pending rows, two RequestIds, two QBO pushes.
+            from shared.completion.qbo_enqueue import enqueue_qbo_push  # noqa: F401  (warm the import outside the lock)
+
+            qbo_auths = list(self.qbo_auth_service.read_all() or [])
+
+            qbo_sync_result = None
+            with get_connection() as conn:
+                finalized_bill = self.repo.finalize_by_id(id=bill.id, conn=conn)
+                if finalized_bill:
+                    qbo_sync_result = self._enqueue_qbo_sync(
+                        bill=finalized_bill, conn=conn, auths=qbo_auths
+                    )
             if not finalized_bill:
                 # The Bill was deleted between the read above and the flip.
                 return {
@@ -1417,14 +1462,27 @@ class BillService:
                 ),
             )
             logger.exception(f"Error finalizing bill {public_id}")
+            # U-801 (Pass 3 F1): completion now owns the connection, so a raw
+            # pyodbc.Error raised by the checkout, the validation probe, or the
+            # COMMIT itself reaches here WITHOUT having passed through
+            # `map_database_error` — `finalize_by_id` only maps errors from its
+            # own body. This dict is persisted by `set_completion_result` and
+            # served by GET /get/bill/{public_id}/completion-result to any user
+            # with the BILLS module, so driver text (driver name, server name,
+            # "Login failed for user '<uid>'") must be redacted before it goes
+            # in. `map_database_error` reduces it to "Category (NNNN)" and keeps
+            # the original for the log line above.
+            import pyodbc
+
+            detail = str(map_database_error(e)) if isinstance(e, pyodbc.Error) else str(e)
             return {
                 "status_code": 500,
-                "message": f"Error finalizing bill: {str(e)}",
+                "message": f"Error finalizing bill: {detail}",
                 "bill_finalized": False,
                 "file_uploads": {},
                 "excel_syncs": {},
                 "qbo_sync": {},
-                "errors": [{"step": "finalize_bill", "error": str(e)}],
+                "errors": [{"step": "finalize_bill", "error": detail}],
             }
         # Step 2: Finalize all BillLineItems
         line_items = self.bill_line_item_service.read_by_bill_id(bill_id=bill.id)
@@ -1535,10 +1593,12 @@ class BillService:
             # failure-isolated: never affects the completion result.
             self._enqueue_box_excel(bill=bill, project_id=project_id)
         
-        # Step 5: Enqueue async push to QBO via the outbox. Completion returns
-        # immediately; the outbox worker picks up the row within ~5 seconds and
-        # actually calls QBO. Retries and dead-lettering happen at the worker.
-        qbo_sync_result = self._enqueue_qbo_sync(bill=finalized_bill)
+        # Step 5: the QBO outbox row was already written, inside the finalize
+        # transaction (U-801 — see Step 1). The worker picks it up within ~5
+        # seconds and actually calls QBO; retries and dead-lettering happen at
+        # the worker. Reaching here means the row is committed, so the only
+        # entries `qbo_sync_result` can carry are the two deliberate, non-fatal
+        # refusals (no QBO auth record; a dead-lettered row already exists).
         if qbo_sync_result.get("errors"):
             all_errors.extend(qbo_sync_result["errors"])
         # U-797c5b: observational only (record, never write to QBO); never changes status.
@@ -1566,7 +1626,7 @@ class BillService:
             "errors": all_errors
         }
 
-    def _enqueue_qbo_sync(self, bill) -> dict:
+    def _enqueue_qbo_sync(self, bill, conn=None, auths=None) -> dict:
         """
         Enqueue an outbox row for async QBO push of the completed bill.
 
@@ -1576,16 +1636,39 @@ class BillService:
         all happen at the worker. The enqueue itself is shared with BillCredit
         (shared/completion/qbo_enqueue.py) and is not gated: the write gate
         applies at drain and in the HTTP layer.
+
+        `conn` (U-801) is the completion's connection, so the row commits in the
+        same transaction as the `completed` flip. `auths` (U-801) lets the caller
+        supply auth records it already read, so the realm lookup does not run a
+        query while the finalize's UPDLOCK is held.
         """
         from shared.completion.qbo_enqueue import enqueue_qbo_push
+
+        # `is None`, not falsiness: a caller-supplied empty list means "there is
+        # no auth record", and must not be re-read here.
+        if auths is None:
+            auths = self.qbo_auth_service.read_all()
 
         return enqueue_qbo_push(
             kind="sync_bill_to_qbo",
             entity_type="Bill",
             entity_public_id=str(bill.public_id),
-            read_auths=lambda: self.qbo_auth_service.read_all(),
+            read_auths=lambda: auths,
             logger=logger,
             label="Bill",
+            conn=conn,
+            # U-801 (Pass 3 F2). The row used to be written LAST, after the
+            # uploads / Excel / Box steps, so by the time it was drainable the
+            # rest of completion had finished. Atomicity moved it FIRST, which
+            # opens a window where the drain could claim it mid-completion.
+            # The line data is safe either way (ReadBillLineItemsByBillId has
+            # no IsDraft predicate, and Step 2 only flips the flag — amounts and
+            # coding are re-passed unchanged), but the attachment sync could run
+            # against a blob Step 2b has not renamed yet and burn a retry. So
+            # widen the Policy C window past the tail of completion. It is a
+            # window, not a guarantee: the drain re-reads at claim time and the
+            # push is RequestId-idempotent, so an overrun is recoverable.
+            debounce_seconds=_COMPLETION_ENQUEUE_DEBOUNCE_SECONDS,
         )
 
     def _record_qbo_coding_drift(self, *, bill, line_items) -> None:

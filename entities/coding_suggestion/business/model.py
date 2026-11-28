@@ -130,9 +130,11 @@ class CodingSuggestion:
                 if desc is not None and not isinstance(desc, str):
                     return None
                 # U-743: optional; present means a real bool (a customer change on an item-equal line).
-                cust_changed = entry.get("customer_changed")
-                if cust_changed is not None and not isinstance(cust_changed, bool):
-                    return None
+                # U-743 / U-743b: optional change flags; present means a real bool.
+                for flag in ("customer_changed", "billable_changed"):
+                    value = entry.get(flag)
+                    if value is not None and not isinstance(value, bool):
+                        return None
             return parsed
         except Exception:  # incl. RecursionError on hostile depth
             return None

@@ -1082,8 +1082,11 @@ class BillService:
         description: Optional[str] = None,
         raw_reply_text: Optional[str] = None,
         reviewer_email_message_public_id: Optional[str] = None,
+        is_billable: Optional[bool] = None,
     ) -> dict:
         """Apply a Project Manager / Owner's emailed review decision to a Bill.
+
+        U-743b: `is_billable` (approval only) sets the bill line's billable flag.
 
         Wave 3 Phase A — on approval codes the bill's single BillLineItem (sub cost
         code + optional description; a multi-line or zero-line bill is
@@ -1109,6 +1112,7 @@ class BillService:
             description=description,
             raw_reply_text=raw_reply_text,
             reviewer_email_message_public_id=reviewer_email_message_public_id,
+            is_billable=is_billable,
         )
 
     def apply_transactional_reviewer_decision(

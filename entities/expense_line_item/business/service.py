@@ -323,12 +323,23 @@ class ExpenseLineItemService:
         sub_cost_code_id: int,
         description: Optional[str],
         conn,
+        is_billable: Optional[bool] = None,
+        billable_decided_by_user_id: Optional[int] = None,
     ) -> ExpenseLineItem:
-        """Apply reviewer SCC coding on one line inside a caller-owned transaction."""
+        """Apply reviewer SCC coding on one line inside a caller-owned transaction.
+
+        U-743b: when ``is_billable`` is given it is set, and the decision is stamped to
+        ``billable_decided_by_user_id`` (the matched reviewer, never the caller) with the
+        UTC-naive time. ``is_billable=None`` leaves every billable column untouched."""
         line_item.row_version = row_version
         line_item.sub_cost_code_id = sub_cost_code_id
         if description is not None:
             line_item.description = description
+        if is_billable is not None:
+            line_item.is_billable = is_billable
+            if billable_decided_by_user_id is not None:
+                line_item.billable_decided_by_user_id = billable_decided_by_user_id
+                line_item.billable_decided_at = datetime.now(timezone.utc).replace(tzinfo=None)
         return self.repo.update_by_id(
             line_item,
             allow_terminal_parent=False,

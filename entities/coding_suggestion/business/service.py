@@ -790,6 +790,8 @@ class CodingSuggestionService:
             target.get("project_id"),
             target.get("description"),
             target.get("repoint_from_item_ref_value"),
+            target.get("customer_changed") is True,
+            target.get("billable_changed") is True,
         )
 
     @staticmethod

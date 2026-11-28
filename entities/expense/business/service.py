@@ -1395,8 +1395,9 @@ class ExpenseService:
             # A local project with no QBO customer (None) is not a customer divergence.
             customer_changed = False
             local_project_id = getattr(local, "project_id", None)
-            staged_line = _staged_line(qbo_line_id) if local_project_id else None
-            if staged_line is not None:
+            billable_decided = getattr(local, "billable_decided_at", None) is not None
+            staged_line = _staged_line(qbo_line_id) if (local_project_id or billable_decided) else None
+            if local_project_id and staged_line is not None:
                 try:
                     customer_ref = _customer_ref_of(local_project_id)
                 except Exception as exc:
@@ -1411,8 +1412,28 @@ class ExpenseService:
                         )
                     else:
                         customer_changed = True
-            if item_changed or customer_changed:
-                diverged.append((qbo_line_id, local, entry.get("item_ref_value"), customer_changed))
+            # U-743b: a human-stamped billable decision that disagrees with the STAGED BillableStatus is a change.
+            # HasBeenBilled is never repointed; "no judgement" never diverges; unavailable staging skips only this
+            # judgement (logged), never the candidate.
+            billable_changed = False
+            if billable_decided:
+                if staged_line is None:
+                    logger.warning(
+                        "expense.complete.repoint_billable_check_unavailable expense_id=%s qbo_line_id=%s",
+                        expense_id, qbo_line_id,
+                    )
+                else:
+                    from integrations.intuit.qbo.purchase.billable_status import desired_billable_status
+
+                    desired_billable = desired_billable_status(local.is_billable)
+                    staged_billable = getattr(staged_line, "billable_status", None)
+                    billable_changed = desired_billable is not None and staged_billable not in (
+                        "HasBeenBilled", desired_billable,
+                    )
+            if item_changed or customer_changed or billable_changed:
+                diverged.append(
+                    (qbo_line_id, local, entry.get("item_ref_value"), customer_changed, billable_changed)
+                )
         if not diverged:
             return None
         diverged.sort(key=lambda pair: self._repoint_line_sort_key(*pair))
@@ -1430,8 +1451,9 @@ class ExpenseService:
                     "repoint_from_item_ref_value": written_item,
                     # U-743: optional key, present only for a customer change (item-only targets keep their shape).
                     **({"customer_changed": True} if customer_changed else {}),
+                    **({"billable_changed": True} if billable_changed else {}),
                 }
-                for qbo_line_id, local, written_item, customer_changed in diverged
+                for qbo_line_id, local, written_item, customer_changed, billable_changed in diverged
             ],
             "dominant": {
                 "project_id": getattr(lead, "project_id", None),
@@ -1731,8 +1753,12 @@ class ExpenseService:
         description: Optional[str] = None,
         raw_reply_text: Optional[str] = None,
         reviewer_email_message_public_id: Optional[str] = None,
+        is_billable: Optional[bool] = None,
     ) -> dict:
         """Apply a Project Manager / Owner's emailed review decision to an Expense.
+
+        U-743b: `is_billable` (approval only) is the reviewer's billable-to-client
+        judgement, stamped to the matched reviewer on the line.
 
         Authorization: `reviewer_email` must match a User with
         `UserProject` → Role 'Project Manager' or 'Owner' on any project
@@ -1761,6 +1787,7 @@ class ExpenseService:
             description=description,
             raw_reply_text=raw_reply_text,
             reviewer_email_message_public_id=reviewer_email_message_public_id,
+            is_billable=is_billable,
         )
 
     def _assert_no_holding_code_on_complete(self, expense_id: int) -> None:

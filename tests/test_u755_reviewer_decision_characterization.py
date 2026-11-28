@@ -587,8 +587,8 @@ SIGNATURES = {'BillService.apply_reviewer_decision': '(self, *, bill_public_id: 
                                         'reviewer_email: str, sub_cost_code_public_id: '
                                         'Optional[str] = None, description: Optional[str] = None, '
                                         'raw_reply_text: Optional[str] = None, '
-                                        'reviewer_email_message_public_id: Optional[str] = None) '
-                                        '-> dict',
+                                        'reviewer_email_message_public_id: Optional[str] = None, '
+                                        'is_billable: Optional[bool] = None) -> dict',  # U-743b
  'BillService.apply_transactional_reviewer_decision': '(self, *, bill_public_id: str, decision: '
                                                       'str, sub_cost_code_public_id: '
                                                       'Optional[str], description: Optional[str], '
@@ -600,7 +600,7 @@ SIGNATURES = {'BillService.apply_reviewer_decision': '(self, *, bill_public_id: 
                                            'Optional[str] = None, description: Optional[str] = '
                                            'None, raw_reply_text: Optional[str] = None, '
                                            'reviewer_email_message_public_id: Optional[str] = '
-                                           'None) -> dict',
+                                           'None, is_billable: Optional[bool] = None) -> dict',  # U-743b
  'ExpenseService.apply_transactional_reviewer_decision': '(self, *, expense_public_id: str, '
                                                          'decision: str, sub_cost_code_public_id: '
                                                          'Optional[str], description: '
@@ -5179,7 +5179,7 @@ GOLDEN = {'bill:a_approve': {'calls': [['service.read_by_public_id', {'public_id
 ROUTE_GOLDEN = {'apply:bill:apply_error_locked': {'body': {'detail': 'This document is completed and can no '
                                                       'longer be edited: done',
                                             'error_code': 'status_locked'},
-                                   'kwargs': [{'bill_public_id': 'PID-1',
+                                   'kwargs': [{'is_billable': None, 'bill_public_id': 'PID-1',
                                                'decision': 'approved',
                                                'description': 'd',
                                                'raw_reply_text': 't',
@@ -5190,7 +5190,7 @@ ROUTE_GOLDEN = {'apply:bill:apply_error_locked': {'body': {'detail': 'This docum
  'apply:bill:apply_error_stale': {'body': {'detail': 'The bill line was updated by someone else; '
                                                      'refetch and re-present.',
                                            'error_code': 'line_row_version_stale'},
-                                  'kwargs': [{'bill_public_id': 'PID-1',
+                                  'kwargs': [{'is_billable': None, 'bill_public_id': 'PID-1',
                                               'decision': 'approved',
                                               'description': 'd',
                                               'raw_reply_text': 't',
@@ -5199,7 +5199,7 @@ ROUTE_GOLDEN = {'apply:bill:apply_error_locked': {'body': {'detail': 'This docum
                                               'sub_cost_code_public_id': 'SCC'}],
                                   'status': 409},
  'apply:bill:holding': {'body': {'detail': 'suspense', 'error_code': 'holding_code'},
-                        'kwargs': [{'bill_public_id': 'PID-1',
+                        'kwargs': [{'is_billable': None, 'bill_public_id': 'PID-1',
                                     'decision': 'approved',
                                     'description': 'd',
                                     'raw_reply_text': 't',
@@ -5208,7 +5208,7 @@ ROUTE_GOLDEN = {'apply:bill:apply_error_locked': {'body': {'detail': 'This docum
                                     'sub_cost_code_public_id': 'SCC'}],
                         'status': 422},
  'apply:bill:identity': {'body': {'detail': 'not you', 'error_code': 'identity_assertion_refused'},
-                         'kwargs': [{'bill_public_id': 'PID-1',
+                         'kwargs': [{'is_billable': None, 'bill_public_id': 'PID-1',
                                      'decision': 'approved',
                                      'description': 'd',
                                      'raw_reply_text': 't',
@@ -5217,7 +5217,7 @@ ROUTE_GOLDEN = {'apply:bill:apply_error_locked': {'body': {'detail': 'This docum
                                      'sub_cost_code_public_id': 'SCC'}],
                          'status': 403},
  'apply:bill:ok': {'body': {'data': {'decision_applied': 'approved', 'x': 1}},
-                   'kwargs': [{'bill_public_id': 'PID-1',
+                   'kwargs': [{'is_billable': None, 'bill_public_id': 'PID-1',
                                'decision': 'approved',
                                'description': 'd',
                                'raw_reply_text': 't',
@@ -5227,7 +5227,7 @@ ROUTE_GOLDEN = {'apply:bill:apply_error_locked': {'body': {'detail': 'This docum
                    'status': 200},
  'apply:bill:provenance': {'body': {'detail': 'not on thread',
                                     'error_code': 'reviewer_provenance_refused'},
-                           'kwargs': [{'bill_public_id': 'PID-1',
+                           'kwargs': [{'is_billable': None, 'bill_public_id': 'PID-1',
                                        'decision': 'approved',
                                        'description': 'd',
                                        'raw_reply_text': 't',
@@ -5236,7 +5236,7 @@ ROUTE_GOLDEN = {'apply:bill:apply_error_locked': {'body': {'detail': 'This docum
                                        'sub_cost_code_public_id': 'SCC'}],
                            'status': 403},
  'apply:bill:status_locked': {'body': {'text': 'Internal Server Error'},
-                              'kwargs': [{'bill_public_id': 'PID-1',
+                              'kwargs': [{'is_billable': None, 'bill_public_id': 'PID-1',
                                           'decision': 'approved',
                                           'description': 'd',
                                           'raw_reply_text': 't',
@@ -5245,7 +5245,7 @@ ROUTE_GOLDEN = {'apply:bill:apply_error_locked': {'body': {'detail': 'This docum
                                           'sub_cost_code_public_id': 'SCC'}],
                               'status': 500},
  'apply:bill:value_error': {'body': {'detail': 'bad thing', 'error_code': None},
-                            'kwargs': [{'bill_public_id': 'PID-1',
+                            'kwargs': [{'is_billable': None, 'bill_public_id': 'PID-1',
                                         'decision': 'approved',
                                         'description': 'd',
                                         'raw_reply_text': 't',
@@ -5256,7 +5256,7 @@ ROUTE_GOLDEN = {'apply:bill:apply_error_locked': {'body': {'detail': 'This docum
  'apply:expense:apply_error_locked': {'body': {'detail': 'This document is completed and can no '
                                                          'longer be edited: done',
                                                'error_code': 'status_locked'},
-                                      'kwargs': [{'decision': 'approved',
+                                      'kwargs': [{'is_billable': None, 'decision': 'approved',
                                                   'description': 'd',
                                                   'expense_public_id': 'PID-1',
                                                   'raw_reply_text': 't',
@@ -5267,7 +5267,7 @@ ROUTE_GOLDEN = {'apply:bill:apply_error_locked': {'body': {'detail': 'This docum
  'apply:expense:apply_error_stale': {'body': {'detail': 'The expense line was updated by someone '
                                                         'else; refetch and re-present.',
                                               'error_code': 'line_row_version_stale'},
-                                     'kwargs': [{'decision': 'approved',
+                                     'kwargs': [{'is_billable': None, 'decision': 'approved',
                                                  'description': 'd',
                                                  'expense_public_id': 'PID-1',
                                                  'raw_reply_text': 't',
@@ -5276,7 +5276,7 @@ ROUTE_GOLDEN = {'apply:bill:apply_error_locked': {'body': {'detail': 'This docum
                                                  'sub_cost_code_public_id': 'SCC'}],
                                      'status': 409},
  'apply:expense:holding': {'body': {'detail': 'suspense', 'error_code': 'holding_code'},
-                           'kwargs': [{'decision': 'approved',
+                           'kwargs': [{'is_billable': None, 'decision': 'approved',
                                        'description': 'd',
                                        'expense_public_id': 'PID-1',
                                        'raw_reply_text': 't',
@@ -5286,7 +5286,7 @@ ROUTE_GOLDEN = {'apply:bill:apply_error_locked': {'body': {'detail': 'This docum
                            'status': 422},
  'apply:expense:identity': {'body': {'detail': 'not you',
                                      'error_code': 'identity_assertion_refused'},
-                            'kwargs': [{'decision': 'approved',
+                            'kwargs': [{'is_billable': None, 'decision': 'approved',
                                         'description': 'd',
                                         'expense_public_id': 'PID-1',
                                         'raw_reply_text': 't',
@@ -5295,7 +5295,7 @@ ROUTE_GOLDEN = {'apply:bill:apply_error_locked': {'body': {'detail': 'This docum
                                         'sub_cost_code_public_id': 'SCC'}],
                             'status': 403},
  'apply:expense:ok': {'body': {'data': {'decision_applied': 'approved', 'x': 1}},
-                      'kwargs': [{'decision': 'approved',
+                      'kwargs': [{'is_billable': None, 'decision': 'approved',
                                   'description': 'd',
                                   'expense_public_id': 'PID-1',
                                   'raw_reply_text': 't',
@@ -5305,7 +5305,7 @@ ROUTE_GOLDEN = {'apply:bill:apply_error_locked': {'body': {'detail': 'This docum
                       'status': 200},
  'apply:expense:provenance': {'body': {'detail': 'not on thread',
                                        'error_code': 'reviewer_provenance_refused'},
-                              'kwargs': [{'decision': 'approved',
+                              'kwargs': [{'is_billable': None, 'decision': 'approved',
                                           'description': 'd',
                                           'expense_public_id': 'PID-1',
                                           'raw_reply_text': 't',
@@ -5314,7 +5314,7 @@ ROUTE_GOLDEN = {'apply:bill:apply_error_locked': {'body': {'detail': 'This docum
                                           'sub_cost_code_public_id': 'SCC'}],
                               'status': 403},
  'apply:expense:status_locked': {'body': {'text': 'Internal Server Error'},
-                                 'kwargs': [{'decision': 'approved',
+                                 'kwargs': [{'is_billable': None, 'decision': 'approved',
                                              'description': 'd',
                                              'expense_public_id': 'PID-1',
                                              'raw_reply_text': 't',
@@ -5323,7 +5323,7 @@ ROUTE_GOLDEN = {'apply:bill:apply_error_locked': {'body': {'detail': 'This docum
                                              'sub_cost_code_public_id': 'SCC'}],
                                  'status': 500},
  'apply:expense:value_error': {'body': {'detail': 'bad thing', 'error_code': None},
-                               'kwargs': [{'decision': 'approved',
+                               'kwargs': [{'is_billable': None, 'decision': 'approved',
                                            'description': 'd',
                                            'expense_public_id': 'PID-1',
                                            'raw_reply_text': 't',

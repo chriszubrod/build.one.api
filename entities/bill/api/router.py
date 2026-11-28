@@ -489,6 +489,7 @@ def apply_reviewer_decision_router(
             description=body.description,
             raw_reply_text=body.raw_reply_text,
             reviewer_email_message_public_id=body.reviewer_email_message_public_id,
+            is_billable=body.is_billable,
         )
         return item_response(result)
     except ReviewDecisionApplyError as error:

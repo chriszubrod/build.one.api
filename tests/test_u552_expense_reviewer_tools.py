@@ -163,6 +163,7 @@ def test_apply_without_sub_cost_code_surfaces_server_refusal():
         "description": None,
         "raw_reply_text": "Approved — fuel",
         "reviewer_email_message_public_id": "msg-pub-required",
+        "is_billable": None,  # U-743b
     }
 
 

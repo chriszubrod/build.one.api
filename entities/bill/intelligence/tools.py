@@ -862,6 +862,16 @@ class ApplyReviewerDecisionArgs(BaseModel):
             "bill's review-notification email thread (U-563b)."
         ),
     )
+    is_billable: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Billable-to-client judgement, approval only. Pass False ONLY when the "
+            "reply explicitly says the cost is NOT billable to the client ('do not "
+            "bill client', 'not billable', 'don't bill'). Pass True ONLY when the "
+            "reply explicitly says to bill the client. Otherwise omit. Never infer "
+            "it from the cost code."
+        ),
+    )
 
 
 async def _apply_reviewer_decision(args: dict, ctx: ToolContext) -> ToolResult:
@@ -873,6 +883,7 @@ async def _apply_reviewer_decision(args: dict, ctx: ToolContext) -> ToolResult:
         "description": parsed.description,
         "raw_reply_text": parsed.raw_reply_text,
         "reviewer_email_message_public_id": parsed.reviewer_email_message_public_id,
+        "is_billable": parsed.is_billable,
     }
     return await ctx.call_api(
         "POST",

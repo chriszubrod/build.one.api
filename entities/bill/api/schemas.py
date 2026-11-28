@@ -188,3 +188,12 @@ class BillUpdate(BaseModel):
 
 class BillApplyReviewerDecisionRequest(EmailedReviewerDecisionRequestBase):
     """Body for POST /bill/{public_id}/apply-reviewer-decision."""
+
+    # U-743b: the reviewer's explicit billable instruction, applied on approval only.
+    is_billable: Optional[bool] = Field(
+        default=None,
+        description=(
+            "Optional. False only when the reply explicitly says not to bill the client; "
+            "True only when it explicitly says to bill the client; omit otherwise."
+        ),
+    )

@@ -159,9 +159,15 @@ def _update_line_coding(
     sub_cost_code_id: Optional[int],
     description: Optional[str],
     conn,
+    billable: Optional[dict] = None,
 ) -> None:
     """Recode the sole line in the caller's transaction; a stale ROWVERSION from
-    the sproc is a 409 ``line_row_version_stale`` (both paths)."""
+    the sproc is a 409 ``line_row_version_stale`` (both paths).
+
+    ``billable`` (U-743b, emailed path only) carries ``is_billable`` and the reviewer's
+    ``billable_decided_by_user_id``; it is splatted in ONLY when given, so a caller
+    without a billable judgement (and the BillCredit line service) sees the call
+    exactly as before."""
     try:
         line_service.update_coding_in_transaction(
             line_item=line_item,
@@ -169,6 +175,7 @@ def _update_line_coding(
             sub_cost_code_id=sub_cost_code_id,
             description=description,
             conn=conn,
+            **(billable or {}),
         )
     except DatabaseConcurrencyError as exc:
         raise spec.apply_error(ErrorCode.LINE_ROW_VERSION_STALE) from exc
@@ -265,8 +272,13 @@ def apply_emailed(
     description: Optional[str] = None,
     raw_reply_text: Optional[str] = None,
     reviewer_email_message_public_id: Optional[str] = None,
+    is_billable: Optional[bool] = None,
 ) -> dict:
-    """Apply a PM / Owner's emailed review decision (see the entity docstrings)."""
+    """Apply a PM / Owner's emailed review decision (see the entity docstrings).
+
+    ``is_billable`` (U-743b) is the reviewer's billable-to-client judgement. It is
+    applied on approval only; on rejection it is ignored. It is stamped to the
+    matched reviewer (``reviewer_user_id``), never to the authenticated caller."""
     from entities.review_status.business.service import ReviewStatusService
     from entities.review.persistence.repo import ReviewRepository
 
@@ -381,6 +393,14 @@ def apply_emailed(
                 # Re-checked under the lock: a line added since the fast path above.
                 line_count = spec.count_lines_for_update(line_service, parent.id, conn)
                 _refuse_unless_one_line(spec, public_id, line_count)
+                billable_kwargs = (
+                    {
+                        "is_billable": is_billable,
+                        "billable_decided_by_user_id": reviewer_user_id,
+                    }
+                    if is_billable is not None
+                    else None
+                )
                 _update_line_coding(
                     spec,
                     line_service,
@@ -389,6 +409,7 @@ def apply_emailed(
                     sub_cost_code_id=scc_id,
                     description=description,
                     conn=conn,
+                    billable=billable_kwargs,
                 )
             new_review = review_repo.create(
                 review_status_id=target.id,

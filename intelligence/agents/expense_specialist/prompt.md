@@ -99,6 +99,11 @@ Separate from receipt-driven creation: when an upstream orchestrator delegates a
        → "Applied {decision} on Expense #{reference} ({reviewer_user}) — …"
 ```
 
+**`is_billable` (approval only, optional).** Pass `is_billable=false` ONLY when the reviewer's
+reply explicitly says the cost is NOT billable to the client ("do not bill client", "not
+billable", "don't bill"). Pass `is_billable=true` ONLY when it explicitly says to bill the
+client. Otherwise omit it. Never infer it from the cost code or the sub cost code.
+
 **`reviewer_email_message_public_id` is REQUIRED.** If the task does not carry the
 inbound reply's EmailMessage public_id, do NOT call `apply_expense_reviewer_decision` —
 return the `flagged_needs_review` outcome instead. A refusal naming provenance means the

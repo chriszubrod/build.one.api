@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Union
 
 # Local Imports
 from integrations.intuit.qbo.purchase.business.model import QboPurchase, QboPurchaseLine
+from integrations.intuit.qbo.purchase.billable_status import desired_billable_status
 from integrations.intuit.qbo.purchase.placeholder import (
     has_placeholder_label,
     is_uncoded_placeholder_line,
@@ -929,6 +930,7 @@ class PurchaseExpenseConnector:
         from integrations.intuit.qbo.purchase.connector.expense.business.errors import (
             PurchaseChangedInQboError,
             PurchaseRecodeMappingError,
+            RepointBillableNoCustomerError,
             RepointLineBilledError,
         )
         from integrations.intuit.qbo.purchase.external.client import QboPurchaseClient
@@ -951,7 +953,8 @@ class PurchaseExpenseConnector:
                     actual_sync_token=live_sync_token,
                 )
 
-            pending_specs: list[tuple[dict, dict, object]] = []
+            # (spec, live target dict, item_ref, narrow_status): narrow_status is set only for a billable-only line.
+            pending_specs: list[tuple[dict, dict, object, Optional[str]]] = []
             verified_lines: list[dict] = []
             # U-551b-f1-f3b: a first-write retry that finds every spec already on its target may emit the
             # record only when the write is provably OURS (live token == snapshot + 1, CustomerRef matches).
@@ -1010,8 +1013,20 @@ class PurchaseExpenseConnector:
                         if customer_differs and live_billed:
                             raise RepointLineBilledError(qbo_line_id=target_qbo_line_id)
                         customer_differs = customer_differs and item_matches
+                    # U-743b: a repoint changes BillableStatus only when completion approved a billable judgement
+                    # (spec billable_changed True). A line QBO has already billed is refused; otherwise an item-equal
+                    # line whose live BillableStatus differs from the desired one is mutated, not "already carries".
+                    billable_differs = False
+                    desired_status = desired_billable_status(spec.get("is_billable"))
+                    if is_repoint_call and spec.get("billable_changed") is True:
+                        if live_billed:
+                            raise RepointLineBilledError(qbo_line_id=target_qbo_line_id)
+                        billable_differs = (
+                            desired_status is not None
+                            and live_detail.get("BillableStatus") != desired_status
+                        )
                     # (a) already carries the target item: ours, unchanged.
-                    if item_matches and not customer_differs:
+                    if item_matches and not customer_differs and not billable_differs:
                         if token_one_ahead and spec.get("project_id"):
                             customer_ref = _customer_ref_for(spec["project_id"])
                             if customer_ref is None or live_customer != customer_ref.value:
@@ -1034,11 +1049,31 @@ class PurchaseExpenseConnector:
                             expected_sync_token=str(expected_sync_token),
                             actual_sync_token=live_sync_token,
                         )
+                    # U-743b: a human-stamped Billable (billable_decided, or an approved billable change) must land
+                    # against the project's OWN customer. Fail closed, never write the opposite value, when the
+                    # project has no customer or a billable-only write would leave a foreign live CustomerRef. An
+                    # undecided (derived) Billable keeps U-099's NotBillable fallback.
+                    if (
+                        is_repoint_call
+                        and spec.get("is_billable") is True
+                        and (spec.get("billable_changed") is True or spec.get("billable_decided") is True)
+                    ):
+                        project_customer = _customer_ref_for(spec["project_id"]) if spec.get("project_id") else None
+                        if project_customer is None or (
+                            item_matches and not customer_differs and live_customer != project_customer.value
+                        ):
+                            raise RepointBillableNoCustomerError(qbo_line_id=target_qbo_line_id)
+                    # U-743b: a billable-only change (item equal, customer unchanged) flips only
+                    # BillableStatus on the live target; every other field of the line stays byte-identical.
+                    if item_matches and not customer_differs:
+                        narrow_status = desired_status
+                        pending_specs.append((spec, target, item_ref, narrow_status))
+                        continue
 
                 if item_ref is None:
                     raise PurchaseRecodeMappingError(sub_cost_code_id=sub_cost_code_id)
 
-                pending_specs.append((spec, target, item_ref))
+                pending_specs.append((spec, target, item_ref, None))
 
             if not pending_specs:
                 result: dict = {"status": "already_recoded", "sync_token": live_sync_token}
@@ -1064,7 +1099,10 @@ class PurchaseExpenseConnector:
                     actual_sync_token=live_sync_token,
                 )
 
-            for spec, target, item_ref in pending_specs:
+            for spec, target, item_ref, narrow_status in pending_specs:
+                if narrow_status is not None:
+                    target["ItemBasedExpenseLineDetail"]["BillableStatus"] = narrow_status
+                    continue
                 self._apply_recode_mutation_to_raw_line(
                     target,
                     item_ref=item_ref,
@@ -1102,7 +1140,7 @@ class PurchaseExpenseConnector:
                     "item_ref_value": item_ref.value,
                     "sub_cost_code_id": spec["sub_cost_code_id"],
                 }
-                for spec, target, item_ref in pending_specs
+                for spec, target, item_ref, _narrow_status in pending_specs
             ],
         }
         if is_repoint_call:

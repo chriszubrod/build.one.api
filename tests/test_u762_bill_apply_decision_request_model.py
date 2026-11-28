@@ -36,6 +36,7 @@ FIELDS = (
     "description",
     "raw_reply_text",
     "reviewer_email_message_public_id",
+    "is_billable",  # U-743b
 )
 VALID = {
     "decision": "approved",
@@ -63,6 +64,7 @@ def _old_get_kwargs(body: dict) -> dict:
         "description": body.get("description"),
         "raw_reply_text": body.get("raw_reply_text"),
         "reviewer_email_message_public_id": body.get("reviewer_email_message_public_id"),
+        "is_billable": body.get("is_billable"),  # U-743b: new optional field, None when omitted
     }
 
 

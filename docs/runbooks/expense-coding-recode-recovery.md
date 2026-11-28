@@ -201,8 +201,8 @@ Severity: P2 (QBO cost coding wrong; no money moved).
    multi-line mode is refused `legacy_multi_line` (also a single-line row with no confirmed coding). Verify in QBO
    that each listed line carries what our drain wrote, then repeat with `&apply=true`.
 2. Re-drive, dry run: `POST /api/v1/admin/expenses/{expense_public_id}/redrive-completion-repoint`. Review each
-   target: the item, `staged_billable_status` vs `drain_is_billable` (billable is NOT fixed by U-743, see U-743b;
-   a differing value would be written), and `has_been_billed`.
+   target: the item, `staged_billable_status` vs `drain_is_billable` (a differing value WILL be written), and
+   `has_been_billed`.
 3. Apply: same route with `?apply=true`. `enqueued` -> drain within a minute; a skip is a 409 whose detail names
    `skip_reason` / `skipped_candidates`.
 
@@ -214,6 +214,29 @@ change still goes through, with the old customer kept). A repoint that was appro
 line is refused before any write and the row is marked `error` with `write_error = repoint_line_billed`;
 `redrive-repoint` refuses it (`billed_needs_decision`). Recovery is manual: decide in QBO (credit/re-invoice), then
 clear the row by hand. Prevention: completion does not propose a customer-only change on a staged billed line.
+
+## 6c. A reviewer's billable decision (U-743b)
+
+**What it is.** A reviewer's emailed approval of a single-line expense or bill may say whether the cost is billed
+to the client ("do not bill client" -> NotBillable; "bill client" -> Billable). The agent passes it as `is_billable`
+only when the reply says so explicitly. On an expense line it is stamped `BillableDecidedByUserId` = the matched,
+thread-bound reviewer (never the agent) + `BillableDecidedAt`, which makes it authoritative over QBO pulls; a bill
+line just takes `IsBillable` (bills push from local at completion).
+
+**Completion.** A stamped decision that differs from the staged QBO `BillableStatus` is a repoint target with
+`billable_changed: true`, even when the item is unchanged. The drain then changes ONLY that line's `BillableStatus`
+(every other field byte-identical, sync-token fenced). It is never applied to a `HasBeenBilled` line.
+
+**Symptom: `write_error = repoint_billable_no_customer`.** A stamped Billable could not be written against the
+project's OWN QBO customer (the project has no QBO customer, or the line carries another customer). Nothing was
+written; we never write NotBillable in its place. Severity: P2 (client billing flag wrong in QBO; no money moved).
+Recovery: map the project to its QBO customer (or correct the line's customer in QBO, Chris's call), then
+`redrive-repoint` the row. `repoint_line_billed` with a billable change means QBO already billed the line: decide in
+QBO (credit/re-invoice), then clear the row by hand.
+
+**Backfilling a decision the reviewer gave before U-743b** (operator, with Chris's OK per line): stamp the line's
+`IsBillable` + `BillableDecidedByUserId` (the reviewer who said it, or Chris when the instruction came from him) +
+`BillableDecidedAt`, then run section 6b steps 2-3 for that expense.
 
 ## 7. Gates
 

@@ -1491,7 +1491,13 @@ class QboOutboxWorker:
                 return None, "repoint_line_unmapped"
             # U-743: a customer change on a line already carrying the target item is still a change.
             customer_changed = entry.get("customer_changed") is True
-            if target_ref.value == entry.get("repoint_from_item_ref_value") and not customer_changed:
+            # U-743b: a billable change on a line already carrying the target item is still a change.
+            billable_changed = entry.get("billable_changed") is True
+            if (
+                target_ref.value == entry.get("repoint_from_item_ref_value")
+                and not customer_changed
+                and not billable_changed
+            ):
                 continue  # the approved target IS the item we wrote: nothing to change
             targets.append(
                 dict(
@@ -1506,6 +1512,9 @@ class QboOutboxWorker:
                     ),
                     repoint_from_item_ref_value=entry.get("repoint_from_item_ref_value"),
                     customer_changed=customer_changed,
+                    billable_changed=billable_changed,
+                    # U-743b: a human-stamped decision (not a derived seed) is never downgraded by the writer.
+                    billable_decided=getattr(local_line, "billable_decided_at", None) is not None,
                 )
             )
         return targets, None
@@ -1546,6 +1555,7 @@ class QboOutboxWorker:
         from integrations.intuit.qbo.purchase.connector.expense.business.errors import (
             PurchaseChangedInQboError,
             PurchaseRecodeMappingError,
+            RepointBillableNoCustomerError,
             RepointLineBilledError,
         )
         from integrations.intuit.qbo.base.errors import QboSyncTokenMismatchError
@@ -1621,8 +1631,9 @@ class QboOutboxWorker:
         except PurchaseRecodeMappingError as exc:
             _terminal_mark("error", svc.mark_error, write_error=str(exc))
             return
-        except RepointLineBilledError:
-            _terminal_mark("error", svc.mark_error, write_error=RepointLineBilledError.WRITE_ERROR)
+        except (RepointLineBilledError, RepointBillableNoCustomerError) as exc:
+            # A repoint refusal: terminal, its own write_error so a human can find it (U-743 / U-743b).
+            _terminal_mark("error", svc.mark_error, write_error=exc.WRITE_ERROR)
             return
         except HoldingCodeRefused as exc:
             _terminal_mark(

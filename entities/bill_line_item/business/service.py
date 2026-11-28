@@ -411,9 +411,16 @@ class BillLineItemService:
         sub_cost_code_id: int,
         description: Optional[str],
         conn,
+        is_billable: Optional[bool] = None,
+        billable_decided_by_user_id: Optional[int] = None,
     ) -> BillLineItem:
-        """Apply reviewer SCC coding on one line inside a caller-owned transaction."""
+        """Apply reviewer SCC coding on one line inside a caller-owned transaction.
+
+        U-743b: ``is_billable`` is set when given. A bill line has no decided-by stamp
+        column, so ``billable_decided_by_user_id`` is accepted and ignored here."""
         line_item.row_version = row_version
+        if is_billable is not None:
+            line_item.is_billable = is_billable
         # U-674: the reviewer has now chosen this line's code, so an untouched
         # pre-fill is reviewed — kept ('accepted') or replaced ('changed').
         if getattr(line_item, "coding_prefill_state", None) == UNREVIEWED_PREFILL_STATE:

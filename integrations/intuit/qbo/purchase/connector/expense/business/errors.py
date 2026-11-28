@@ -39,3 +39,18 @@ class RepointLineBilledError(Exception):
     def __init__(self, *, qbo_line_id: str):
         self.qbo_line_id = qbo_line_id
         super().__init__(f"Purchase line {qbo_line_id} is HasBeenBilled; refusing a repoint customer change")
+
+
+class RepointBillableNoCustomerError(Exception):
+    """U-743b: a completion repoint stamped a Billable judgement but the line cannot be made Billable against
+    the project's OWN customer (the project has no QBO customer, or the live line's CustomerRef differs from it).
+    Raised before any write, never writing the opposite value; the drain marks the suggestion error with
+    ``WRITE_ERROR``."""
+
+    WRITE_ERROR = "repoint_billable_no_customer"
+
+    def __init__(self, *, qbo_line_id: str):
+        self.qbo_line_id = qbo_line_id
+        super().__init__(
+            f"Purchase line {qbo_line_id}: billable repoint has no matching project customer; refusing to write"
+        )

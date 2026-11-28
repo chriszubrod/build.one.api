@@ -9,6 +9,57 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 > both common here. Read the body.
 
 
+### 🚪 U-801 SHIPPED `73d7f7b2` — Bill completion no longer acks an unlogged QBO write (atomic finalize + enqueue)
+
+`BillRepository.finalize_by_id` committed the `completed` flip on its OWN connection; `_enqueue_qbo_sync` then ran
+four steps later on a FRESH one, and `enqueue_qbo_push` swallowed every exception. A failed enqueue therefore left a
+Bill durably `completed` with no outbox row — nothing to retry, nothing to dead-letter, and (unlike the
+coding-suggestion path's `/admin/expense-coding/sweep-stranded`) **no sweeper on this path**. `QboOutboxService`'s own
+docstring already claimed callers "invoke this from inside the same local transaction that mutates the entity"; the
+plumbing never carried a connection, so that contract was documentation only. Now real **for Bill only** — see the
+follow-ons below. 13,920 pytest green; 13/13 mutants killed, each by a named test.
+
+**Verified, not assumed.** The unit rests on the sproc's `COMMIT` being NESTED under pyodbc's autocommit-off.
+Read-only prod probe 2026-11-27, inside one `get_connection()` block: `SELECT @@TRANCOUNT` → **1**;
+`BEGIN TRANSACTION; COMMIT TRANSACTION; SELECT @@TRANCOUNT` → **1**; `SELECT @@TRANCOUNT` → **1**. ⚠️ The Python
+tests CANNOT see this — they assert one connection object reaches both writes, which stays green even if the sproc's
+COMMIT were durable. If the driver or its autocommit setting ever changes, **re-run the probe, not the suite**.
+Canonical write-up: `BillRepository.finalize_by_id`'s docstring.
+
+Open follow-ons:
+
+- [ ] **BillCredit is still the old shape (the U-801 carve-out).** `BillCreditCompleteService._enqueue_qbo_sync` keeps
+      a local `try/except Exception` restoring the pre-U-801 swallow, so a credit can still reach `completed` with no
+      `sync_bill_credit_to_qbo` row. Deliberate: it finalizes through the generic `update_by_public_id` inside a
+      ROWVERSION retry loop rather than one idempotent flip, and its call site sits outside any handler, so letting
+      the new exception escape would answer 500 on a credit that IS already committed — worse than today's 207. Needs
+      a `FinalizeBillCreditById`-style idempotent flip that takes a `conn`; then it can reuse Bill's shape. Pinned
+      meanwhile by `tests/test_u801_atomic_outbox_enqueue.py::test_bill_credit_enqueue_failure_is_reported_not_raised`
+      — when that test starts failing, the carve-out and the test go together.
+- [ ] **U-652d (12) "atomic confirm + enqueue" (P0) is the coding-suggestion twin of this unit.** Already booked in the
+      "U-166 / U-652d slice 1 follow-ups" section and gated on the Codex reviewer. U-801's `conn` seam on
+      `QboOutboxService.enqueue` is the half it needs; the confirm side still has to take a connection.
+- [ ] **MS and Box outboxes have no `conn` seam at all.** `MsOutboxService.enqueue` and the Box outbox repo open their
+      own connection in every method, and their completion callers swallow and run after the state flip has committed.
+      Lower severity than QBO — they are mirrors (Excel/PDF copies), explicitly "additive + failure-isolated" — but it
+      is the same shape, and whether the MS/Box reconciliation modules detect a **lost** enqueue (as opposed to a
+      failed one) is unverified.
+- [ ] **One `EnqueueQboOutbox` sproc would cut 2 round trips out of the lock window.** The enqueue costs 3 sequential
+      round trips under the Bill `UPDLOCK` on the fresh path (pending probe → dead-letter probe → INSERT) and 2 on the
+      coalesce path; a single coalesce-else-dead-letter-else-insert sproc makes it 1. ⛔ Do **NOT** instead hoist those
+      probes above the transaction: the Bill `UPDLOCK` is what serializes two concurrent completions of the same bill,
+      `IX_Outbox_Entity` is **not** unique, and both callers would then see no pending row and both INSERT — two rows,
+      two RequestIds, two QBO pushes.
+- [ ] **Pre-existing, widened by this unit: a 500 with `bill_finalized: False` for a bill that IS committed.**
+      `complete_bill`'s outer `except Exception` covers everything after the transaction, including
+      `record_bill_coding_suggestion_on_save`. The flip — and now the outbox row too — is already durable at that
+      point, so the push drains anyway while the operator is told the completion failed and retries.
+- [ ] **Runbook line wanted.** A QBO auth read failure (DB error, or a decrypt failure such as a bad `ENCRYPTION_KEY`)
+      now blocks **all** Bill completions with a 500 instead of completing with a lost push. That is the intended
+      fail-closed trade, but it means a QBO auth fault halts the AP pipeline. The CompletionJob watchdog re-drives, so
+      there is no data loss.
+
+
 ### 🚪 U-624a SHIPPED 2026-11-05 `eff795c8` — one TimeEntry header per (worker, day): `CreateTimeEntry` is find-or-create under an applock — NOT DEPLOYED, prod SQL apply = Gate 2 (Chris)
 
 Design: `build.one.team/engineering/designs/u624-one-header-per-worker-day.md`. Prod census 11-05: 22 (worker, work_date) groups got more than one header

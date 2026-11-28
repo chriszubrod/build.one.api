@@ -11,34 +11,38 @@ Carry-over items from sessions. Check off as done; prune anything stale.
 
 ### 🚪 U-801 SHIPPED `73d7f7b2` — Bill completion no longer acks an unlogged QBO write (atomic finalize + enqueue)
 
-> ⛔ **DEPLOY GATE (2026-11-28).** `73d7f7b2` is pushed and **NOT DEPLOYED**, and it cannot ship alone — it sits on
-> trunk above two units that are not deployable. U-801 is unblocked only when BOTH clear.
+> ✅ **DEPLOYED 2026-11-28 as `889c036e`** — image digest `sha256:1e2555e9…`, tags `:latest` + `:889c036e`.
+> U-801 and U-799 are live. Chris released the U-799 hold on 2026-11-28; its backlog (46 Ramp digests, all
+> `Outcome IS NULL`) stamps on the next weekly tick, **Tue 2026-12-01 12:03 UTC** — the first observable effect of
+> this deploy, and nothing stamps before it. Nothing on that path puts mail on the wire by itself.
 >
-> 1. **U-799** (`459be983`, an *ancestor* of this unit, so no build from trunk can exclude it) — Chris's deploy hold
->    of 2026-11-22, still open. Its stated condition is to confirm the Ramp-digest backlog stamping is wanted.
->    Sized 2026-11-28 by read-only prod query: **46** outstanding digests
->    (`DraftMessageId IS NOT NULL AND LastNotifiedAt IS NULL`), weeks 2026-10-06 … 2026-11-17, **all**
->    `Outcome IS NULL` — 0 of 60 digests has ever been stamped, consistent with `_conversation_in_folder` having
->    400'd since it was written. Stamping lands on the weekly tick `0 3 12 * * 2` (Tue 12:03 UTC), **not** at deploy
->    time, so a deploy buys ~3 days. Nothing on that path puts mail on the wire by itself: at `draft` each message is
->    an Outlook draft a human sends. (The live `RAMP_CHASER_MODE` value was NOT read — `az webapp config appsettings
->    list` returns the Ramp secret and is correctly blocked; the above is from the code gate, not a live reading.)
-> 2. **U-743b** (`c3919d5e`) — pushed to trunk 2026-11-28 *while this deploy was in preflight*. Its BOARD row still
->    reads "Building", its TODO checkbox is open, and its Gate-1 plan has a backfill gated on Chris's OK at each
->    write (32450, 32406/77976). Another session's in-flight work, not ours to ship.
+> **The target was not the one planned, and the reason matters.** Plan was to build `0896786c` (U-801 + U-799,
+> excluding U-743b — which sits ABOVE U-801 on trunk, so no revert was needed; an earlier reading of this that said
+> otherwise was wrong). While that tree was being verified another session deployed `6c5084b4` = `hotfix/u-743b`
+> (off-trunk, built on the then-live `d6ab7796`) with its own stop/start at 14:32:31–33Z. Building `0896786c` would
+> then have **reverted a live hotfix**. Target moved to trunk tip `889c036e` after verifying it is strictly additive:
+> trunk's rebased U-743b is **byte-identical to the live hotfix across all 24 of its files**, so nothing regressed —
+> and the live image is back ON-TRUNK for the first time in days.
 >
-> **Chris's call 2026-11-28: hold the deploy.** Ship all three together once U-799 is released and U-743b is booked.
-> An off-trunk "U-801 only" build (revert both; the U-799 revert was tested and applies clean, touching only its own
-> files) was costed and declined — the live image is ALREADY off-trunk, and compounding that is what made this
-> preflight expensive.
+> ⚠️ **`hotfix/u-743b` can still silently revert this.** Its tip `6c5084b4` contains NO U-801 and NO U-799. If its
+> owner rebuilds `:latest` from that branch, both units leave production with no signal. Delete the branch, or rebase
+> it onto trunk, before any further build from it.
 >
-> Preflight facts that DID clear — good until trunk or the live image moves again:
-> - Live `:latest` = `d6ab7796` (2026-11-25 13:13 UTC) and it is **off-trunk** (a pre-rebase unit-branch tip), so
->   size any delta from `merge-base(live, master)`, never `live..master`. See
->   umbrella memory `feedback_live_image_may_be_off_trunk`.
-> - **Zero `.sql` differences** between that image and trunk ⇒ no sproc-drift check and no code-ahead-of-SQL hazard.
->   U-801, U-799 and U-743b each carry no SQL at all.
-> - `DOCKER_CUSTOM_IMAGE_NAME` → `buildone:latest` (NOT tag-pinned), so stop/start will pull.
+> Evidence chain. **No behavioural sentinel exists for this delta** — U-801 and U-799 are both internal and U-743b was
+> already live, so no read-only request distinguishes the two images. This is platform-level proof:
+> 1. ACR 14:49:16Z — `:latest` and `:889c036e` both resolve to `sha256:1e2555e9…`. The prior digest
+>    `sha256:1689859d…` keeps its `6c5084b4` tag, so **rollback needs no rebuild**: deploy that digest.
+> 2. Platform — 14:49:42Z Stopping → **14:50:01Z PullingImage** → 14:50:12Z container created → 14:50:31Z two worker
+>    processes → **14:50:32Z Application startup complete** ×2 → Site started. A 50s cycle with an explicit pull, not
+>    the sub-30s cached relaunch DEPLOY.md warns about.
+> 3. `GET /ping` → 200 `{"message":"pong"}` 42s after start. No application errors since 14:50 (the only ERROR lines
+>    in the log are 11-07/11-08 `scm_docker.log` plumbing noise).
+> 4. Suite verified at `c3919d5e` (this tree minus a TODO.md-only commit): **13,978 collected == 13,972 passed + 6
+>    skipped**, reconciled per umbrella memory `feedback_pytest_qq_suppresses_the_tally`.
+>
+> **U-801's first real exercise is the next Bill completion.** The intended new behaviour to watch: a failed QBO
+> enqueue now rolls the `completed` flip back and returns an error, instead of acking 200/207 with no outbox row.
+> Zero `.sql` anywhere in the delta, so there was no migration step and no code-ahead-of-SQL window.
 
 `BillRepository.finalize_by_id` committed the `completed` flip on its OWN connection; `_enqueue_qbo_sync` then ran
 four steps later on a FRESH one, and `enqueue_qbo_push` swallowed every exception. A failed enqueue therefore left a
